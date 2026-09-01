@@ -295,13 +295,22 @@ class ScoringEngine:
         *,
         return_price_per_person: float | None,
         return_minutes: int | None,
+        remaining_accommodation_cost: float = 0.0,
     ) -> SearchState:
-        """The partial state as if it flew home on the cheapest possible leg."""
+        """The partial state as if it went home as cheaply as possible.
+
+        The traveler still has to sleep somewhere before leaving, so the
+        cheapest remaining accommodation is charged too - without it a state
+        parked in an expensive city would look deceptively good.
+        """
         price = return_price_per_person if return_price_per_person is not None else 0.0
         minutes = return_minutes if return_minutes is not None else 0
         return replace(
             state,
-            total_cost=round(state.total_cost + price * request.travelers, 2),
+            transport_cost=round(state.transport_cost + price * request.travelers, 2),
+            accommodation_cost=round(
+                state.accommodation_cost + remaining_accommodation_cost, 2
+            ),
             total_travel_minutes=state.total_travel_minutes + minutes,
             current_datetime=state.current_datetime
             + timedelta(minutes=minutes + self.config.min_city_stay_days * 24 * 60),
@@ -315,6 +324,7 @@ class ScoringEngine:
         *,
         return_price_per_person: float | None,
         return_minutes: int | None,
+        remaining_accommodation_cost: float = 0.0,
     ) -> ScoreBreakdown:
         """Optimistically score a partial state as if it went home right now.
 
@@ -330,6 +340,7 @@ class ScoringEngine:
                 request,
                 return_price_per_person=return_price_per_person,
                 return_minutes=return_minutes,
+                remaining_accommodation_cost=remaining_accommodation_cost,
             ),
             request,
         )

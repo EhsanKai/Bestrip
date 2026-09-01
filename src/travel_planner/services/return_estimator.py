@@ -27,8 +27,10 @@ class CachedReturnEstimator:
         origin_airports: Iterable[str],
         dates: Sequence[date],
         allowed_transport_types: Iterable[str] | None = None,
+        min_return_transfer_price_per_person: float = 0.0,
     ) -> None:
         self._provider = provider
+        self._min_transfer_price = min_return_transfer_price_per_person
         self._origin_airports = tuple(sorted(set(origin_airports)))
         self._dates = tuple(sorted(set(dates)))
         self._allowed = set(allowed_transport_types) if allowed_transport_types else None
@@ -55,10 +57,16 @@ class CachedReturnEstimator:
         return self._cache[city]
 
     # -- ReturnEstimator protocol --------------------------------------
+    def min_return_transfer_price_per_person(self) -> float:
+        """Cheapest ride home from whichever airport the trip lands at."""
+        return self._min_transfer_price
+
     def min_return_price_per_person(self, city: str) -> float | None:
+        """Cheapest flight/train home, *including* the ride from the airport."""
         if city in self._origin_airports:
             return 0.0
-        return self._bounds(city)[0]
+        best = self._bounds(city)[0]
+        return None if best is None else best + self._min_transfer_price
 
     def min_return_minutes(self, city: str) -> int | None:
         if city in self._origin_airports:

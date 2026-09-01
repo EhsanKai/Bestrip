@@ -6,6 +6,7 @@ from datetime import date, timedelta
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..profiles import ProfileName
 from .destination import ATTRIBUTES
 from .transport import TransportType
 
@@ -57,6 +58,13 @@ class TripRequest(BaseModel):
     avoid_destinations: list[str] = Field(default_factory=list)
 
     preferences: TravelPreferences = Field(default_factory=TravelPreferences)
+
+    profile: ProfileName | None = None
+    """Which recommendation profile to optimize for.
+
+    ``None`` defers to ``PlannerConfig.profile`` (BEST_VALUE by default), so
+    requests written against V1 keep working unchanged.
+    """
 
     currency: str = "EUR"
 

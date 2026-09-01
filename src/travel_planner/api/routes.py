@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from ..config import PlannerConfig
 from ..models.itinerary import PlanResult
 from ..models.trip import TripRequest
+from ..profiles import PROFILES, ProfileName, RecommendationProfile
 from ..services.planner import TravelPlanner
 
 router = APIRouter()
@@ -34,15 +35,25 @@ def plan_trip(
         default=False,
         description="Return the full structured search trace (development mode).",
     ),
+    profile: ProfileName | None = Query(
+        default=None,
+        description=(
+            "Which recommendation profile to optimize for. Overrides the "
+            "request body's `profile`. Defaults to BEST_VALUE."
+        ),
+    ),
     planner: TravelPlanner = Depends(get_planner),
 ) -> PlanResult:
     """Plan a trip.
 
     Returns the naive single-destination baseline (when a preferred destination
-    was given), the ranked recommendations, and run metadata.
+    was given), the ranked recommendations, and run metadata. The same request
+    under a different profile is a different question, and gets a different
+    answer: CHEAPEST minimizes spend, BEST_VALUE (the default) maximizes the
+    trip the money buys, ADVENTURE favours seeing more places.
     """
     try:
-        return planner.plan(request, debug=debug)
+        return planner.plan(request, debug=debug, profile=profile)
     except ValueError as error:
         # Unknown origin, no departure airport in range, ... - a client problem.
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -58,6 +69,12 @@ def list_destinations(planner: TravelPlanner = Depends(get_planner)) -> list[dic
 def get_config(planner: TravelPlanner = Depends(get_planner)) -> PlannerConfig:
     """The active planner configuration."""
     return planner.config
+
+
+@router.get("/profiles", response_model=list[RecommendationProfile])
+def list_profiles() -> list[RecommendationProfile]:
+    """The recommendation profiles `/plan-trip` accepts, and their weights."""
+    return list(PROFILES.values())
 
 
 @router.get("/health")

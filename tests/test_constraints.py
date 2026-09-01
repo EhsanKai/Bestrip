@@ -290,11 +290,17 @@ def test_unreachable_return_time_prunes_partial_states(config):
         destination_ids=CITIES,
         return_estimator=_Estimator(price=10.0, minutes=90),
     )
+    # Duration is measured as the trip's span, so "no time left" means the
+    # traveler has already been away for nearly the whole allowance.
     late = make_state(
-        [leg("DUS", "London", datetime(2026, 9, 14, 20, 0), 90, 10.0)],
+        [
+            leg("DUS", "Prague", datetime(2026, 9, 10, 8, 0), 75, 10.0),
+            leg("Prague", "London", datetime(2026, 9, 14, 20, 0), 90, 10.0),
+        ],
         completed=False,
         start=datetime(2026, 9, 10, 0, 0),
     )
+    assert late.trip_span_minutes > 0.9 * trip_request().max_trip_minutes
     result = validator.validate(late, trip_request(budget=500))
     assert result.reason is RejectionReason.UNREACHABLE_RETURN_TIME
 

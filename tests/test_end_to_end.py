@@ -1,7 +1,9 @@
 """The end-to-end scenario required by the spec.
 
-Origin Köln, EUR 250, 2 travelers, 5 days, prefers Madrid, avoids Paris,
-multiple_cities = 0.9.
+Origin Köln, 2 travelers, 5 days, prefers Madrid, avoids Paris,
+multiple_cities = 0.9. The budget is the V2 fixture default: once
+accommodation and ground transfers are priced in, the V1 figure of EUR 250
+buys nothing at all.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import pytest
 
 from travel_planner.config import PlannerConfig
 from travel_planner.models.trip import TravelPreferences
+from travel_planner.profiles import ProfileName
 from travel_planner.services.planner import TravelPlanner
 
 from .conftest import WINDOW_FROM, WINDOW_TO, trip_request
@@ -32,8 +35,13 @@ def test_a_madrid_baseline_is_generated(scenario):
     _, _, result = scenario
     assert result.baseline is not None
     assert result.baseline.destination == "Madrid"
-    assert result.baseline.total_cost <= 250
+    assert result.baseline.total_cost <= 450
     assert len(result.baseline.legs) == 2
+    # V2: the baseline is a trip the user could actually take, hotel and
+    # airport transfer included - not a one-night flying visit.
+    assert result.baseline.nights >= 2
+    assert result.baseline.cost_breakdown.accommodation > 0
+    assert result.baseline.cost_breakdown.ground_transfer > 0
 
 
 def test_multiple_valid_itineraries_are_returned(scenario):
@@ -99,9 +107,13 @@ def test_the_budget_is_respected(scenario):
     _, request, result = scenario
     for itinerary in result.recommendations:
         assert itinerary.total_cost <= request.budget
-        # And the total really is the per-person price times two.
-        recomputed = sum(leg.price_per_person * request.travelers for leg in itinerary.legs)
-        assert itinerary.total_cost == pytest.approx(recomputed, abs=0.02)
+        # The transport share really is the per-person price times two ...
+        transport = sum(leg.price_per_person * request.travelers for leg in itinerary.legs)
+        assert itinerary.cost_breakdown.transport == pytest.approx(transport, abs=0.02)
+        # ... and the total is transport plus the two V2 cost lines.
+        assert itinerary.total_cost == pytest.approx(
+            itinerary.cost_breakdown.total, abs=0.02
+        )
 
 
 def test_the_duration_is_respected(scenario):
@@ -259,12 +271,18 @@ def test_configuration_flows_through_to_the_result():
 
 
 def test_score_breakdown_is_attached_to_every_recommendation(scenario):
+    """The V2 Travel Value drives the rank; the V1 breakdown rides along."""
     _, _, result = scenario
     for itinerary in result.recommendations:
-        breakdown = itinerary.score_breakdown
-        assert breakdown is not None
-        assert breakdown.total == pytest.approx(itinerary.score, abs=1e-6)
-        assert breakdown.weights["budget"] == pytest.approx(0.40)
+        value = itinerary.value_breakdown
+        assert value is not None
+        assert value.total == pytest.approx(itinerary.score, abs=1e-6)
+        assert value.profile is ProfileName.BEST_VALUE
+        assert value.weights["experience"] == pytest.approx(0.30)
+
+        legacy = itinerary.score_breakdown
+        assert legacy is not None
+        assert legacy.weights["budget"] == pytest.approx(0.40)
 
 
 def test_the_result_serializes_to_json(scenario):

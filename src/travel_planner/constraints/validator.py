@@ -53,6 +53,17 @@ class ReturnEstimator(Protocol):
     def min_return_minutes(self, city: str) -> int | None: ...
 
 
+@runtime_checkable
+class AccommodationEstimator(Protocol):
+    """Admissible lower bound on the cost of sleeping somewhere.
+
+    Declared here alongside :class:`ReturnEstimator` so ``constraints`` stays a
+    leaf: the concrete caching implementations live in ``services``.
+    """
+
+    def min_stay_cost(self, city: str, nights: int, travelers: int) -> float: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _Resolved:
     must_visit: frozenset[str]
@@ -69,11 +80,13 @@ class ConstraintValidator:
         origin_airports: Iterable[str],
         destination_ids: Iterable[str],
         return_estimator: ReturnEstimator | None = None,
+        accommodation_estimator: AccommodationEstimator | None = None,
     ) -> None:
         self.config = config
         self.origin_airports = frozenset(origin_airports)
         self.destination_ids = frozenset(destination_ids)
         self.return_estimator = return_estimator
+        self.accommodation_estimator = accommodation_estimator
         self._resolution_cache: dict[tuple[tuple[str, ...], tuple[str, ...]], _Resolved] = {}
 
     # ------------------------------------------------------------------
@@ -126,10 +139,11 @@ class ConstraintValidator:
                 f"total {state.total_cost:.2f} > budget {request.budget:.2f}",
             )
 
-        if state.elapsed_minutes > request.max_trip_minutes:
+        if state.trip_span_minutes > request.max_trip_minutes:
             return ConstraintResult.fail(
                 RejectionReason.DURATION_EXCEEDED,
-                f"elapsed {state.elapsed_minutes} min > allowed {request.max_trip_minutes} min",
+                f"trip spans {state.trip_span_minutes} min > allowed "
+                f"{request.max_trip_minutes} min",
             )
 
         if state.city_count > self.config.max_cities:
@@ -219,10 +233,32 @@ class ConstraintValidator:
                 f"but only {remaining_slots} city slot(s) remain",
             )
 
-        if not self.return_estimator or not state.route:
+        if not state.route:
             return _OK
 
         remaining_budget = request.budget - state.total_cost
+
+        # The traveler still has to sleep somewhere before they can leave, so
+        # the cheapest possible remaining nights are charged against what is
+        # left of the budget. Admissible: no bookable stay is cheaper.
+        if self.accommodation_estimator is not None:
+            floor = self.accommodation_estimator.min_stay_cost(
+                state.current_location,
+                self.config.min_city_stay_days,
+                request.travelers,
+            )
+            if floor > remaining_budget + 1e-9:
+                return ConstraintResult.fail(
+                    RejectionReason.UNAFFORDABLE_ACCOMMODATION,
+                    f"the cheapest {self.config.min_city_stay_days} night(s) in "
+                    f"{state.current_location} cost {floor:.2f}, only "
+                    f"{remaining_budget:.2f} left",
+                )
+            remaining_budget -= floor
+
+        if not self.return_estimator:
+            return _OK
+
         min_price = self.return_estimator.min_return_price_per_person(state.current_location)
         if min_price is None:
             return ConstraintResult.fail(
@@ -244,7 +280,7 @@ class ConstraintValidator:
                 f"no return connection from {state.current_location}",
             )
         # The traveler must still sit out the minimum stay before leaving.
-        remaining_minutes = request.max_trip_minutes - state.elapsed_minutes
+        remaining_minutes = request.max_trip_minutes - state.trip_span_minutes
         needed = min_minutes + self.config.min_city_stay_days * 24 * 60
         if needed > remaining_minutes:
             return ConstraintResult.fail(
@@ -281,10 +317,10 @@ class ConstraintValidator:
             )
 
         minimum = self.config.min_duration_utilization * request.max_trip_minutes
-        if state.elapsed_minutes < minimum:
+        if state.trip_span_minutes < minimum:
             return ConstraintResult.fail(
                 RejectionReason.DURATION_UNDERUSED,
-                f"elapsed {state.elapsed_minutes} min uses less than "
+                f"trip spans {state.trip_span_minutes} min, less than "
                 f"{self.config.min_duration_utilization:.0%} of the requested "
                 f"{request.max_trip_minutes} min",
             )

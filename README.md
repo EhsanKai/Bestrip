@@ -1,33 +1,38 @@
 # Intelligent Budget Travel Planner
 
-A deterministic, multi-objective route optimizer that answers:
+A deterministic, multi-objective trip optimizer. It answers:
 
-> *Given my budget, dates, party size and preferences, what are the best trips I can take?*
+> *Given my money, my time and my preferences, what is the best trip you can build me?*
 
-It does **not** just look for the cheapest return flight to one city. It searches
-the space of complete round trips — including multi-city routes and alternative
-departure airports — and ranks them on cost, time, destination fit, convenience
-and variety.
+Not "find me a cheap flight". The optimizer prices and scores the **whole
+trip** — the ride to the airport, the flights and trains, the hotel, the days
+you actually get to spend somewhere — and searches the space of complete round
+trips for the best one under the profile you ask for.
 
-> ⚠️ **All transport data in this MVP is synthetic.** Prices, schedules and
-> availability are fabricated to exercise the optimizer. Nothing here reflects
-> real-world flights, trains or buses.
+> ⚠️ **All data in this MVP is synthetic.** Flights, trains, buses, hotel rates
+> and airport transfers are fabricated to exercise the optimizer. Nothing here
+> reflects real prices or availability.
 
 ---
 
 ## Table of contents
 
-- [The problem](#the-problem)
+- [What V2 changed](#what-v2-changed)
+- [The three traps](#the-three-traps)
 - [Quick start](#quick-start)
 - [Architecture](#architecture)
 - [How the algorithm works](#how-the-algorithm-works)
-  - [1. Origin discovery](#1-origin-discovery)
+  - [1. Origin discovery and ground transfer](#1-origin-discovery-and-ground-transfer)
   - [2. Beam search](#2-beam-search)
-  - [3. Constraints](#3-constraints)
-  - [4. Scoring](#4-scoring)
-  - [5. Pareto filtering](#5-pareto-filtering)
-  - [6. Diversity filtering](#6-diversity-filtering)
-  - [7. Baseline comparison](#7-baseline-comparison)
+  - [3. Accommodation](#3-accommodation)
+  - [4. Constraints](#4-constraints)
+  - [5. Travel Value](#5-travel-value)
+  - [6. Usable destination time](#6-usable-destination-time)
+  - [7. Pareto filtering](#7-pareto-filtering)
+  - [8. Diversity filtering](#8-diversity-filtering)
+  - [9. Baseline comparison](#9-baseline-comparison)
+- [Recommendation profiles](#recommendation-profiles)
+- [Worked example](#worked-example)
 - [Observability](#observability)
 - [Configuration](#configuration)
 - [The API](#the-api)
@@ -39,75 +44,121 @@ and variety.
 
 ---
 
-## The problem
+## What V2 changed
 
-A naive planner answers `Köln → Madrid → Köln, €200, 5 days, 1 city`.
+V1 was a route optimizer that happened to be good at it. V2 is a trip
+optimizer. The search, the constraint engine, the Pareto and diversity filters
+and the non-greedy guarantee are all unchanged — what changed is *what gets
+priced* and *what "best" means*.
 
-The optimizer may find that `Köln → Prague → Vienna → Köln` costs less, fits the
-same five days, and shows two cities instead of one. But multi-city is **not**
-automatically better: if Madrid really is the best answer, Madrid is returned.
+| | V1 | V2 |
+| --- | --- | --- |
+| Cost of a trip | transport only | transport **+ accommodation + ground transfer** |
+| A city stay | free | priced per room per night, rooms scale with party size |
+| Getting to the airport | free and instant | priced and timed per airport |
+| Objective | 6 components, budget-dominated (0.40) | **Travel Value**: 5 components under a named profile |
+| "5 days" | elapsed calendar time | **usable destination time**, arrival and departure clock included |
+| One answer for everyone | yes | **CHEAPEST / BEST_VALUE / ADVENTURE** |
+| Duration measured | from midnight of the start date | from the actual first departure |
+| Explanation | score components | structured `explanation_factors` + full cost/time breakdown |
 
-The central trap this project is built to avoid is committing to a cheap first
-leg. In the synthetic network, `DUS → London` is the cheapest departure anywhere
-(€35/pp) — and every way home from London is punitive. `DUS → Prague` costs more
-up front (€55/pp) but `Prague → Vienna` (€12) and `Vienna → DUS` (€25) make the
-complete trip far cheaper:
+**The headline consequence.** Once a hotel and a train to the airport are part
+of the price, €250 for two people over five days buys exactly one trip in the
+synthetic network (`CGN → Brussels → CGN`, €241.78) and no Madrid baseline at
+all. That is not a regression — it is the model finally telling the truth. The
+worked examples use €450.
+
+---
+
+## The three traps
+
+The project is built around three synthetic scenarios where the naive answer is
+wrong. Each has a dedicated fixture and test.
+
+**1. The cheap first leg** (V1, still passing)
 
 ```
-                ┌─→ London ──→ Brussels ──→ DUS      120  (cheapest first leg, worst trip)
-                │
-   Düsseldorf ──┤
-                │
-                └─→ Prague ──→ Vienna ────→ DUS       92  ← best complete itinerary
-                     ↑
-                     the *expensive* first leg
+             ┌→ London ─→ Brussels ─→ DUS      120   cheapest first leg, worst trip
+Düsseldorf ──┤
+             └→ Prague ─→ Vienna ───→ DUS       92   ← best complete itinerary
+                  ↑
+                  the *expensive* first leg
 ```
 
-`tests/test_beam_search.py` implements a greedy cheapest-next-hop reference
-algorithm, shows it picks the 120 route, and asserts the optimizer picks the 92
-route. That test is the project's reason for existing.
+`tests/test_beam_search.py` implements a greedy cheapest-next-hop reference,
+shows it picks the 120 route, and asserts the optimizer picks the 92 one.
+
+**2. The cheap flight into the expensive city** (V2)
+
+```
+DUS → London  35/pp   +  London room 120/night   =  the dearer trip
+DUS → Prague  55/pp   +  Prague room  40/night   =  the cheaper trip
+```
+
+Transport alone says London. The complete trip says Prague. Asserted in
+`tests/test_v2_accommodation.py`.
+
+**3. The cheap flight from the expensive airport** (V2)
+
+```
+Köln → DUS  30  +  DUS → London  35   =  65 one way
+Köln → CGN   5  +  CGN → London  45   =  50 one way
+```
+
+The cheaper flight leaves from the airport that costs more to reach. Asserted
+in `tests/test_v2_ground_transfer.py` — including that the itinerary with the
+cheapest *flights* is not the itinerary with the cheapest *journey*.
 
 ---
 
 ## Quick start
 
 ```bash
-pip install -e ".[dev]"          # or: pip install pydantic fastapi uvicorn pytest httpx
+pip install -e ".[dev]"
 
-pytest                            # run the suite
-python examples/koln_scenario.py  # run the Köln scenario and print the itineraries
-python examples/koln_scenario.py --debug   # ... plus the full search trace
+pytest                                        # 323 tests
+python examples/profiles_demo.py              # scenarios A, B and C
+python examples/profiles_demo.py --budget 250 # what V2 economics do to the V1 budget
+python examples/koln_scenario.py --debug      # one profile, full search trace
 
 uvicorn travel_planner.api.app:app --reload   # http://127.0.0.1:8000/docs
 ```
 
-Using it as a library — no FastAPI required:
+As a library — no FastAPI required:
 
 ```python
 from datetime import date
 from travel_planner import TravelPlanner, TripRequest, TravelPreferences
+from travel_planner.profiles import ProfileName
 
-planner = TravelPlanner()          # defaults to the synthetic providers
-result = planner.plan(TripRequest(
-    origin="Köln",
-    budget=250, travelers=2, duration_days=5,
-    date_from=date(2026, 9, 10), date_to=date(2026, 9, 15), date_flexible=True,
-    transport_preferences=["flight", "train"],
-    preferred_destinations=["Madrid"],
-    avoid_destinations=["Paris"],
-    preferences=TravelPreferences(history=0.8, culture=0.8, multiple_cities=0.9),
-))
+planner = TravelPlanner()          # synthetic transport, hotels and transfers
+result = planner.plan(
+    TripRequest(
+        origin="Köln",
+        budget=450, travelers=2, duration_days=5,
+        date_from=date(2026, 9, 10), date_to=date(2026, 9, 15), date_flexible=True,
+        transport_preferences=["flight", "train"],
+        preferred_destinations=["Madrid"],
+        avoid_destinations=["Paris"],
+        preferences=TravelPreferences(history=0.8, culture=0.8, multiple_cities=0.9),
+    ),
+    profile=ProfileName.ADVENTURE,     # or BEST_VALUE (default), or CHEAPEST
+)
 
 for itinerary in result.recommendations:
     print(itinerary.rank, itinerary.route_label(), itinerary.total_cost)
+    print("  ", itinerary.cost_breakdown)
+    print("  ", [f.value for f in itinerary.explanation_factors])
 ```
 
-You can also inject your own providers and configuration:
+Every provider is injectable:
 
 ```python
 planner = TravelPlanner(
-    transport_provider=my_provider,
+    transport_provider=my_transport,
     destination_provider=my_destinations,
+    accommodation_provider=my_hotels,
+    ground_transfer_provider=my_transfers,
     config=PlannerConfig(beam_width=40, max_cities=3),
 )
 ```
@@ -118,143 +169,173 @@ planner = TravelPlanner(
 
 ```
 travel_planner/
-├── config.py                  PlannerConfig, ScoreWeights — every tunable number
+├── config.py                  PlannerConfig — every tunable number
+├── profiles.py                ProfileName, TravelValueWeights, PROFILES  (V2)
+├── usable_time.py             the usable-day model                       (V2)
 ├── models/
 │   ├── trip.py                TripRequest, TravelPreferences
 │   ├── transport.py           TransportOption, TransportType
+│   ├── accommodation.py       AccommodationOption, AccommodationTier     (V2)
+│   ├── transfer.py            GroundTransferOption                       (V2)
 │   ├── destination.py         Destination
-│   ├── search.py              SearchState (immutable)
-│   ├── itinerary.py           Itinerary, BaselineResult, PlanResult, ScoreBreakdown
+│   ├── search.py              SearchState, CityStay
+│   ├── itinerary.py           Itinerary, CostBreakdown, TravelValueBreakdown,
+│   │                          StaySummary, ExplanationFactor, PlanResult
 │   └── debug.py               RejectionReason, IterationDebug, SearchDebug
 ├── data/
-│   ├── destinations.py        synthetic city catalog + origin-airport distances
-│   └── synthetic_transport.py synthetic European network
+│   ├── destinations.py        city catalog + origin-airport distances
+│   ├── synthetic_transport.py the transport network
+│   ├── synthetic_accommodation.py  nightly rates and tiers               (V2)
+│   └── ground_transfers.py    origin ↔ airport table                     (V2)
 ├── providers/
-│   ├── transport.py           TransportDataProvider protocol, Synthetic + Real
-│   └── destinations.py        DestinationProvider protocol
+│   ├── transport.py           TransportDataProvider  + Synthetic / Real
+│   ├── accommodation.py       AccommodationDataProvider + Synthetic / No / Real
+│   ├── ground_transfer.py     GroundTransferProvider + Synthetic / Free / Real
+│   └── destinations.py        DestinationProvider
 ├── algorithms/
 │   ├── beam_search.py         the state-space search
-│   ├── scoring.py             ScoringEngine, Objectives
+│   ├── travel_value.py        the V2 objective                           (V2)
+│   ├── scoring.py             the V1 six-component engine (still used)
 │   ├── pareto.py              domination and frontier
 │   └── diversity.py           Jaccard-based diversification
-├── constraints/validator.py   ConstraintValidator, ConstraintResult
+├── constraints/validator.py   ConstraintValidator + the estimator protocols
 ├── services/
 │   ├── planner.py             TravelPlanner — the entry point
-│   ├── baseline.py            naive single-destination round trip
+│   ├── baseline.py            the naive single-destination round trip
 │   ├── origin_resolver.py     "Köln" → CGN, DUS, FRA, EIN
-│   └── return_estimator.py    admissible lower bounds for pruning
+│   ├── return_estimator.py    lower bounds on getting home
+│   ├── accommodation_estimator.py  lower bounds on sleeping              (V2)
+│   └── explanation.py         structured explanation factors             (V2)
 ├── llm/interfaces.py          PreferenceParser / ItineraryExplainer seams
 └── api/                       FastAPI adapter (optional)
 ```
 
-The dependency direction is strict: `api → services → algorithms → constraints
-→ providers → models`. The optimizer never imports `llm`, and never imports a
-concrete provider — a test asserts both.
+Dependency direction is strict: `api → services → algorithms → constraints →
+providers → models`. `usable_time.py` and `profiles.py` sit at the root because
+`config` needs them. The optimizer never imports `llm` — a test parses the ASTs
+and fails if it does.
 
 ---
 
 ## How the algorithm works
 
-The problem is treated as **state-space search + multi-objective optimization +
-constraint satisfaction + route diversification** — not as flight search.
+State-space search + multi-objective optimization + constraint satisfaction +
+route diversification. Not flight search.
 
 ```
-TripRequest
+TripRequest (+ profile)
      │
      ▼
-OriginResolver  ──►  CGN, DUS, FRA, EIN        (candidate departure nodes)
+OriginResolver ────► CGN, DUS, FRA, EIN        candidate departure airports
      │
      ▼
-Beam search  ◄──►  ConstraintValidator         (reject infeasible states)
-     │       ◄──►  ScoringEngine               (rank surviving states)
-     │       ◄──►  TransportDataProvider       (what can I board?)
+GroundTransferProvider ──► the ride to each one, priced and timed
+     │
+     ▼
+Beam search  ◄──►  TransportDataProvider        what can I board?
+     │       ◄──►  AccommodationDataProvider    what will the nights cost?
+     │       ◄──►  ConstraintValidator          is this still legal?
+     │       ◄──►  TravelValueScorer            how good is the finished trip?
      ▼
 Completed round trips
      │
      ▼
-Pareto filter        (drop dominated itineraries)
+Pareto filter        drop dominated itineraries
      │
      ▼
-Diversity filter     (drop near-duplicate trips)
+Diversity filter     drop near-duplicate trips
      │
      ▼
-Top N + baseline comparison
+Top N + baseline comparison + explanation factors
 ```
 
-### 1. Origin discovery
+### 1. Origin discovery and ground transfer
 
-The origin is a *region*, not an airport. `OriginResolver` turns `"Köln"` into
-the departure nodes within `max_origin_distance_km` (default 250 km), nearest
-first, capped at `max_origin_airports`:
+The origin is a *region*, not an airport. `OriginResolver` returns departure
+nodes within `max_origin_distance_km` (default 250 km):
 
-| Airport | km from Köln | in range at 250 km |
-| ------- | ------------ | ------------------ |
-| CGN     | 15           | ✅                  |
-| DUS     | 40           | ✅                  |
-| FRA     | 155          | ✅                  |
-| EIN     | 170          | ✅                  |
-| AMS     | 260          | ❌ (raise the radius) |
+| Airport | km from Köln | transfer | in range at 250 km |
+| ------- | ------------ | -------- | ------------------ |
+| CGN     | 15           | €5 / 20 min  | ✅ |
+| DUS     | 40           | €15 / 55 min | ✅ |
+| FRA     | 155          | €30 / 90 min | ✅ |
+| EIN     | 170          | €22 / 130 min | ✅ |
+| AMS     | 260          | €42 / 175 min | ❌ (raise the radius) |
 
-An itinerary may return to a *different* origin airport than it left from —
-`EIN → Vienna → DUS` is a legal answer.
+Transfers are priced **per person** and charged both ways. The initial search
+state is pre-charged for the ride out; the return leg charges the ride home
+from whichever airport the trip lands at — which may be a different one.
+`total_travel_minutes` stays intercity-only for continuity;
+`total_transport_minutes` adds the transfers.
 
 ### 2. Beam search
 
-One iteration adds one leg. From any state there are two actions:
-
-- **Continue** — travel to a destination city not yet visited.
-- **Return** — travel to one of the origin airports, completing the trip.
-
-Stay lengths are *searched*, not assumed: for every state the next departure
-date is generated for each stay length in `min_city_stay_days …
-max_city_stay_days`, so "London for 1 day", "London for 2 days" and "London for
-3 days" are three distinct states that get scored separately.
+One iteration adds one leg. From any state there are two actions: **continue**
+to an unvisited city, or **return** to an origin airport. Stay lengths are
+searched, not assumed — every stay length in
+`min_city_stay_days … max_city_stay_days` yields a different departure date and
+therefore a different state.
 
 ```
-initial states (airport × start date)
+initial states (airport × start date, ground transfer pre-charged)
         ↓
-generate next states (continue / return × stay length × timetable)
+generate next states (continue / return × stay length × timetable × room)
         ↓
-validate constraints          ← rejected states are recorded with a reason
+validate constraints          ← rejections recorded with a typed reason
         ↓
-estimate score                ← optimistic completion, see below
+estimate Travel Value         ← optimistic completion, see below
         ↓
-rank, keep top `beam_width`   ← pruned states are recorded with their estimate
+rank, keep top `beam_width`   ← pruned states recorded with their estimate
         ↓
 repeat, up to max_cities + 1 legs
 ```
 
 **Why it is not greedy.** Partial states are ranked by an *optimistic
-completion*: the state's cost and travel time plus the cheapest possible way
-home from where it currently is. So a state sitting in London with an €85 return
-is judged on the €120 round trip it implies, not on the €35 leg that got it
-there. Combined with a beam that carries `beam_width` alternatives at every
-depth, several different first moves stay alive and compete on their *finished*
-trips.
+completion*: the state's cost and time, **plus the cheapest way home, plus the
+ride from that airport, plus the nights the traveler must still pay for**. A
+state sitting in London with an €85 return and a €78 room is judged on the trip
+it implies, not on the €35 leg that got it there. That last term is what makes
+trap 2 work.
 
-Three further things make the search practical:
+Three things keep it practical:
 
-- **Admissible pruning** (`CachedReturnEstimator`). A state is dropped when its
-  cheapest possible return already exceeds the remaining budget, or its fastest
-  possible return exceeds the remaining time. Because the bounds are minima over
-  the whole window, this never discards a feasible itinerary.
-- **Beam spread** (`beam_slots_per_route`). Without a cap, the beam fills with
-  the same trip departing from four airports on two dates at three times of day.
-  At most two slots go to any one city sequence.
-- **Determinism.** Candidate generation iterates sorted collections; ranking
-  breaks ties on cost and then on the state's leg-id signature. Two runs over
-  the same data produce identical output, asserted by a test.
+- **Admissible pruning.** A state is dropped when its cheapest possible
+  return + cheapest possible remaining nights already exceed the remaining
+  budget, or its fastest possible return exceeds the remaining time. Both
+  bounds are minima over the whole window, so pruning never discards a feasible
+  itinerary.
+- **Beam spread** (`beam_slots_per_route`). At most two beam slots go to any one
+  city sequence, so the beam doesn't fill with the same trip from four airports.
+- **Determinism.** Sorted iteration everywhere; ties break on cost then on the
+  state's leg-id signature. Asserted per profile, three runs deep.
 
-### 3. Constraints
+### 3. Accommodation
 
-All feasibility rules live in `ConstraintValidator`; beam search only asks and
-obeys. Each failure returns a typed reason:
+Prices are **per room per night**; a room sleeps `capacity` people and the
+search books `ceil(travelers / capacity)` of them. Three tiers exist in every
+city (budget ≈ 0.65×, standard, comfort ≈ 1.55×), and Friday/Saturday nights
+carry a deterministic surcharge.
+
+By default the search books the **cheapest sufficient room**
+(`accommodation_options_per_stay = 1`), which keeps the state space the same
+size as V1. Raise it to let the search trade room quality against everything
+else, at a multiplicative cost in states.
+
+A required stay with no bookable room is a `NO_ACCOMMODATION_AVAILABLE`
+rejection, not a silently skipped candidate.
+
+### 4. Constraints
+
+All feasibility rules live in `ConstraintValidator`. Each failure returns a
+typed reason:
 
 | Rule | Reason |
 | --- | --- |
 | Party total over budget | `BUDGET_EXCEEDED` |
-| Elapsed time over the allowance | `DURATION_EXCEEDED` |
+| Trip span over the allowance | `DURATION_EXCEEDED` |
 | Trip far shorter than requested | `DURATION_UNDERUSED` |
+| Cheapest remaining nights unaffordable | `UNAFFORDABLE_ACCOMMODATION` |
+| No room available for a required stay | `NO_ACCOMMODATION_AVAILABLE` |
 | Visits an avoided city | `AVOIDED_DESTINATION` |
 | Finished without a must-visit city | `MISSING_MANDATORY_DESTINATION` |
 | Same city twice | `DUPLICATE_DESTINATION` |
@@ -268,95 +349,160 @@ obeys. Each failure returns a typed reason:
 | Legs do not chain | `INVALID_CONNECTION` |
 
 **Preferred vs. mandatory.** `preferred_destinations` raises the score;
-`must_visit` is a hard requirement, and it steers the *search* as well as the
-final check — the beam ranks progress towards mandatory destinations ahead of
-score, so routes that can actually satisfy them stay alive.
+`must_visit` is hard, and steers the *search* as well as the final check — the
+beam ranks progress towards mandatory destinations ahead of score.
+**Avoided destinations are rejected, never merely penalized**, matched
+accent- and case-insensitively (`"wien"` excludes Vienna).
 
-**Avoided destinations are rejected, never merely penalized.** Matching is
-accent- and case-insensitive, so `"wien"` excludes Vienna.
+**Dates.** The window `date_from … date_to` and the trip length `duration_days`
+are separate. A 5-day trip in a 10-day window is 5 days, not 10. With
+`date_flexible = true` every start date that fits is searched; with `false`
+only `date_from` is. Duration is measured as the trip's **span** — first
+departure to last arrival — so an afternoon flight doesn't quietly spend a
+morning of the allowance.
 
-**Prices are always party totals.** `TransportOption.price_per_person ×
-travelers` is the only way a cost enters a state; the same trip costs twice as
-much for two people, and the budget check sees the total.
+### 5. Travel Value
 
-### 4. Scoring
+Five components, each in `[0, 1]`, weighted by the active profile.
 
-Six components, each in `[0, 1]`, combined with configurable weights that are
-normalized so the total is also in `[0, 1]`.
-
-| Component | Default weight | What it measures |
-| --- | --- | --- |
-| Budget | 0.40 | `1 - cost / budget`, clamped |
-| Preference | 0.20 | destination fit blended with city count |
-| Destination | 0.15 | stay-length fit + preferred/mandatory coverage |
-| Convenience | 0.10 | leg count, mode comfort, hop length, pace |
-| Time | 0.10 | time on the ground vs. in transit, days actually used |
-| Diversity | 0.05 | countries seen and modes used *within* one trip |
-
-**Preference** is the weighted overlap between the user's attribute weights
-(`history`, `nature`, `nightlife`, `culture`, `food`) and each city's profile,
-averaged over the visited cities, then blended with a city-count term:
+**CostScore** blends efficiency with sensible use of the budget:
 
 ```
-attribute_match = Σ wₐ · cityₐ / Σ wₐ                    (per city, then averaged)
-multi_component = 1 − 1/n                                (n = number of cities)
-preference      = (attribute_match + m · multi_component) / (1 + m)
-                                                          m = preferences.multiple_cities
+utilization  = total_cost / budget
+efficiency   = clamp(1 - utilization)
+sensible_use = clamp(utilization / budget_utilization_target)     # target 0.6
+CostScore    = (1 - w) · efficiency + w · sensible_use            # w = profile's
+                                                                  #     budget_utilization_weight
+```
+
+With `w = 0` (CHEAPEST) this is pure efficiency and strictly monotone: cheaper
+always wins. With `w = 0.35` (BEST_VALUE) spending up to ~60% of the budget
+costs almost nothing, so a better trip is free to be dearer — €100 → €150 barely
+moves the score, €150 → €350 clearly does.
+
+**ExperienceScore** = mean of destination quality (intrinsic city appeal),
+stay quality (usable days against each city's recommended range) and pace
+(days per city against `comfortable_days_per_city`).
+
+**PreferenceScore** = `0.65 ·` taste match `+ 0.35 ·` wish-list coverage, where
+taste is the V1 blend of attribute match with the `multiple_cities` appetite:
+
+```
+attribute_match = Σ wₐ · cityₐ / Σ wₐ          per city, then averaged
+multi_component = 1 − 1/n                     n = number of cities
+taste           = (attribute_match + m · multi_component) / (1 + m)
 ```
 
 `multiple_cities = 0` gives **zero** benefit from extra cities; `= 1` weights
-city count equally with city quality. The `1 − 1/n` curve means one → two cities
-is the meaningful jump and three → four barely moves.
+city count equally with city quality. The `1 − 1/n` curve makes one → two the
+meaningful jump and three → four barely register.
 
-**Travel time is penalized twice**, deliberately. `TimeScore` compares transit
-time against the trip length (zero above `max_travel_time_fraction`, default
-25%) and rewards using the days that were asked for. `ConvenienceScore` adds a
-*pace* term: `London → Rome → Copenhagen → Madrid` in four days means packing up
-almost every day, and scores badly no matter how cheap the tickets are — a test
-asserts it loses to a two-city trip at the same price.
+**TimeScore** = `0.6 ·` usable ratio `+ 0.4 ·` transit quality. See below.
 
-### 5. Pareto filtering
+**DiversityScore** = mean of country variety, transport-mode variety and the
+`1 − 1/n` city-count curve — which is the lever ADVENTURE pulls on.
+
+### 6. Usable destination time
+
+A day of a trip is not a day of sightseeing. Each calendar day contributes the
+overlap between the traveler's presence and a configurable usable-day window
+(default 08:00–21:00):
+
+```
+arrive 23:30  → the arrival day contributes 0
+depart 06:00  → the departure day contributes 0
+a day in between → a full 780 minutes
+```
+
+That one function delivers four requirements at once: late arrivals and early
+departures cost usable time, a two-day trip cannot masquerade as a five-day
+one, and a 15-hour stop in a city that wants two days scores accordingly.
+`usable_ratio` is usable minutes over `duration_days × usable_day_minutes`.
+
+### 7. Pareto filtering
 
 An itinerary is **dominated** when another is no worse on all four objectives —
 cost (↓), travel time (↓), city count (↑), preference score (↑) — and strictly
-better on at least one. Dominated itineraries are inferior under *any* weighting
-and are dropped. Genuine trade-offs (cheap-but-slow vs. fast-but-pricey) both
-survive, which is what keeps different travel styles in the results.
+better on at least one. Dominated itineraries are inferior under *any*
+weighting. In a typical run this cuts ~500 completed itineraries to ~25.
 
-In a typical Köln run this cuts ~700 completed itineraries to ~25.
+### 8. Diversity filtering
 
-### 6. Diversity filtering
+A greedy deterministic pass over the ranked frontier: an itinerary is accepted
+only if the Jaccard similarity of its city set against every accepted one stays
+at or below the threshold (0.5, or 0.6 under ADVENTURE). If that is too strict
+to fill `max_results`, the remaining slots are back-filled in rank order rather
+than returning a short list.
 
-A greedy deterministic pass over the ranked frontier. An itinerary is accepted
-only if the Jaccard similarity of its city set against every already-accepted
-itinerary stays at or below `diversity_similarity_threshold` (default 0.5). This
-is what prevents:
+### 9. Baseline comparison
+
+The cheapest simple round trip to the user's first preferred destination —
+what a conventional search would return — **including its hotel and airport
+transfers**, and long enough to satisfy `min_duration_utilization`. Without
+that last rule the baseline degenerates into a one-night flying visit that
+undercuts every real trip and makes `money_saved` meaningless.
+
+No preferred destination means **no baseline**. The planner does not invent one.
+
+---
+
+## Recommendation profiles
+
+There is no single right answer to "what is the best trip?".
+
+| | cost | experience | preferences | time | diversity | budget utilization |
+| --- | --- | --- | --- | --- | --- | --- |
+| **CHEAPEST** | 0.70 | 0.10 | 0.10 | 0.05 | 0.05 | 0.00 |
+| **BEST_VALUE** (default) | 0.25 | 0.30 | 0.20 | 0.15 | 0.10 | 0.35 |
+| **ADVENTURE** | 0.20 | 0.25 | 0.15 | 0.10 | 0.30 | 0.40 |
+
+Profiles are data (`travel_planner/profiles.py`), not scattered constants, and
+may also override `min_duration_utilization` and the diversity threshold.
+Callers can build their own `RecommendationProfile`.
+
+---
+
+## Worked example
+
+Köln, €450, 2 travelers, 5 days, prefers Madrid, avoids Paris,
+`multiple_cities = 0.9`. Baseline: **Madrid €338.47** (3 nights — €179
+transport + €139 rooms + €20 transfer).
+
+**CHEAPEST** — ordered by price, single cities:
 
 ```
-1. DUS → London → Brussels → DUS      ✗ five spellings of one trip
-2. CGN → London → Brussels → CGN
-3. DUS → London → Brussels → DUS
+#1  0.5106   €241.78   T 103.8  A 118.0  G 20.0   3.1d  58%   CGN → Brussels → CGN
+#2  0.4678   €277.50   T 139.5  A 118.0  G 20.0   3.0d  59%   CGN → Berlin → CGN
+#3  0.4145   €309.36   T 149.6  A  85.8  G 74.0   3.1d  58%   EIN → Budapest → DUS
 ```
 
-If the threshold is too strict to fill `max_results`, the remaining slots are
-back-filled in rank order rather than returning a short list.
+**BEST_VALUE** — a dearer, longer, two-city trip climbs to #2:
 
-### 7. Baseline comparison
+```
+#1  0.6747   €277.50   T 139.5  A 118.0  G 20.0   3.0d  59%   CGN → Berlin → CGN
+#2  0.6694   €366.64   T 201.8  A 124.8  G 40.0   4.1d  76%   DUS → Budapest → Vienna → CGN
+#3  0.6668   €360.25   T 204.7  A 135.5  G 20.0   4.1d  75%   CGN → Prague → Vienna → CGN
+```
 
-Before optimizing, the planner computes the cheapest simple round trip to the
-user's *first* preferred destination — literally what a conventional search
-would return. Every recommendation then carries a `BaselineComparison` with
-`money_saved`, `additional_cities` and `additional_travel_minutes`.
+**ADVENTURE** — the two-city trips take the top:
 
-If `preferred_destinations` is empty there is **no baseline**; the planner does
-not invent a destination, and optimization proceeds normally.
+```
+#1  0.6648   €385.16   T 220.4  A 124.8  G 40.0   3.8d  65%   DUS → Budapest → Vienna → CGN
+#2  0.6624   €379.95   T 224.4  A 135.5  G 20.0   3.8d  64%   CGN → Prague → Vienna → CGN
+#3  0.6390   €304.16   T 166.2  A 118.0  G 20.0   3.0d  58%   CGN → Berlin → CGN
+```
+
+Note `#2` under BEST_VALUE: €89 dearer than `#1` and it still scores higher,
+because it buys a second city, a fourth day and 76% usable time instead of 59%.
+Under CHEAPEST the same trip is nowhere. **Score and cost are different
+questions, and the API exposes both.**
 
 ---
 
 ## Observability
 
-Everything the optimizer discards is recorded as a typed object, not a log
-string. Run counters are always collected; `debug=True` returns the whole trace.
+Everything discarded is recorded as a typed object, never a log string. Run
+counters are always collected; `debug=True` returns the whole trace.
 
 ```python
 result = planner.plan(request, debug=True)
@@ -367,33 +513,40 @@ print(result.debug.render())
 Iteration 2
 ------------------
 States in:    20
-Generated:    1872
-Rejected:     938
-Remaining:    538
+Generated:    2000
+Rejected:     1167
+Remaining:    527
 Beam width:   20
-Beam pruning: 518
+Beam pruning: 507
 Kept:         20
-Completed:    396
+Completed:    306
 Rejections:
-  DURATION_UNDERUSED: 396
-  UNREACHABLE_RETURN_TIME: 188
-  TRANSPORT_TYPE_NOT_ALLOWED: 168
-  UNREACHABLE_RETURN_BUDGET: 114
-  AVOIDED_DESTINATION: 48
-  DURATION_EXCEEDED: 24
+  DURATION_UNDERUSED: 480
+  TRANSPORT_TYPE_NOT_ALLOWED: 208
+  UNREACHABLE_RETURN_BUDGET: 189
+  AVOIDED_DESTINATION: 112
+  BUDGET_EXCEEDED: 103
+  UNREACHABLE_RETURN_TIME: 64
+  UNAFFORDABLE_ACCOMMODATION: 11
 ```
-
-Structured access:
 
 | What you want to know | Where |
 | --- | --- |
 | Why a state was rejected | `debug.iterations[i].rejected_examples[j].reason` / `.detail` |
 | Why a state lost the beam | `debug.iterations[i].pruned_examples[j].estimated_score` |
-| Why an itinerary scored what it did | `itinerary.score_breakdown` (all six components + weights) |
+| Why an itinerary scored what it did | `itinerary.value_breakdown` (5 components + weights) |
+| Where the money went | `itinerary.cost_breakdown` (transport / accommodation / ground_transfer) |
+| Where the time went | `total_travel_minutes`, `ground_transfer_minutes`, `usable_destination_minutes` |
+| What each stay cost and bought | `itinerary.stays[j]` |
+| Why it is worth showing | `itinerary.explanation_factors` |
 | Why an itinerary was Pareto-filtered | `debug.filtered` where `stage == PARETO`, with `dominated_by` |
 | Why an itinerary was diversity-filtered | `debug.filtered` where `stage == DIVERSITY`, with `similarity` |
 
-Over HTTP: `POST /plan-trip?debug=true`.
+`explanation_factors` are typed flags (`strong_preference_match`,
+`good_budget_usage`, `two_cities`, `reasonable_travel_time`,
+`late_arrival`, …) derived deterministically from the itinerary. The optimizer
+states facts; prose is the LLM layer's job, and because every flag comes from
+the itinerary it cannot drift from what was computed.
 
 ---
 
@@ -401,42 +554,33 @@ Over HTTP: `POST /plan-trip?debug=true`.
 
 ```python
 PlannerConfig(
-    beam_width=20,
-    max_results=5,
-    max_cities=4,
-    beam_slots_per_route=2,
+    beam_width=20, max_results=5, max_cities=4, beam_slots_per_route=2,
 
-    min_city_stay_days=1,
-    max_city_stay_days=4,
+    min_city_stay_days=1, max_city_stay_days=4,
     min_duration_utilization=0.6,
 
-    max_origin_distance_km=250.0,
-    max_origin_airports=4,
+    max_origin_distance_km=250.0, max_origin_airports=4,
 
-    score_weights=ScoreWeights(
-        budget=0.40, preference=0.20, destination=0.15,
-        convenience=0.10, time=0.10, diversity=0.05,
-    ),
+    # V2
+    enable_accommodation=True,
+    accommodation_options_per_stay=1,
+    enable_ground_transfer=True,
+    usable_day_start=time(8, 0), usable_day_end=time(21, 0),
+    profile=ProfileName.BEST_VALUE,
+    budget_utilization_target=0.6,
+    comfortable_days_per_city=2.0,
+
+    score_weights=ScoreWeights(...),        # the V1 diagnostic engine
     max_travel_time_fraction=0.25,
-    preferred_destination_bonus=0.5,
-    must_visit_bonus=0.3,
+    preferred_destination_bonus=0.5, must_visit_bonus=0.3,
 
-    enable_pareto=True,
-    enable_diversity=True,
+    enable_pareto=True, enable_diversity=True,
     diversity_similarity_threshold=0.5,
 )
 ```
 
-Two settings deserve a note:
-
-- **`min_duration_utilization`** (0.6). `duration_days` is an upper bound in the
-  spec, but a user asking for five days does not want a 40-hour round trip. A
-  completed itinerary must use at least this fraction of the allowance. Set it
-  to `0.0` to accept anything that fits.
-- **`score_weights`**. Budget at 0.40 is the single strongest signal, so a very
-  cheap one-city trip often outranks a pricier two-city one — by design (see
-  [Known limitations](#known-limitations)). Reweighting changes the answer, and
-  a test asserts it does.
+`enable_accommodation=False` and `enable_ground_transfer=False` restore the V1
+economics exactly, and a test asserts it.
 
 ---
 
@@ -446,182 +590,159 @@ The API is only an adapter. A test plans the same request directly and over
 HTTP and asserts the two agree.
 
 ```
-POST /plan-trip[?debug=true]   plan a trip
+POST /plan-trip[?debug=true][&profile=CHEAPEST|BEST_VALUE|ADVENTURE]
+GET  /profiles                 the profiles and their weights
 GET  /destinations             the synthetic catalog
 GET  /config                   the active PlannerConfig
 GET  /health
 ```
 
-Request:
-
-```json
-{
-  "origin": "Köln",
-  "budget": 250,
-  "travelers": 2,
-  "duration_days": 5,
-  "date_from": "2026-09-10",
-  "date_to": "2026-09-15",
-  "date_flexible": true,
-  "transport_preferences": ["flight", "train"],
-  "must_visit": [],
-  "preferred_destinations": ["Madrid"],
-  "avoid_destinations": ["Paris"],
-  "preferences": {
-    "history": 0.8, "nature": 0.7, "nightlife": 0.2,
-    "culture": 0.8, "food": 0.6, "multiple_cities": 0.9
-  }
-}
-```
+The profile may also be set in the request body (`"profile": "ADVENTURE"`); the
+query parameter wins. Omitted, it is `BEST_VALUE`.
 
 Response (abridged — synthetic data):
 
 ```json
 {
+  "profile": "BEST_VALUE",
   "baseline": {
     "destination": "Madrid",
-    "total_cost": 175.10,
-    "currency": "EUR",
-    "duration_days": 2.12,
-    "legs": ["CGN → Madrid", "Madrid → CGN"]
+    "total_cost": 338.47,
+    "nights": 3,
+    "cost_breakdown": {"transport": 179.06, "accommodation": 139.41, "ground_transfer": 20.0}
   },
   "recommendations": [
     {
-      "rank": 1,
-      "score": 0.6116,
-      "total_cost": 96.68,
+      "rank": 2,
+      "score": 0.6694,
+      "total_cost": 366.64,
       "currency": "EUR",
-      "duration_days": 3.1,
-      "origin_airport": "DUS",
-      "return_airport": "DUS",
-      "cities": ["Amsterdam"],
-      "stay_days": [3],
-      "total_travel_minutes": 290,
-      "legs": [ "..." ],
-      "score_breakdown": {
-        "budget": 0.613, "preference": 0.364, "destination": 0.667,
-        "convenience": 0.839, "time": 0.719, "diversity": 0.80,
-        "total": 0.6116
+      "cost_breakdown": {"transport": 201.84, "accommodation": 124.8, "ground_transfer": 40.0},
+      "cities": ["Budapest", "Vienna"],
+      "stay_days": [3, 1],
+      "stays": [
+        {"city": "Budapest", "nights": 3, "accommodation_cost": 85.8,
+         "accommodation_tier": "budget", "usable_minutes": 2270}
+      ],
+      "duration_days": 4.07,
+      "total_travel_minutes": 360,
+      "ground_transfer_minutes": 75,
+      "usable_destination_minutes": 2970,
+      "value_breakdown": {
+        "profile": "BEST_VALUE",
+        "cost": 0.4704, "experience": 0.8245, "preferences": 0.6073,
+        "time": 0.7382, "diversity": 0.7222,
+        "total": 0.6694, "usable_ratio": 0.7615, "budget_utilization": 0.8148
       },
-      "baseline_comparison": {
-        "baseline_destination": "Madrid",
-        "baseline_cost": 175.10,
-        "money_saved": 78.42,
-        "additional_cities": 0,
-        "additional_travel_minutes": -60
-      }
+      "baseline_comparison": {"baseline_cost": 338.47, "money_saved": -28.17},
+      "explanation_factors": [
+        "fits_budget", "good_budget_usage", "low_accommodation_cost",
+        "high_destination_quality", "two_cities", "reasonable_travel_time",
+        "good_use_of_window"
+      ]
     }
   ],
-  "metadata": {
-    "origin_airports": ["CGN", "DUS", "EIN", "FRA"],
-    "start_dates": ["2026-09-10", "2026-09-11"],
-    "beam_width": 20,
-    "states_generated": 3981,
-    "states_rejected": 2392,
-    "completed_itineraries": 717,
-    "pareto_kept": 25,
-    "elapsed_seconds": 0.216
-  }
+  "metadata": {"profile": "BEST_VALUE", "origin_airports": ["CGN", "DUS", "EIN", "FRA"], "...": "..."}
 }
 ```
 
-Invalid input (unknown origin, contradictory destinations, negative budget)
-returns `422`.
+Invalid input (unknown origin, unknown profile, contradictory destinations,
+negative budget) returns `422`.
 
 ---
 
 ## Synthetic data
 
-`data/synthetic_transport.py` defines ~200 directed connections over 5 departure
-airports (CGN, DUS, FRA, EIN, AMS) and 16 destination cities, covering flights,
-trains and buses. Each connection has 2–3 daily departures across
-2026-09-01 → 2026-09-30.
+- **Transport** — 198 directed connections over 5 airports and 16 cities;
+  flights, trains and buses; 2–3 departures a day across 2026-09-01 → 09-30.
+  Prices vary by date and slot through fixed multiplier tables indexed by
+  `date.toordinal() % 7` — deterministic, no randomness. Outbound and return
+  prices are declared **separately per link**, which is what makes trap 1
+  possible.
+- **Accommodation** — a standard nightly rate per city (Budapest €40 →
+  Zurich €95), three tiers, a weekend surcharge. `date_variation=False` and an
+  injected rate table let fixtures pin the arithmetic exactly.
+- **Ground transfers** — an explicit table for the common origins, with a
+  distance-based fallback so no airport is ever silently free to reach.
 
-Prices vary by date and departure slot through fixed multiplier tables indexed
-by `date.toordinal() % 7` — no randomness anywhere, so runs are reproducible.
-Pass `price_variation=False` for a flat timetable (used by the trap fixture).
-
-Outbound and return prices are declared **separately per link**. That asymmetry
-is what makes the cheap-first-leg trap possible, and `tests/test_providers.py`
-asserts the property directly:
-
-```python
-DUS → London  = 35/pp        London → DUS = 85/pp     round trip 120
-DUS → Prague  = 55/pp        Prague → Vienna = 12/pp
-                             Vienna → DUS = 25/pp     round trip  92
-```
-
-Adding a city means one `Destination` entry plus a few `_link(...)` rows.
+Adding a city means one `Destination` entry, a nightly rate and a few `_link(…)`
+rows.
 
 ---
 
 ## Plugging in real APIs
 
-The optimizer talks to one protocol:
+Three protocols, no algorithm changes:
 
 ```python
 class TransportDataProvider(Protocol):
-    def search(self, origin: str, destination: str,
-               departure_date: date) -> list[TransportOption]: ...
+    def search(self, origin, destination, departure_date) -> list[TransportOption]: ...
+
+class AccommodationDataProvider(Protocol):
+    def search(self, city, check_in, check_out, travelers) -> list[AccommodationOption]: ...
+    def min_price_per_night(self, city, travelers) -> float | None: ...
+
+class GroundTransferProvider(Protocol):
+    def search(self, origin, airport) -> list[GroundTransferOption]: ...
 ```
 
-To go live: implement it against Amadeus / Kiwi / Deutsche Bahn / FlixBus,
-normalize each offer into a `TransportOption`, and pass the instance to
-`TravelPlanner(transport_provider=...)`. Nothing in `algorithms/`,
-`constraints/` or `services/` changes. `RealTransportDataProvider` marks the
-seam and deliberately raises `NotImplementedError` — the MVP must not present
-invented numbers as real availability.
+Implement against Amadeus / Kiwi / DB for transport, Booking / Expedia for
+rooms, a routing API for transfers, normalize into the domain models, and pass
+the instances to `TravelPlanner(...)`. `Real*Provider` classes mark each seam
+and deliberately raise `NotImplementedError` — the MVP must not present invented
+numbers as real availability.
 
-Practical notes for that step: cache aggressively (the search issues thousands
-of `search()` calls, which the synthetic provider memoizes), keep the method
-non-raising on "no route", and keep it deterministic within a run or the
-determinism guarantee weakens to "stable for a fixed snapshot".
-
-`OriginResolver` and `DestinationProvider` are the same story — swap the static
-distance table for geocoding, swap the catalog for a real POI database.
+Notes for that step: cache aggressively (the search issues thousands of calls,
+which the synthetic providers memoize); never raise on "nothing found", return
+an empty list; keep results deterministic within a run, or the determinism
+guarantee weakens to "stable for a fixed snapshot". `min_price_per_night` must
+stay an *admissible* lower bound or pruning can discard feasible trips.
 
 ---
 
 ## Where an LLM fits
 
 ```
-free text ──► PreferenceParser ──► TripRequest ──► [ deterministic optimizer ] ──► Itinerary ──► ItineraryExplainer ──► prose
-              (LLM may live here)                   (never an LLM)                                (LLM may live here)
+free text ─► PreferenceParser ─► TripRequest ─► [ deterministic optimizer ] ─► Itinerary ─► ItineraryExplainer ─► prose
+             (LLM may live here)                 (never an LLM)                             (LLM may live here)
 ```
 
 `llm/interfaces.py` defines both protocols and ships dependency-free local
-implementations (`KeywordPreferenceParser`, `TemplateItineraryExplainer`) so the
-pipeline runs end to end with no external API. The explainer only restates
-numbers taken from the itinerary, which is the failure mode a generative
-explainer has to be guarded against.
-
-Prices, route search, availability, constraint checks and scores are never an
-LLM's job. A test parses the optimizer packages' ASTs and fails if any of them
-import `travel_planner.llm`.
+implementations so the pipeline runs end to end with no external API. Prices,
+availability, travel time, route feasibility and scores are never an LLM's job.
+`explanation_factors` plus the cost and time breakdowns are the structured
+input a generative explainer would consume — it restates, it does not compute.
 
 ---
 
 ## Running the tests
 
 ```bash
-pytest                       # everything
-pytest tests/test_beam_search.py -v      # the non-greedy proof
-pytest -k "not api"          # skip the FastAPI tests
+pytest                                    # 323 tests
+pytest tests/test_beam_search.py -v       # the non-greedy proof
+pytest tests/test_adversarial.py -v       # the 20 spec scenarios
+pytest -k "not api"                       # skip the FastAPI tests
 ```
 
 | File | Covers |
 | --- | --- |
 | `test_models.py` | model validation, per-person vs. total price, state transitions |
 | `test_constraints.py` | every rejection reason, pruning bounds |
-| `test_scoring.py` | each component formula, weight reconfiguration |
-| `test_beam_search.py` | **the non-greedy proof**, beam width, determinism, stay lengths |
+| `test_scoring.py` | the V1 engine, each component formula, reweighting |
+| `test_beam_search.py` | **trap 1**, beam width, determinism, stay lengths |
 | `test_pareto.py` | domination algebra and the frontier |
 | `test_diversity.py` | Jaccard, deduplication, back-fill |
 | `test_baseline.py` | baseline round trip and comparisons |
-| `test_providers.py` | dataset coverage, the trap property, origin resolution |
+| `test_providers.py` | dataset coverage, trap 1's data property, origin resolution |
 | `test_api.py` | HTTP shape, error codes, adapter equivalence |
 | `test_llm_interfaces.py` | the seams, and that the optimizer ignores them |
 | `test_end_to_end.py` | the full Köln scenario, requirement by requirement |
+| `test_v2_accommodation.py` | rooms, tiers, capacity, pruning, **trap 2** |
+| `test_v2_ground_transfer.py` | transfers, door-to-door cost, **trap 3** |
+| `test_v2_usable_time.py` | the usable-day model and its effect on scoring |
+| `test_v2_profiles.py` | Travel Value, the three profiles, §39/§40 scenarios |
+| `test_v2_explainability.py` | every exposed figure, factors, API surface |
+| `test_adversarial.py` | the 20 numbered scenarios from the spec |
 
 ---
 
@@ -629,40 +750,46 @@ pytest -k "not api"          # skip the FastAPI tests
 
 **Data**
 
-- Everything is synthetic. No external call is made, and no output should be
-  read as a real offer.
-- Origin airports and destination cities are separate graph nodes, so `AMS` (the
-  airport) and `Amsterdam` (the city) have independent connections. It keeps
-  "flying out of Schiphol" from counting as "visiting Amsterdam", at the cost of
-  a little duplication in the dataset.
-- No hotels, no accommodation cost, no visas, no weather, no seat availability.
-  A stay is free, which biases the optimizer towards longer stays.
+- Everything is synthetic. No external call is made. **No output should be read
+  as a real price, a real hotel, or real availability.**
+- Rooms never sell out and flights never fill; there is no inventory model.
+- Ground transfers are a static table plus a distance fallback — no traffic, no
+  timetables, no public-transport API.
+- Origin airports and destination cities are separate graph nodes, so `AMS` and
+  `Amsterdam` have independent connections. It keeps "flying out of Schiphol"
+  from counting as "visiting Amsterdam", at the cost of some duplication.
 
 **Model**
 
-- `BudgetScore = 1 − cost/budget` rewards *not spending*, as the spec requires.
-  Combined with the 0.40 weight, a €97 one-city trip often outranks a €151
-  two-city one even at `multiple_cities = 0.9`. That is the specified trade-off,
-  not a bug — but if you want the planner to spend the budget it is given, lower
-  `score_weights.budget` or raise `preference`. Pareto and diversity filtering
-  keep multi-city options in the returned set either way.
-- Stay length is modelled in whole calendar days; a stay of *n* days means
-  departing *n* calendar days after arriving. Sub-day connections are not
-  modelled.
-- Trip duration is measured from midnight of the start date, which is slightly
-  conservative for a late first departure.
+- The search books the **cheapest sufficient room** by default. Room quality
+  therefore does not trade against anything unless you raise
+  `accommodation_options_per_stay`, and `AccommodationOption.rating` is carried
+  but unused by the scorer.
+- Rooms are assumed uniform: `ceil(travelers / capacity)` identical rooms, no
+  family rooms, no single supplements, no breakfast.
+- Ground transfers are symmetric and time-independent — the same price and
+  duration at 06:00 and at midnight.
+- Stay length is whole calendar days; a stay of *n* days means departing *n*
+  days after arriving. Sub-day connections are not modelled.
+- The usable-day window is one global 08:00–21:00 setting: no seasonality, no
+  opening hours, no jet lag.
 - `min_duration_utilization` is an addition to the spec, not part of it. It is
   configurable and can be switched off.
+- Profile weights are tuned against the synthetic dataset. They are a starting
+  point, not a claim about real travelers.
 
 **Search**
 
-- Beam search is a heuristic. A wide beam explores more but nothing guarantees
+- Beam search is a heuristic. A wider beam explores more but nothing guarantees
   the global optimum; `beam_width` is the knob.
-- `max_cities = 4` combined with a 5-day window makes four-city itineraries
-  mostly infeasible — expect one- and two-city results for short trips.
-- Only one preferred destination (the first) drives the baseline.
-- The date window is treated as a hard boundary for every leg, including
-  arrivals, so a trip cannot land the morning after `date_to`.
+- `max_cities = 4` with a 5-day window makes four-city itineraries mostly
+  infeasible — expect one- and two-city results for short trips.
+- Only the first preferred destination drives the baseline.
+- The date window is a hard boundary for every leg, arrivals included, so a trip
+  cannot land the morning after `date_to`.
+- Adding accommodation roughly halved the number of feasible itineraries at a
+  given budget. That is correct, but it means budgets that worked in V1 may now
+  return few results or none.
 
-**Not built** (deliberately, per the MVP scope): hotels, restaurants, visas,
-weather, maps, real-time APIs, LLM calls, auth, a database, a frontend.
+**Not built** (deliberately): real APIs, restaurants, visas, weather, maps,
+LLM calls, auth, a database, a frontend.

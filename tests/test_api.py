@@ -14,7 +14,9 @@ from travel_planner.services.planner import TravelPlanner  # noqa: E402
 #: The exact request body from the spec.
 PAYLOAD = {
     "origin": "Köln",
-    "budget": 250,
+    # V2 prices accommodation and ground transfers, so the V1 figure of 250
+    # buys nothing for two people over five days.
+    "budget": 450,
     "travelers": 2,
     "duration_days": 5,
     "date_from": "2026-09-10",
@@ -54,15 +56,16 @@ def test_plan_trip_returns_the_documented_shape(client):
     response = client.post("/plan-trip", json=PAYLOAD)
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"baseline", "recommendations", "metadata"}
+    assert set(body) == {"profile", "baseline", "recommendations", "metadata"}
+    assert body["profile"] == "BEST_VALUE"
 
     assert body["baseline"]["destination"] == "Madrid"
-    assert body["baseline"]["total_cost"] <= 250
+    assert body["baseline"]["total_cost"] <= 450
 
     assert body["recommendations"]
     for index, itinerary in enumerate(body["recommendations"], start=1):
         assert itinerary["rank"] == index
-        assert itinerary["total_cost"] <= 250
+        assert itinerary["total_cost"] <= 450
         assert itinerary["currency"] == "EUR"
         assert itinerary["legs"]
         assert itinerary["cities"]
@@ -90,7 +93,7 @@ def test_debug_flag_returns_the_search_trace(client):
 
 
 def test_avoided_destination_never_appears(client):
-    body = client.post("/plan-trip", json={**PAYLOAD, "budget": 400}).json()
+    body = client.post("/plan-trip", json={**PAYLOAD, "budget": 600}).json()
     for itinerary in body["recommendations"]:
         assert "Paris" not in itinerary["cities"]
 

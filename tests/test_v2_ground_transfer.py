@@ -14,7 +14,12 @@ from travel_planner.providers.ground_transfer import (
     SyntheticGroundTransferProvider,
 )
 
-from .conftest import leg, make_state, transfer
+from .conftest import completed_states, leg, make_state, transfer
+
+
+def _completed_states(trap):
+    """Every complete itinerary the search found, before any filtering."""
+    return completed_states(trap.planner, trap.request)
 
 
 # ---------------------------------------------------------------------------
@@ -152,34 +157,33 @@ def test_the_optimizer_picks_the_airport_that_wins_door_to_door(transfer_trap):
     assert best.cost_breakdown.ground_transfer == 10.0  # 5 each way
     assert best.total_cost == 100.0
 
-    # DUS alternatives were explored and are genuinely worse door to door.
-    dus = [i for i in result.recommendations if i.origin_airport == "DUS"]
-    assert dus, "the DUS alternative must still be discovered"
-    for itinerary in dus:
-        assert itinerary.total_cost > best.total_cost
-        assert itinerary.score < best.score
+    # The DUS alternatives were explored - and then removed, because once the
+    # ride to the airport is counted they are dearer *and* slower, which is
+    # exactly what Pareto domination is for.
+    completed = _completed_states(transfer_trap)
+    dus_states = [s for s in completed if s.origin_airport == "DUS"]
+    assert dus_states, "the DUS alternative must still be discovered by the search"
+    for state in dus_states:
+        assert state.total_cost > best.total_cost
 
     # The heart of it: the itinerary with the cheapest *flights* is not the
     # itinerary with the cheapest *journey*.
-    cheapest_transport = min(
-        result.recommendations, key=lambda i: i.cost_breakdown.transport
-    )
-    assert cheapest_transport.cost_breakdown.transport < best.cost_breakdown.transport
+    cheapest_transport = min(completed, key=lambda s: s.transport_cost)
+    assert cheapest_transport.transport_cost < best.cost_breakdown.transport
     assert cheapest_transport.total_cost > best.total_cost
-    assert cheapest_transport is not best
 
 
 def test_a_one_way_mix_of_airports_is_allowed(transfer_trap):
-    """Out of one airport, home into another, if that is cheaper door to door."""
-    result = transfer_trap.planner.plan(transfer_trap.request)
+    """Out of one airport, home into another, is a move the search considers."""
     mixed = [
-        i for i in result.recommendations if i.origin_airport != i.return_airport
+        s
+        for s in _completed_states(transfer_trap)
+        if s.origin_airport != s.current_location
     ]
     assert mixed, "the search should consider asymmetric airport pairs"
-    for itinerary in mixed:
+    for state in mixed:
         # 35 out of DUS + 45 home into CGN, or the mirror image.
-        assert itinerary.cost_breakdown.transport == 80.0
-        assert itinerary.total_cost > result.recommendations[0].total_cost
+        assert state.transport_cost == 80.0
 
 
 def test_without_transfers_the_naive_airport_wins(transfer_trap):

@@ -259,13 +259,15 @@ class ConstraintValidator:
         if not self.return_estimator:
             return _OK
 
-        min_price = self.return_estimator.min_return_price_per_person(state.current_location)
-        if min_price is None:
-            return ConstraintResult.fail(
-                RejectionReason.UNREACHABLE_RETURN_BUDGET,
-                f"no return connection from {state.current_location}",
-            )
-        min_return_cost = min_price * request.travelers
+        # An unknown bound is *not* a dead end. A city with no direct flight
+        # home may still be reachable onward - Rome via Madrid, say - so
+        # treating "no direct return" as infeasible would overestimate the
+        # true completion cost and prune away reachable itineraries. The
+        # admissible answer for an unknown bound is zero: no pruning.
+        min_price = self.return_estimator.min_return_price_per_person(
+            state.current_location
+        )
+        min_return_cost = 0.0 if min_price is None else min_price * request.travelers
         if min_return_cost > remaining_budget + 1e-9:
             return ConstraintResult.fail(
                 RejectionReason.UNREACHABLE_RETURN_BUDGET,
@@ -275,10 +277,7 @@ class ConstraintValidator:
 
         min_minutes = self.return_estimator.min_return_minutes(state.current_location)
         if min_minutes is None:
-            return ConstraintResult.fail(
-                RejectionReason.UNREACHABLE_RETURN_TIME,
-                f"no return connection from {state.current_location}",
-            )
+            min_minutes = 0
         # The traveler must still sit out the minimum stay before leaving.
         remaining_minutes = request.max_trip_minutes - state.trip_span_minutes
         needed = min_minutes + self.config.min_city_stay_days * 24 * 60

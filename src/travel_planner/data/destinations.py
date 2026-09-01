@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 
 from ..models.destination import Destination
 
 
+@lru_cache(maxsize=4096)
 def normalize_key(value: str) -> str:
     """Fold a user-supplied place name into a lookup key.
 
@@ -51,8 +53,14 @@ ALIASES: dict[str, str] = {
 }
 
 
+@lru_cache(maxsize=4096)
 def canonical_key(value: str) -> str:
-    """Normalize *and* resolve aliases."""
+    """Normalize *and* resolve aliases.
+
+    Memoized: the search resolves the same handful of city names tens of
+    thousands of times per run, and the underlying Unicode normalization is not
+    free.
+    """
     key = normalize_key(value)
     return ALIASES.get(key, key)
 
@@ -96,11 +104,19 @@ ORIGIN_DISTANCES_KM: dict[str, dict[str, float]] = {
 def _destination(
     id_: str,
     country: str,
+    *,
     history: float,
     nature: float,
     nightlife: float,
     culture: float,
     food: float,
+    architecture: float,
+    shopping: float,
+    museums: float,
+    beaches: float,
+    family_friendly: float,
+    romance: float,
+    adventure: float,
     min_days: float,
     max_days: float,
 ) -> Destination:
@@ -113,31 +129,140 @@ def _destination(
         nightlife=nightlife,
         culture=culture,
         food=food,
+        architecture=architecture,
+        shopping=shopping,
+        museums=museums,
+        beaches=beaches,
+        family_friendly=family_friendly,
+        romance=romance,
+        adventure=adventure,
         recommended_min_days=min_days,
         recommended_max_days=max_days,
     )
 
 
 #: The synthetic destination catalog.
+#:
+#: Twelve normalized attributes per city. The values are invented but not
+#: arbitrary: they are shaped so that cities are genuinely *different* from each
+#: other, because an experience model over identical cities cannot demonstrate
+#: anything. Zurich is the nature/quality outlier, Berlin the nightlife/culture
+#: one, Rome and Prague the history ones, Barcelona the only real beach city.
 DESTINATIONS: tuple[Destination, ...] = (
-    #            id            country          hist  nat   night cult  food  min  max
-    _destination("London", "United Kingdom", 0.85, 0.35, 0.90, 0.95, 0.75, 2.0, 5.0),
-    _destination("Brussels", "Belgium", 0.65, 0.30, 0.55, 0.70, 0.85, 1.0, 3.0),
-    _destination("Paris", "France", 0.90, 0.35, 0.75, 0.98, 0.95, 2.0, 5.0),
-    _destination("Amsterdam", "Netherlands", 0.70, 0.55, 0.85, 0.80, 0.65, 2.0, 4.0),
-    _destination("Prague", "Czechia", 0.95, 0.40, 0.85, 0.85, 0.70, 2.0, 4.0),
-    _destination("Vienna", "Austria", 0.92, 0.45, 0.60, 0.95, 0.80, 2.0, 4.0),
-    _destination("Madrid", "Spain", 0.80, 0.35, 0.90, 0.88, 0.90, 2.0, 4.0),
-    _destination("Barcelona", "Spain", 0.75, 0.70, 0.92, 0.90, 0.88, 2.0, 5.0),
-    _destination("Milan", "Italy", 0.70, 0.40, 0.70, 0.80, 0.85, 1.0, 3.0),
-    _destination("Rome", "Italy", 1.00, 0.35, 0.65, 0.95, 0.92, 3.0, 5.0),
-    _destination("Dublin", "Ireland", 0.65, 0.65, 0.88, 0.70, 0.60, 2.0, 4.0),
-    _destination("Copenhagen", "Denmark", 0.60, 0.60, 0.70, 0.78, 0.85, 2.0, 4.0),
-    _destination("Budapest", "Hungary", 0.85, 0.50, 0.90, 0.80, 0.72, 2.0, 4.0),
-    _destination("Berlin", "Germany", 0.80, 0.45, 0.95, 0.88, 0.70, 2.0, 5.0),
-    _destination("Munich", "Germany", 0.70, 0.75, 0.65, 0.75, 0.80, 1.0, 3.0),
-    _destination("Zurich", "Switzerland", 0.50, 0.90, 0.45, 0.65, 0.70, 1.0, 3.0),
+    _destination(
+        "London", "United Kingdom",
+        history=0.85, nature=0.35, nightlife=0.90, culture=0.95, food=0.75,
+        architecture=0.80, shopping=0.95, museums=0.98, beaches=0.00,
+        family_friendly=0.80, romance=0.60, adventure=0.45,
+        min_days=2.0, max_days=5.0,
+    ),
+    _destination(
+        "Brussels", "Belgium",
+        history=0.65, nature=0.30, nightlife=0.55, culture=0.70, food=0.85,
+        architecture=0.75, shopping=0.60, museums=0.70, beaches=0.00,
+        family_friendly=0.65, romance=0.50, adventure=0.30,
+        min_days=1.0, max_days=3.0,
+    ),
+    _destination(
+        "Paris", "France",
+        history=0.90, nature=0.35, nightlife=0.75, culture=0.98, food=0.95,
+        architecture=0.95, shopping=0.95, museums=1.00, beaches=0.00,
+        family_friendly=0.70, romance=1.00, adventure=0.35,
+        min_days=2.0, max_days=5.0,
+    ),
+    _destination(
+        "Amsterdam", "Netherlands",
+        history=0.70, nature=0.55, nightlife=0.85, culture=0.80, food=0.65,
+        architecture=0.85, shopping=0.70, museums=0.90, beaches=0.20,
+        family_friendly=0.70, romance=0.75, adventure=0.45,
+        min_days=2.0, max_days=4.0,
+    ),
+    _destination(
+        "Prague", "Czechia",
+        history=0.95, nature=0.40, nightlife=0.85, culture=0.85, food=0.70,
+        architecture=0.95, shopping=0.50, museums=0.70, beaches=0.00,
+        family_friendly=0.65, romance=0.85, adventure=0.40,
+        min_days=2.0, max_days=4.0,
+    ),
+    _destination(
+        "Vienna", "Austria",
+        history=0.92, nature=0.45, nightlife=0.60, culture=0.95, food=0.80,
+        architecture=0.92, shopping=0.70, museums=0.95, beaches=0.00,
+        family_friendly=0.75, romance=0.85, adventure=0.35,
+        min_days=2.0, max_days=4.0,
+    ),
+    _destination(
+        "Madrid", "Spain",
+        history=0.80, nature=0.35, nightlife=0.90, culture=0.88, food=0.90,
+        architecture=0.78, shopping=0.85, museums=0.92, beaches=0.00,
+        family_friendly=0.70, romance=0.70, adventure=0.40,
+        min_days=2.0, max_days=4.0,
+    ),
+    _destination(
+        "Barcelona", "Spain",
+        history=0.75, nature=0.70, nightlife=0.92, culture=0.90, food=0.88,
+        architecture=0.95, shopping=0.85, museums=0.80, beaches=0.90,
+        family_friendly=0.80, romance=0.80, adventure=0.65,
+        min_days=2.0, max_days=5.0,
+    ),
+    _destination(
+        "Milan", "Italy",
+        history=0.70, nature=0.40, nightlife=0.70, culture=0.80, food=0.85,
+        architecture=0.80, shopping=1.00, museums=0.75, beaches=0.00,
+        family_friendly=0.55, romance=0.60, adventure=0.35,
+        min_days=1.0, max_days=3.0,
+    ),
+    _destination(
+        "Rome", "Italy",
+        history=1.00, nature=0.35, nightlife=0.65, culture=0.95, food=0.92,
+        architecture=1.00, shopping=0.75, museums=0.95, beaches=0.15,
+        family_friendly=0.70, romance=0.90, adventure=0.40,
+        min_days=3.0, max_days=5.0,
+    ),
+    _destination(
+        "Dublin", "Ireland",
+        history=0.65, nature=0.65, nightlife=0.88, culture=0.70, food=0.60,
+        architecture=0.55, shopping=0.55, museums=0.60, beaches=0.25,
+        family_friendly=0.65, romance=0.55, adventure=0.60,
+        min_days=2.0, max_days=4.0,
+    ),
+    _destination(
+        "Copenhagen", "Denmark",
+        history=0.60, nature=0.60, nightlife=0.70, culture=0.78, food=0.85,
+        architecture=0.75, shopping=0.70, museums=0.72, beaches=0.35,
+        family_friendly=0.90, romance=0.70, adventure=0.45,
+        min_days=2.0, max_days=4.0,
+    ),
+    _destination(
+        "Budapest", "Hungary",
+        history=0.85, nature=0.50, nightlife=0.90, culture=0.80, food=0.72,
+        architecture=0.90, shopping=0.50, museums=0.70, beaches=0.00,
+        family_friendly=0.60, romance=0.80, adventure=0.50,
+        min_days=2.0, max_days=4.0,
+    ),
+    _destination(
+        "Berlin", "Germany",
+        history=0.90, nature=0.45, nightlife=0.95, culture=0.88, food=0.70,
+        architecture=0.70, shopping=0.75, museums=0.95, beaches=0.10,
+        family_friendly=0.65, romance=0.45, adventure=0.50,
+        min_days=2.0, max_days=5.0,
+    ),
+    _destination(
+        "Munich", "Germany",
+        history=0.70, nature=0.75, nightlife=0.65, culture=0.75, food=0.80,
+        architecture=0.70, shopping=0.70, museums=0.75, beaches=0.00,
+        family_friendly=0.85, romance=0.55, adventure=0.70,
+        min_days=1.0, max_days=3.0,
+    ),
+    _destination(
+        "Zurich", "Switzerland",
+        history=0.50, nature=0.90, nightlife=0.45, culture=0.65, food=0.70,
+        architecture=0.55, shopping=0.80, museums=0.60, beaches=0.30,
+        family_friendly=0.80, romance=0.65, adventure=0.85,
+        min_days=1.0, max_days=3.0,
+    ),
 )
+
 
 #: ``canonical key -> destination id`` lookup, used to resolve user input.
 DESTINATION_INDEX: dict[str, str] = {canonical_key(d.id): d.id for d in DESTINATIONS}

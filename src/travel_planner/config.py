@@ -68,6 +68,17 @@ class PlannerConfig(BaseModel):
     beam_width: int = Field(default=20, ge=1)
     max_results: int = Field(default=5, ge=1)
     max_cities: int = Field(default=4, ge=1)
+    scale_beam_with_start_dates: bool = True
+    """Widen the beam in proportion to the number of candidate start dates.
+
+    A flexible-date request searches a state space ``len(start_dates)`` times
+    larger than a fixed-date one. Holding the beam at a constant width would
+    make the flexible search explore proportionally *less* of it and sometimes
+    return a worse answer than the narrower request - which is indefensible
+    from the user's point of view. Capped by ``max_effective_beam_width``.
+    """
+    max_effective_beam_width: int = Field(default=80, ge=1)
+
     beam_slots_per_route: int = Field(default=2, ge=1)
     """Cap on beam slots sharing one city sequence.
 
@@ -107,12 +118,18 @@ class PlannerConfig(BaseModel):
     # --- accommodation (V2) -------------------------------------------
     enable_accommodation: bool = True
     """Charge for city stays. ``False`` restores the V1 "stays are free" model."""
-    accommodation_options_per_stay: int = Field(default=1, ge=1)
+    accommodation_options_per_stay: int = Field(default=2, ge=1)
     """How many accommodation tiers each stay branches on.
 
-    ``1`` takes the cheapest sufficient room, which keeps the state space the
-    same size as V1. Raising it lets the search trade room quality against
-    everything else, at a multiplicative cost in states.
+    ``1`` reproduces V2: always the cheapest sufficient room, so "pay more for a
+    better hotel" is not a decision the optimizer can make. The V3 default of
+    ``2`` gives it the cheapest option and one step up, which is enough for a
+    real trade-off; ``3`` offers the full budget/standard/premium ladder.
+
+    Complexity is multiplicative in this number: an ``n``-city itinerary
+    branches ``accommodation_options_per_stay ** (n + 1)`` ways on rooms alone,
+    which is precisely why it is bounded and why the beam is what keeps the
+    total state count flat.
     """
 
     # --- ground transfer (V2) -----------------------------------------
@@ -128,6 +145,27 @@ class PlannerConfig(BaseModel):
     therefore contributes nothing to the trip's usable time.
     """
 
+    # --- candidate generation limits (V3) -----------------------------
+    # Real APIs make an unbounded Cartesian product of origins x dates x
+    # destinations x departures x rooms x stay lengths impossible. Every axis
+    # of that product has an explicit cap here.
+    max_candidate_destinations: int | None = Field(default=None, ge=1)
+    """Destinations considered per expansion. ``None`` means the whole catalog."""
+    max_transport_options_per_leg: int = Field(default=4, ge=1)
+    """Departures kept per (origin, destination, date). Cheapest first."""
+    max_stay_lengths: int | None = Field(default=None, ge=1)
+    """Stay lengths branched on. ``None`` means every configured length."""
+
+    # --- experience (V3) ----------------------------------------------
+    stay_overrun_tolerance_days: float = Field(default=3.0, gt=0.0)
+    """Days past a city's recommended maximum at which stay quality bottoms out."""
+    city_change_overhead_days: float = Field(default=0.5, ge=0.0)
+    """Days an extra city costs beyond its own recommended stay.
+
+    Packing up, travelling and checking in is most of a day. Ignoring it makes
+    the planner think a five-day trip comfortably holds three cities.
+    """
+
     # --- travel value (V2) --------------------------------------------
     profile: ProfileName = DEFAULT_PROFILE
     """Default recommendation profile when the request does not name one."""
@@ -135,6 +173,10 @@ class PlannerConfig(BaseModel):
     """Budget share a trip may use before CostScore starts falling meaningfully."""
     comfortable_days_per_city: float = Field(default=2.0, gt=0.0)
     """Days per city at or above which an itinerary's pace stops being rushed."""
+
+    # --- observability (V3) -------------------------------------------
+    collect_provider_metrics: bool = True
+    """Count provider calls and cache hits. Cheap; leave on."""
 
     # --- misc ---------------------------------------------------------
     currency: str = "EUR"

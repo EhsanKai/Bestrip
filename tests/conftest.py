@@ -142,6 +142,59 @@ def transfer(
     )
 
 
+def completed_states(planner: TravelPlanner, request: TripRequest):
+    """Every complete itinerary the beam search found, before filtering.
+
+    Pareto and diversity legitimately remove itineraries the search *did*
+    discover, so tests about discovery must look here rather than at the final
+    five.
+    """
+    from travel_planner.algorithms.beam_search import BeamSearchOptimizer
+    from travel_planner.algorithms.scoring import ScoringEngine
+    from travel_planner.constraints.validator import ConstraintValidator
+    from travel_planner.profiles import get_profile
+    from travel_planner.services.return_estimator import CachedReturnEstimator
+
+    candidates = planner.origin_resolver.resolve(request.origin, planner.config)
+    airports = [c.code for c in candidates]
+    start_dates = request.candidate_start_dates()
+    window = planner._window_dates(request)
+    transfers = planner._ground_transfers(request.origin, airports)
+    cheapest_transfer = min(
+        (t.price_per_person for t in transfers.values()), default=0.0
+    )
+    estimator = CachedReturnEstimator(
+        planner.transport,
+        origin_airports=airports,
+        dates=window,
+        allowed_transport_types=[t.value for t in request.transport_preferences],
+        min_return_transfer_price_per_person=cheapest_transfer,
+    )
+    validator = ConstraintValidator(
+        planner.config,
+        origin_airports=airports,
+        destination_ids=[d.id for d in planner.destinations.all()],
+        return_estimator=estimator,
+        accommodation_estimator=planner.accommodation_estimator,
+    )
+    optimizer = BeamSearchOptimizer(
+        planner.config,
+        transport_provider=planner.transport,
+        destination_provider=planner.destinations,
+        validator=validator,
+        scoring=ScoringEngine(planner.config, planner.destinations),
+        return_estimator=estimator,
+        travel_value=planner.travel_value,
+        profile=get_profile(request.profile or planner.config.profile),
+        accommodation_provider=planner.accommodation,
+        accommodation_estimator=planner.accommodation_estimator,
+        ground_transfers=transfers,
+    )
+    return optimizer.search(
+        request, origin_airports=airports, start_dates=start_dates
+    )
+
+
 def trip_request(**overrides) -> TripRequest:
     """A valid request with sensible defaults, overridable per test."""
     payload = dict(

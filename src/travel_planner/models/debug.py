@@ -38,6 +38,8 @@ class FilterStage(str, Enum):
     """Which post-processing stage removed a completed itinerary."""
 
     PARETO = "PARETO"
+    DUPLICATE_ROUTE = "DUPLICATE_ROUTE"
+    """Exactly the same airports and cities, a different time of day (V3)."""
     DIVERSITY = "DIVERSITY"
     MAX_RESULTS = "MAX_RESULTS"
 
@@ -116,6 +118,7 @@ class SearchDebug(BaseModel):
     origin_airports: list[str] = Field(default_factory=list)
     start_dates: list[str] = Field(default_factory=list)
     initial_states: int = 0
+    effective_beam_width: int = 0
     iterations: list[IterationDebug] = Field(default_factory=list)
     completed_itineraries: int = 0
     scored_itineraries: list[dict] = Field(default_factory=list)

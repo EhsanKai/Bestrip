@@ -13,7 +13,14 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from ..models.accommodation import AccommodationOption, AccommodationTier
+from dataclasses import dataclass
+
+from ..models.accommodation import (
+    AccommodationOption,
+    AccommodationTier,
+    AccommodationType,
+    rating_from_stars,
+)
 
 #: Standard-tier price for a double room, per night, per city.
 CITY_NIGHTLY_RATES: dict[str, float] = {
@@ -38,11 +45,32 @@ CITY_NIGHTLY_RATES: dict[str, float] = {
 #: Fallback for a city with no explicit rate.
 DEFAULT_NIGHTLY_RATE = 60.0
 
-#: ``(tier, price multiplier, room capacity, rating)``.
-TIERS: tuple[tuple[AccommodationTier, float, int, float], ...] = (
-    (AccommodationTier.BUDGET, 0.65, 2, 0.45),
-    (AccommodationTier.STANDARD, 1.00, 2, 0.70),
-    (AccommodationTier.COMFORT, 1.55, 3, 0.90),
+@dataclass(frozen=True, slots=True)
+class Tier:
+    """One quality band, and what it buys.
+
+    Price rises faster than quality on purpose: the premium tier costs 2.4x the
+    budget one but is not 2.4x better, so "pay more" is a real trade-off the
+    optimizer has to justify rather than a free upgrade.
+    """
+
+    tier: AccommodationTier
+    price_multiplier: float
+    capacity: int
+    rating: float
+    location_score: float
+    accommodation_type: AccommodationType
+    free_cancellation: bool
+
+
+#: The three bands offered in every city.
+TIERS: tuple[Tier, ...] = (
+    Tier(AccommodationTier.BUDGET, 0.65, 2, rating_from_stars(3.3), 0.55,
+         AccommodationType.HOSTEL, False),
+    Tier(AccommodationTier.STANDARD, 1.00, 2, rating_from_stars(4.1), 0.72,
+         AccommodationType.HOTEL, True),
+    Tier(AccommodationTier.COMFORT, 1.55, 3, rating_from_stars(4.7), 0.90,
+         AccommodationType.BOUTIQUE, True),
 )
 
 #: Friday and Saturday nights cost more. Deterministic, no randomness.
@@ -88,20 +116,24 @@ def build_options(
     rate = nightly_rate(city) if base_rate is None else base_rate
     base = rate * (date_factor(check_in, check_out) if date_variation else 1.0)
     options: list[AccommodationOption] = []
-    for tier, multiplier, capacity, rating in TIERS:
+    for spec in TIERS:
         options.append(
             AccommodationOption(
                 id=(
-                    f"{city}-{tier.value}-{check_in.isoformat()}-{check_out.isoformat()}"
+                    f"{city}-{spec.tier.value}-"
+                    f"{check_in.isoformat()}-{check_out.isoformat()}"
                 ),
                 city=city,
-                name=f"{city} {tier.value} stay",
+                name=f"{city} {spec.tier.value} stay",
                 check_in=check_in,
                 check_out=check_out,
-                price_per_night=round(base * multiplier, 2),
-                capacity=capacity,
-                tier=tier,
-                rating=rating,
+                price_per_night=round(base * spec.price_multiplier, 2),
+                capacity=spec.capacity,
+                tier=spec.tier,
+                accommodation_type=spec.accommodation_type,
+                rating=spec.rating,
+                location_score=spec.location_score,
+                free_cancellation=spec.free_cancellation,
             )
         )
     return options

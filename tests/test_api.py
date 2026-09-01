@@ -74,7 +74,8 @@ def test_plan_trip_returns_the_documented_shape(client):
     metadata = body["metadata"]
     assert metadata["origin"] == "Köln"
     assert {"CGN", "DUS"} <= set(metadata["origin_airports"])
-    assert metadata["beam_width"] == 20
+    assert metadata["configured_beam_width"] == 20
+    assert metadata["beam_width"] >= 20
     assert metadata["states_generated"] > 0
 
 

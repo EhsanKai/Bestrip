@@ -207,21 +207,27 @@ class SearchState:
             )
             transfer_minutes += return_transfer.duration_minutes
 
-        return replace(
-            self,
+        # Constructed directly rather than via ``dataclasses.replace``: this is
+        # the hottest constructor in the program (tens of thousands of calls per
+        # plan) and ``replace`` costs a signature introspection on every one.
+        return SearchState(
+            origin_airport=self.origin_airport,
             current_location=leg.destination,
             current_datetime=leg.arrival,
+            start_datetime=self.start_datetime,
             route=self.route + (leg,),
             cities=cities,
             stays=stays,
             transport_cost=round(self.transport_cost + leg.total_price(travelers), 2),
             accommodation_cost=accommodation_cost,
             ground_transfer_cost=transfer_cost,
-            ground_transfer_minutes=transfer_minutes,
             total_travel_minutes=self.total_travel_minutes + leg.duration_minutes,
-            completed=is_return,
-            visited_cities=visited,
+            ground_transfer_minutes=transfer_minutes,
+            outbound_transfer=self.outbound_transfer,
             return_transfer=return_transfer if is_return else self.return_transfer,
+            completed=is_return,
+            score=self.score,
+            visited_cities=visited,
         )
 
     def with_score(self, score: float) -> "SearchState":

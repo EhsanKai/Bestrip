@@ -26,6 +26,15 @@ class AccommodationTier(str, Enum):
     COMFORT = "comfort"
 
 
+class AccommodationType(str, Enum):
+    """What kind of place it is."""
+
+    HOSTEL = "hostel"
+    APARTMENT = "apartment"
+    HOTEL = "hotel"
+    BOUTIQUE = "boutique"
+
+
 class AccommodationOption(BaseModel):
     """A bookable stay in one city for a fixed date range."""
 
@@ -45,7 +54,21 @@ class AccommodationOption(BaseModel):
     """How many people one room sleeps."""
 
     tier: AccommodationTier = AccommodationTier.STANDARD
+    accommodation_type: AccommodationType = AccommodationType.HOTEL
+
     rating: float = Field(default=0.7, ge=0.0, le=1.0)
+    """Guest rating, normalized to ``[0, 1]``. See :func:`rating_from_stars`."""
+    location_score: float = Field(default=0.6, ge=0.0, le=1.0)
+    """How central/convenient the location is, normalized to ``[0, 1]``."""
+    free_cancellation: bool = False
+
+    currency: str = "EUR"
+    """Currency of :attr:`price_per_night`. Providers normalize before returning."""
+
+    @property
+    def stars(self) -> float:
+        """The rating expressed on the familiar 5-point scale."""
+        return round(self.rating * 5.0, 2)
 
     @model_validator(mode="after")
     def _check_dates(self) -> "AccommodationOption":
@@ -75,5 +98,17 @@ class AccommodationOption(BaseModel):
     def __str__(self) -> str:  # pragma: no cover - convenience only
         return (
             f"{self.city} {self.tier.value} {self.check_in}..{self.check_out} "
-            f"({self.nights}n) {self.price_per_night:.2f}/night"
+            f"({self.nights}n) {self.price_per_night:.2f}/night "
+            f"rating {self.stars:.1f} location {self.location_score:.2f}"
         )
+
+
+def rating_from_stars(stars: float) -> float:
+    """Convert a 0-5 guest rating into the normalized internal form.
+
+    Real APIs quote stars; the optimizer works in ``[0, 1]`` throughout, and
+    this is the single place that conversion lives.
+    """
+    if not 0.0 <= stars <= 5.0:
+        raise ValueError(f"stars must be within 0..5, got {stars}")
+    return stars / 5.0

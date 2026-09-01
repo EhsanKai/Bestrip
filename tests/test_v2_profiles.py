@@ -10,6 +10,7 @@ from travel_planner.algorithms.travel_value import TravelValueScorer
 from travel_planner.config import PlannerConfig
 from travel_planner.models.trip import TravelPreferences
 from travel_planner.profiles import (
+    COMPONENTS,
     DEFAULT_PROFILE,
     PROFILES,
     ProfileName,
@@ -57,13 +58,7 @@ def test_weights_are_normalized():
     for profile in PROFILES.values():
         normalized = profile.weights.normalized()
         assert sum(normalized.values()) == pytest.approx(1.0)
-        assert set(normalized) == {
-            "cost",
-            "experience",
-            "preferences",
-            "time",
-            "diversity",
-        }
+        assert set(normalized) == set(COMPONENTS)
 
 
 def test_profiles_emphasise_different_things():
@@ -77,9 +72,7 @@ def test_profiles_emphasise_different_things():
 
 def test_weights_must_not_all_be_zero():
     with pytest.raises(ValueError, match="positive"):
-        TravelValueWeights(
-            cost=0.0, experience=0.0, preferences=0.0, time=0.0, diversity=0.0
-        )
+        TravelValueWeights(**{name: 0.0 for name in COMPONENTS})
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +119,9 @@ def test_experience_rewards_stays_that_fit_the_city(scorer):
             leg("Rome", "DUS", datetime(2026, 9, 11, 7, 0), 140, 62.0),
         ]
     )
-    assert scorer.experience_score(proper) > scorer.experience_score(flying_visit)
+    assert scorer.experience_score(proper, request) > scorer.experience_score(
+        flying_visit, request
+    )
     assert scorer.time_score(proper, request) > scorer.time_score(flying_visit, request)
 
 
@@ -397,7 +392,7 @@ def test_a_custom_profile_can_be_supplied(destinations, config):
     picky = RecommendationProfile(
         name=ProfileName.BEST_VALUE,
         weights=TravelValueWeights(
-            cost=0.0, experience=0.0, preferences=1.0, time=0.0, diversity=0.0
+            **{**{name: 0.0 for name in COMPONENTS}, "preferences": 1.0}
         ),
     )
     request = trip_request(travelers=1, budget=400, preferred_destinations=[])

@@ -305,7 +305,14 @@ def test_unreachable_return_time_prunes_partial_states(config):
     assert result.reason is RejectionReason.UNREACHABLE_RETURN_TIME
 
 
-def test_missing_return_connection_is_pruned(config):
+def test_an_unknown_return_bound_does_not_prune(config):
+    """A city with no *direct* flight home may still be reachable onward.
+
+    V3 fix: treating an unknown bound as infeasible overestimated the true
+    completion cost and pruned away reachable itineraries - precisely the
+    admissibility violation the pruning rules exist to avoid. An unknown bound
+    now means no pruning.
+    """
     validator = ConstraintValidator(
         config,
         origin_airports=AIRPORTS,
@@ -315,5 +322,4 @@ def test_missing_return_connection_is_pruned(config):
     partial = make_state(
         [leg("DUS", "London", datetime(2026, 9, 10, 8, 0), 90, 35.0)], completed=False
     )
-    result = validator.validate(partial, trip_request(budget=500))
-    assert result.reason is RejectionReason.UNREACHABLE_RETURN_BUDGET
+    assert validator.validate(partial, trip_request(budget=500)).valid

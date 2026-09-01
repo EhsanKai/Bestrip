@@ -24,6 +24,7 @@ from ..constraints.validator import ConstraintValidator
 from ..models.debug import FilteredItinerary, FilterStage, SearchDebug
 from ..models.itinerary import (
     CostBreakdown,
+    DestinationInsightSummary,
     Itinerary,
     PlannerMetadata,
     PlanResult,
@@ -37,6 +38,13 @@ from ..providers.accommodation import (
     AccommodationDataProvider,
     NoAccommodationProvider,
     SyntheticAccommodationDataProvider,
+)
+from ..providers.cache import (
+    CacheStats,
+    CachingAccommodationProvider,
+    CachingGroundTransferProvider,
+    CachingTransportProvider,
+    ProviderMetrics,
 )
 from ..providers.destinations import DestinationProvider, StaticDestinationProvider
 from ..providers.ground_transfer import (
@@ -58,6 +66,14 @@ from .return_estimator import CachedReturnEstimator
 MAX_FILTER_RECORDS = 50
 
 
+def replace_stats(provider) -> CacheStats:
+    """A copy of a provider's cache counters, or empty if it has none."""
+    stats = getattr(provider, "stats", None)
+    if stats is None:
+        return CacheStats()
+    return CacheStats(hits=stats.hits, misses=stats.misses)
+
+
 class TravelPlanner:
     """Wires the providers, constraints, search, scoring and filters together."""
 
@@ -72,25 +88,29 @@ class TravelPlanner:
         ground_transfer_provider: GroundTransferProvider | None = None,
     ) -> None:
         self.config = config or PlannerConfig()
-        self.transport = transport_provider or SyntheticTransportDataProvider()
+        self.transport = CachingTransportProvider(
+            transport_provider or SyntheticTransportDataProvider()
+        )
         self.destinations = destination_provider or StaticDestinationProvider()
         self.origin_resolver = origin_resolver or StaticOriginResolver()
 
         # V2 providers. Disabling a feature swaps in an explicit null provider
         # rather than sprinkling ``if enabled`` through the algorithms.
         if accommodation_provider is not None:
-            self.accommodation = accommodation_provider
+            rooms = accommodation_provider
         elif self.config.enable_accommodation:
-            self.accommodation = SyntheticAccommodationDataProvider()
+            rooms = SyntheticAccommodationDataProvider()
         else:
-            self.accommodation = NoAccommodationProvider()
+            rooms = NoAccommodationProvider()
+        self.accommodation = CachingAccommodationProvider(rooms)
 
         if ground_transfer_provider is not None:
-            self.ground_transfer = ground_transfer_provider
+            transfers = ground_transfer_provider
         elif self.config.enable_ground_transfer:
-            self.ground_transfer = SyntheticGroundTransferProvider()
+            transfers = SyntheticGroundTransferProvider()
         else:
-            self.ground_transfer = FreeGroundTransferProvider()
+            transfers = FreeGroundTransferProvider()
+        self.ground_transfer = CachingGroundTransferProvider(transfers)
 
         self.scoring = ScoringEngine(self.config, self.destinations)
         self.travel_value = TravelValueScorer(
@@ -123,6 +143,7 @@ class TravelPlanner:
         ``config.profile`` (BEST_VALUE by default).
         """
         started = _time.perf_counter()
+        before = self._provider_metrics()
         active = get_profile(profile or request.profile or self.config.profile)
         # The trace is always collected: it is small, bounded by
         # ``debug_example_limit``, and it feeds the run counters in the
@@ -219,7 +240,8 @@ class TravelPlanner:
             profile=active.name,
             origin_airports=origin_airports,
             start_dates=[d.isoformat() for d in start_dates],
-            beam_width=self.config.beam_width,
+            beam_width=trace.effective_beam_width or self.config.beam_width,
+            configured_beam_width=self.config.beam_width,
             max_cities=self.config.max_cities,
             states_generated=trace.total_generated,
             states_rejected=trace.total_rejected,
@@ -230,6 +252,7 @@ class TravelPlanner:
             elapsed_seconds=round(_time.perf_counter() - started, 4),
             currency=request.currency,
             warnings=warnings,
+            provider_metrics=self._provider_delta(before),
         )
         return PlanResult(
             profile=active.name,
@@ -254,7 +277,7 @@ class TravelPlanner:
 
         if self.config.enable_pareto and candidates:
             result = pareto_filter(
-                candidates, lambda state: self.scoring.objectives(state, request)
+                candidates, lambda state: self.travel_value.objectives(state, request)
             )
             for removed, dominator in result.dominated[:MAX_FILTER_RECORDS]:
                 trace.filtered.append(
@@ -271,6 +294,30 @@ class TravelPlanner:
         trace.diversity_input = pareto_kept
 
         candidates.sort(key=BeamSearchOptimizer._rank_key)
+
+        # Collapse itineraries that are the *same trip*: identical airports and
+        # identical city sequence, differing only in departure times. Two of
+        # those in a top-five list is a wasted slot, not a choice - and unlike
+        # the Jaccard filter below, this one is exact, so it can safely run
+        # before back-fill has a chance to reintroduce them.
+        deduplicated: list[SearchState] = []
+        seen_routes: set[tuple[str, ...]] = set()
+        for state in candidates:
+            signature = tuple(self._labels(state))
+            if signature in seen_routes:
+                trace.filtered.append(
+                    FilteredItinerary(
+                        route=list(signature),
+                        stage=FilterStage.DUPLICATE_ROUTE,
+                        reason="same route as a better-scoring itinerary",
+                        similarity=1.0,
+                    )
+                )
+                continue
+            seen_routes.add(signature)
+            deduplicated.append(state)
+        candidates = deduplicated
+        trace.diversity_input = len(candidates)
 
         if not self.config.enable_diversity:
             selected = candidates[: self.config.max_results]
@@ -304,6 +351,35 @@ class TravelPlanner:
     # ------------------------------------------------------------------
     # Conversion helpers
     # ------------------------------------------------------------------
+    def _provider_metrics(self) -> ProviderMetrics:
+        """A snapshot of every provider cache's counters."""
+        return ProviderMetrics(
+            transport=replace_stats(self.transport),
+            accommodation=replace_stats(self.accommodation),
+            ground_transfer=replace_stats(self.ground_transfer),
+        )
+
+    def _provider_delta(self, before: ProviderMetrics) -> dict:
+        """Provider activity attributable to the run that just finished."""
+        if not self.config.collect_provider_metrics:
+            return {}
+        after = self._provider_metrics()
+        delta = ProviderMetrics(
+            transport=CacheStats(
+                hits=after.transport.hits - before.transport.hits,
+                misses=after.transport.misses - before.transport.misses,
+            ),
+            accommodation=CacheStats(
+                hits=after.accommodation.hits - before.accommodation.hits,
+                misses=after.accommodation.misses - before.accommodation.misses,
+            ),
+            ground_transfer=CacheStats(
+                hits=after.ground_transfer.hits - before.ground_transfer.hits,
+                misses=after.ground_transfer.misses - before.ground_transfer.misses,
+            ),
+        )
+        return delta.as_dict()
+
     @staticmethod
     def _labels(state: SearchState) -> list[str]:
         if not state.route:
@@ -354,9 +430,41 @@ class TravelPlanner:
                     accommodation_tier=(
                         stay.accommodation.tier.value if stay.accommodation else None
                     ),
+                    accommodation_type=(
+                        stay.accommodation.accommodation_type.value
+                        if stay.accommodation
+                        else None
+                    ),
+                    accommodation_rating=(
+                        stay.accommodation.rating if stay.accommodation else None
+                    ),
+                    accommodation_location_score=(
+                        stay.accommodation.location_score if stay.accommodation else None
+                    ),
+                    free_cancellation=bool(
+                        stay.accommodation and stay.accommodation.free_cancellation
+                    ),
                     usable_minutes=stay.usable_minutes,
                 )
                 for stay in state.stays
+            ],
+            destination_insights=[
+                DestinationInsightSummary(
+                    city=insight.city,
+                    score=insight.score,
+                    quality=insight.quality,
+                    preference_match=insight.preference_match,
+                    stay_quality=insight.stay_quality,
+                    usable_days=insight.usable_days,
+                    strengths=list(insight.strengths),
+                    weaknesses=list(insight.weaknesses),
+                    dislikes_present=list(insight.dislikes_present),
+                    previously_visited=insight.previously_visited,
+                    stay_note=insight.stay_note,
+                )
+                for insight in self.travel_value.assess_experience(
+                    state, request
+                ).insights
             ],
             ground_transfer_minutes=state.ground_transfer_minutes,
             usable_destination_minutes=state.usable_destination_minutes,

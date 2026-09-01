@@ -14,7 +14,7 @@ import pytest
 
 from travel_planner.config import PlannerConfig
 from travel_planner.models.trip import TravelPreferences
-from travel_planner.profiles import ProfileName
+from travel_planner.profiles import COMPONENTS, ProfileName
 from travel_planner.services.planner import TravelPlanner
 
 from .conftest import WINDOW_FROM, WINDOW_TO, trip_request
@@ -82,11 +82,17 @@ def test_both_cgn_and_dus_are_considered(scenario):
 
 def test_beam_search_was_actually_used(scenario):
     _, _, result = scenario
-    assert result.metadata.beam_width == 20
+    # V3 scales the beam with the number of candidate start dates, so the
+    # configured width is the per-date width and the effective one is reported.
+    assert result.metadata.configured_beam_width == 20
+    assert result.metadata.beam_width >= 20
+    assert result.metadata.beam_width == 20 * len(result.metadata.start_dates)
     assert result.debug.iterations
     assert result.metadata.states_generated > 100
     assert any(it.pruned_by_beam > 0 for it in result.debug.iterations)
-    assert all(it.kept <= 20 for it in result.debug.iterations)
+    assert all(
+        it.kept <= result.metadata.beam_width for it in result.debug.iterations
+    )
 
 
 def test_paris_is_avoided_everywhere(scenario):
@@ -155,9 +161,24 @@ def test_recommendations_are_compared_against_the_baseline(scenario):
         )
 
 
-def test_at_least_one_recommendation_beats_the_baseline_on_price(scenario):
-    _, _, result = scenario
-    assert any(i.baseline_comparison.money_saved > 0 for i in result.recommendations)
+def test_the_baseline_comparison_is_meaningful(scenario):
+    """V3 no longer promises a cheaper trip - it promises a better one.
+
+    BEST_VALUE weights experience, city count and usable time heavily enough
+    that a dearer, richer itinerary can legitimately win; that is the whole
+    point of the profile. What must hold is that the comparison is present and
+    correct, and that CHEAPEST still undercuts the baseline.
+    """
+    _, request, result = scenario
+    for itinerary in result.recommendations:
+        comparison = itinerary.baseline_comparison
+        assert comparison is not None
+        assert comparison.money_saved == round(
+            result.baseline.total_cost - itinerary.total_cost, 2
+        )
+
+    cheapest = TravelPlanner().plan(request, profile=ProfileName.CHEAPEST)
+    assert cheapest.recommendations[0].baseline_comparison.money_saved > 0
 
 
 def test_no_city_is_visited_twice_within_an_itinerary(scenario):
@@ -263,7 +284,7 @@ def test_planning_completes_quickly(scenario):
 def test_configuration_flows_through_to_the_result():
     planner = TravelPlanner(config=PlannerConfig(beam_width=8, max_results=2, max_cities=2))
     result = planner.plan(trip_request())
-    assert result.metadata.beam_width == 8
+    assert result.metadata.configured_beam_width == 8
     assert result.metadata.max_cities == 2
     assert len(result.recommendations) <= 2
     for itinerary in result.recommendations:
@@ -278,7 +299,10 @@ def test_score_breakdown_is_attached_to_every_recommendation(scenario):
         assert value is not None
         assert value.total == pytest.approx(itinerary.score, abs=1e-6)
         assert value.profile is ProfileName.BEST_VALUE
-        assert value.weights["experience"] == pytest.approx(0.30)
+        # V3: nine components, and the weights are normalized.
+        assert set(value.weights) == set(COMPONENTS)
+        assert sum(value.weights.values()) == pytest.approx(1.0)
+        assert value.weights["experience"] > value.weights["cost"]
 
         legacy = itinerary.score_breakdown
         assert legacy is not None

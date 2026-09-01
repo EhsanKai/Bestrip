@@ -11,6 +11,7 @@ from datetime import date, datetime
 
 import pytest
 
+from travel_planner.config import PlannerConfig
 from travel_planner.models.trip import TravelPreferences
 from travel_planner.profiles import PROFILES, ProfileName
 from travel_planner.services.planner import TravelPlanner
@@ -129,7 +130,14 @@ def test_08_paris_is_excluded_everywhere():
 # 9. Party size drives both cost lines
 # ---------------------------------------------------------------------------
 def test_09_four_travelers_cost_more_in_transport_and_rooms():
-    planner = TravelPlanner()
+    """Party size drives every cost line.
+
+    The room choice is pinned to the cheapest tier here on purpose: with the
+    V3 default the optimizer may buy a *better* room for one person than for
+    four on the same budget, which is correct behaviour but would make this
+    test about tier selection rather than about party pricing.
+    """
+    planner = TravelPlanner(config=PlannerConfig(accommodation_options_per_stay=1))
     solo = planner.plan(trip_request(travelers=1, budget=900))
     four = planner.plan(trip_request(travelers=4, budget=900))
     assert solo.recommendations and four.recommendations
@@ -139,9 +147,9 @@ def test_09_four_travelers_cost_more_in_transport_and_rooms():
         solo.recommendations[0].cost_breakdown.transport
     )
     # Accommodation rises too, because four people need more than one room.
-    solo_rooms = solo.recommendations[0].cost_breakdown.accommodation
-    four_rooms = four.recommendations[0].cost_breakdown.accommodation
-    assert four_rooms > solo_rooms
+    assert four.recommendations[0].cost_breakdown.accommodation > (
+        solo.recommendations[0].cost_breakdown.accommodation
+    )
     # ... and so does the ride to the airport, which is priced per ticket.
     assert four.recommendations[0].cost_breakdown.ground_transfer > (
         solo.recommendations[0].cost_breakdown.ground_transfer
@@ -370,8 +378,13 @@ def test_planning_stays_interactive_with_the_v2_cost_model():
 
 
 def test_pareto_and_diversity_still_filter(default_result):
+    """Both post-processing stages still do real work under the V3 model.
+
+    V3 splits similarity filtering into an exact route-duplicate pass and the
+    Jaccard pass; either one firing is evidence the pipeline de-duplicates.
+    """
     _, _, result = default_result
     assert result.debug.pareto_input > result.debug.pareto_kept > 0
     stages = {record.stage.value for record in result.debug.filtered}
     assert "PARETO" in stages
-    assert "DIVERSITY" in stages
+    assert stages & {"DIVERSITY", "DUPLICATE_ROUTE"}

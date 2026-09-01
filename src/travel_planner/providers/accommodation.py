@@ -111,8 +111,8 @@ class SyntheticAccommodationDataProvider:
         if base is None:
             return None
         best = min(
-            base * multiplier * -(-travelers // capacity)  # ceil division
-            for _tier, multiplier, capacity, _rating in TIERS
+            base * spec.price_multiplier * -(-travelers // spec.capacity)  # ceil div
+            for spec in TIERS
         )
         self._min_cache[key] = round(best, 2)
         return self._min_cache[key]

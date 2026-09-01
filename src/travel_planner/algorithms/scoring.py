@@ -60,6 +60,14 @@ class Objectives:
     """Higher is better."""
     preference_score: float
     """Higher is better."""
+    usable_minutes: int = 0
+    """Higher is better (V3)."""
+    experience: float = 0.0
+    """Higher is better (V3)."""
+    accommodation: float = 0.0
+    """Higher is better (V3)."""
+    convenience: float = 0.0
+    """Higher is better (V3)."""
 
 
 class ScoringEngine:

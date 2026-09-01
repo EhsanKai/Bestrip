@@ -91,6 +91,10 @@ class BeamSearchOptimizer:
             config, destination_provider, base=scoring
         )
         self.profile = profile or get_profile(config.profile)
+        #: Beam width actually in use; ``search`` scales it per run.
+        self._beam_width = config.beam_width
+        #: The bounded destination pool, resolved once per optimizer.
+        self._pool: list | None = None
 
     # ------------------------------------------------------------------
     # Entry point
@@ -104,7 +108,10 @@ class BeamSearchOptimizer:
         debug: SearchDebug | None = None,
     ) -> list[SearchState]:
         """Run beam search and return all completed states found, best first."""
+        self._beam_width = self._effective_beam_width(len(start_dates))
         beam = self._initial_states(origin_airports, start_dates, request.travelers)
+        if debug is not None:
+            debug.effective_beam_width = self._beam_width
         if debug is not None:
             debug.origin_airports = list(origin_airports)
             debug.start_dates = [d.isoformat() for d in start_dates]
@@ -119,7 +126,7 @@ class BeamSearchOptimizer:
             trace = IterationDebug(
                 iteration=iteration,
                 states_in=len(beam),
-                beam_width=self.config.beam_width,
+                beam_width=self._beam_width,
             )
             survivors, finished = self._expand_beam(beam, request, trace)
             completed.extend(finished)
@@ -148,6 +155,13 @@ class BeamSearchOptimizer:
         if debug is not None:
             debug.completed_itineraries = len(completed)
         return completed
+
+    def _effective_beam_width(self, start_date_count: int) -> int:
+        """Beam width for this run, scaled by how many start dates are in play."""
+        if not self.config.scale_beam_with_start_dates:
+            return self.config.beam_width
+        scaled = self.config.beam_width * max(start_date_count, 1)
+        return min(scaled, self.config.max_effective_beam_width)
 
     # ------------------------------------------------------------------
     # Initial states
@@ -189,12 +203,56 @@ class BeamSearchOptimizer:
         if state.is_at_start:
             return [state.start_datetime.date()]
         arrival = state.current_datetime.date()
+        stay_options = self.config.stay_day_options
+        if self.config.max_stay_lengths is not None:
+            stay_options = stay_options[: self.config.max_stay_lengths]
         dates = []
-        for stay in self.config.stay_day_options:
+        for stay in stay_options:
             candidate = arrival + timedelta(days=stay)
             if candidate <= request.date_to:
                 dates.append(candidate)
         return dates
+
+    def _departures(
+        self, origin: str, destination: str, day: date, after: datetime
+    ) -> list[TransportOption]:
+        """Bookable departures for one leg, capped and ordered deterministically.
+
+        The provider may return far more than the search can afford to branch
+        on - a real API certainly will - so only the cheapest
+        ``max_transport_options_per_leg`` are kept. They arrive cheapest-first
+        from the provider, so the cap is a prefix, not a re-sort.
+        """
+        options = [
+            option
+            for option in self.transport.search(origin, destination, day)
+            if option.departure >= after
+        ]
+        return options[: self.config.max_transport_options_per_leg]
+
+    def _candidate_pool(self) -> list:
+        """The bounded set of destinations this run will ever price.
+
+        Capping here rather than per expansion is what makes the limit mean
+        something to a real integration: it bounds how many cities are ever
+        fetched, not merely how many are branched on at one node. The pool is
+        catalog order for now - a production system would rank it by expected
+        value first, which is a strictly better pool of the same size.
+        """
+        if self._pool is None:
+            catalog = self.destinations.all()
+            limit = self.config.max_candidate_destinations
+            self._pool = catalog if limit is None else catalog[:limit]
+        return self._pool
+
+    def _candidate_destinations(self, state: SearchState) -> list:
+        """Destinations worth expanding towards from this state."""
+        return [
+            destination
+            for destination in self._candidate_pool()
+            if destination.id != state.current_location
+            and destination.id not in state.visited_cities
+        ]
 
     def _book_accommodation(
         self, state: SearchState, leg: TransportOption, travelers: int
@@ -244,16 +302,13 @@ class BeamSearchOptimizer:
 
         for departure_date in self._departure_dates(state, request):
             if may_continue:
-                for destination in self.destinations.all():
-                    if destination.id == state.current_location:
-                        continue
-                    if destination.id in state.visited_cities:
-                        continue
-                    for option in self.transport.search(
-                        state.current_location, destination.id, departure_date
+                for destination in self._candidate_destinations(state):
+                    for option in self._departures(
+                        state.current_location,
+                        destination.id,
+                        departure_date,
+                        state.current_datetime,
                     ):
-                        if option.departure < state.current_datetime:
-                            continue
                         rooms = self._book_accommodation(
                             state, option, request.travelers
                         )
@@ -264,11 +319,12 @@ class BeamSearchOptimizer:
                             yield option, False, room, True
             if may_return:
                 for airport in sorted(self.validator.origin_airports):
-                    for option in self.transport.search(
-                        state.current_location, airport, departure_date
+                    for option in self._departures(
+                        state.current_location,
+                        airport,
+                        departure_date,
+                        state.current_datetime,
                     ):
-                        if option.departure < state.current_datetime:
-                            continue
                         rooms = self._book_accommodation(
                             state, option, request.travelers
                         )
@@ -425,7 +481,7 @@ class BeamSearchOptimizer:
         kept: list[SearchState] = []
         overflow: list[SearchState] = []
         for index, state in enumerate(survivors):
-            if len(kept) == self.config.beam_width:
+            if len(kept) == self._beam_width:
                 overflow.extend(survivors[index:])
                 break
             if per_route[state.cities] < self.config.beam_slots_per_route:
@@ -435,8 +491,8 @@ class BeamSearchOptimizer:
                 overflow.append(state)
         # If the per-route cap left the beam under-filled, top it up in rank
         # order so the configured beam width is always honoured.
-        if len(kept) < self.config.beam_width and overflow:
-            promoted = overflow[: self.config.beam_width - len(kept)]
+        if len(kept) < self._beam_width and overflow:
+            promoted = overflow[: self._beam_width - len(kept)]
             overflow = overflow[len(promoted) :]
             kept.extend(promoted)
             kept.sort(key=lambda state: self._beam_rank_key(state, mandatory))

@@ -149,12 +149,18 @@ def test_stay_quality_measures_usable_days_not_calendar_nights(destinations):
     """
     config = PlannerConfig()
     scorer = TravelValueScorer(config, destinations)
+    request = trip_request(travelers=1)
     generous = _trip(9, 20, nights=1)
     token = _trip(22, 6, nights=1)
     assert generous.stay_days == token.stay_days == (1,)
     assert token.usable_destination_minutes == 0
-    assert scorer.stay_quality(generous) > scorer.stay_quality(token)
-    assert scorer.stay_quality(token) == 0.0
+
+    # V3 moved stay quality into the experience engine, which measures it in
+    # usable days against each city's recommended range.
+    assessed = scorer.assess_experience(generous, request)
+    tokened = scorer.assess_experience(token, request)
+    assert assessed.stay_quality > tokened.stay_quality
+    assert tokened.stay_quality == 0.0
 
 
 def test_usable_time_reaches_the_itinerary(planner, koln_request):

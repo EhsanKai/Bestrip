@@ -21,16 +21,38 @@ class ProfileName(str, Enum):
     ADVENTURE = "ADVENTURE"
 
 
+#: The Travel Value component names, in report order.
+#:
+#: The first five keep their V2 names for backward compatibility; the spec calls
+#: them BudgetEfficiency, DestinationExperience, PreferenceMatch,
+#: TimeUtilization and Diversity respectively. The last four are new in V3.
+COMPONENTS: tuple[str, ...] = (
+    "cost",           # BudgetEfficiency
+    "experience",     # DestinationExperience
+    "preferences",    # PreferenceMatch
+    "time",           # TimeUtilization
+    "diversity",      # Diversity
+    "city_count",     # CityCountFit          (V3)
+    "accommodation",  # AccommodationQuality  (V3)
+    "convenience",    # Convenience           (V3)
+    "intensity",      # TravelIntensity       (V3)
+)
+
+
 class TravelValueWeights(BaseModel):
-    """Relative importance of the five Travel Value components."""
+    """Relative importance of the nine Travel Value components."""
 
     model_config = ConfigDict(frozen=True)
 
-    cost: float = Field(default=0.25, ge=0.0)
-    experience: float = Field(default=0.30, ge=0.0)
-    preferences: float = Field(default=0.20, ge=0.0)
-    time: float = Field(default=0.15, ge=0.0)
-    diversity: float = Field(default=0.10, ge=0.0)
+    cost: float = Field(default=0.20, ge=0.0)
+    experience: float = Field(default=0.20, ge=0.0)
+    preferences: float = Field(default=0.15, ge=0.0)
+    time: float = Field(default=0.12, ge=0.0)
+    diversity: float = Field(default=0.08, ge=0.0)
+    city_count: float = Field(default=0.08, ge=0.0)
+    accommodation: float = Field(default=0.07, ge=0.0)
+    convenience: float = Field(default=0.05, ge=0.0)
+    intensity: float = Field(default=0.05, ge=0.0)
 
     @model_validator(mode="after")
     def _check_nonzero(self) -> "TravelValueWeights":
@@ -40,16 +62,10 @@ class TravelValueWeights(BaseModel):
 
     @property
     def total(self) -> float:
-        return self.cost + self.experience + self.preferences + self.time + self.diversity
+        return sum(self.as_dict().values())
 
     def as_dict(self) -> dict[str, float]:
-        return {
-            "cost": self.cost,
-            "experience": self.experience,
-            "preferences": self.preferences,
-            "time": self.time,
-            "diversity": self.diversity,
-        }
+        return {name: float(getattr(self, name)) for name in COMPONENTS}
 
     def normalized(self) -> dict[str, float]:
         """Weights rescaled to sum to 1.0, so the total stays in ``[0, 1]``."""
@@ -81,6 +97,14 @@ class RecommendationProfile(BaseModel):
     diversity_similarity_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     """Optional per-profile override of how different results must be."""
 
+    city_count_bias: int = Field(default=0, ge=-2, le=2)
+    """Shifts the ideal city count this profile aims for.
+
+    ADVENTURE aims one city higher than the trip length alone would suggest;
+    CHEAPEST one lower, because every extra city is another hotel and another
+    ticket.
+    """
+
 
 #: The built-in profiles. Weights are starting points tuned against the
 #: synthetic dataset; the architecture matters more than the exact numbers.
@@ -92,12 +116,14 @@ PROFILES: dict[ProfileName, RecommendationProfile] = {
             "duration, mandatory and avoided destinations."
         ),
         weights=TravelValueWeights(
-            cost=0.70, experience=0.10, preferences=0.10, time=0.05, diversity=0.05
+            cost=0.62, experience=0.08, preferences=0.08, time=0.04, diversity=0.03,
+            city_count=0.03, accommodation=0.04, convenience=0.04, intensity=0.04,
         ),
         # Cheaper must always beat dearer, so no reward for using the budget.
         budget_utilization_weight=0.0,
         # A cheap short trip is a legitimate answer under this profile.
         min_duration_utilization=0.5,
+        city_count_bias=-1,
     ),
     ProfileName.BEST_VALUE: RecommendationProfile(
         name=ProfileName.BEST_VALUE,
@@ -106,7 +132,8 @@ PROFILES: dict[ProfileName, RecommendationProfile] = {
             "match first, with cost as one factor among several."
         ),
         weights=TravelValueWeights(
-            cost=0.25, experience=0.30, preferences=0.20, time=0.15, diversity=0.10
+            cost=0.19, experience=0.21, preferences=0.15, time=0.11, diversity=0.06,
+            city_count=0.08, accommodation=0.07, convenience=0.05, intensity=0.08,
         ),
         budget_utilization_weight=0.35,
     ),
@@ -117,11 +144,13 @@ PROFILES: dict[ProfileName, RecommendationProfile] = {
             "inside the budget and without an absurd amount of time in transit."
         ),
         weights=TravelValueWeights(
-            cost=0.20, experience=0.25, preferences=0.15, time=0.10, diversity=0.30
+            cost=0.13, experience=0.19, preferences=0.11, time=0.07, diversity=0.19,
+            city_count=0.12, accommodation=0.03, convenience=0.03, intensity=0.13,
         ),
         budget_utilization_weight=0.40,
         # Different styles of trip matter more here, so accept closer neighbours.
         diversity_similarity_threshold=0.6,
+        city_count_bias=1,
     ),
 }
 

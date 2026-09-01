@@ -14,6 +14,7 @@ from ..config import PlannerConfig
 from ..models.itinerary import PlanResult
 from ..models.trip import TripRequest
 from ..profiles import PROFILES, ProfileName, RecommendationProfile
+from ..services.budget_sensitivity import analyze_budget_sensitivity
 from ..services.planner import TravelPlanner
 
 router = APIRouter()
@@ -69,6 +70,50 @@ def list_destinations(planner: TravelPlanner = Depends(get_planner)) -> list[dic
 def get_config(planner: TravelPlanner = Depends(get_planner)) -> PlannerConfig:
     """The active planner configuration."""
     return planner.config
+
+
+@router.post("/budget-sensitivity")
+def budget_sensitivity(
+    request: TripRequest,
+    steps: int = Query(default=5, ge=1, le=12, description="Budget levels to try."),
+    span: float = Query(
+        default=0.6,
+        gt=0.0,
+        le=2.0,
+        description="Sweep width as a fraction of the requested budget.",
+    ),
+    profile: ProfileName | None = Query(default=None),
+    planner: TravelPlanner = Depends(get_planner),
+) -> dict:
+    """What would a bigger budget buy?
+
+    Plans the same request at several budgets and reports the levels where a
+    materially different trip becomes possible. Costs one planning run per
+    step; they share the planner's warm provider caches.
+    """
+    try:
+        analysis = analyze_budget_sensitivity(
+            planner, request, steps=steps, span=span, profile=profile
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {
+        "profile": analysis.profile.value,
+        "currency": analysis.currency,
+        "minimum_feasible_budget": analysis.minimum_feasible_budget,
+        "steps": [
+            {
+                "budget": step.budget,
+                "feasible": step.feasible,
+                "best_score": step.best_score,
+                "best_cost": step.best_cost,
+                "best_route": step.best_route,
+                "city_sets": [sorted(cities) for cities in step.city_sets],
+                "unlocks": [sorted(cities) for cities in step.unlocked],
+            }
+            for step in analysis.steps
+        ],
+    }
 
 
 @router.get("/profiles", response_model=list[RecommendationProfile])

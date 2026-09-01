@@ -22,8 +22,19 @@ WEAK = 0.4
 UNDERSPEND = 0.35
 #: Share of the requested days that counts as using the window well.
 GOOD_WINDOW_USE = 0.6
-#: Accommodation share of total cost below which the stay was a bargain.
+#: Accommodation share of total cost below which the stay was a bargain ...
 CHEAP_STAY_SHARE = 0.35
+#: ... and above which it dominates the trip's cost.
+EXPENSIVE_STAY_SHARE = 0.55
+
+#: Component thresholds for the V3 factors.
+GREAT_MATCH = 0.8
+CALM_INTENSITY = 0.12
+FRANTIC_INTENSITY = 0.25
+GOOD_ROOM = 0.7
+BASIC_ROOM = 0.45
+#: Ground-transfer minutes above which the ride to the airport is a real cost.
+LONG_TRANSFER_MINUTES = 180
 
 
 def explanation_factors(
@@ -94,6 +105,45 @@ def explanation_factors(
     for stay in itinerary.stays:
         if stay.departure.time() <= config.usable_day_start:
             factors.append(ExplanationFactor.EARLY_DEPARTURE)
+            break
+
+    # --- V3 ----------------------------------------------------------
+    if value is not None:
+        if value.preferences >= GREAT_MATCH or value.experience >= GREAT_MATCH:
+            factors.append(ExplanationFactor.GREAT_DESTINATION_MATCH)
+        elif value.preferences < WEAK:
+            factors.append(ExplanationFactor.WEAK_PREFERENCE_MATCH)
+
+        if value.travel_intensity <= CALM_INTENSITY:
+            factors.append(ExplanationFactor.LOW_TRAVEL_INTENSITY)
+        elif value.travel_intensity >= FRANTIC_INTENSITY:
+            factors.append(ExplanationFactor.HIGH_TRAVEL_INTENSITY)
+
+        if value.accommodation >= GOOD_ROOM:
+            factors.append(ExplanationFactor.GOOD_ACCOMMODATION_VALUE)
+        elif value.accommodation <= BASIC_ROOM:
+            factors.append(ExplanationFactor.BASIC_ACCOMMODATION)
+
+        if value.usable_ratio < WEAK:
+            factors.append(ExplanationFactor.LOW_USABLE_TIME)
+        if value.ideal_city_count and len(itinerary.cities) == value.ideal_city_count:
+            factors.append(ExplanationFactor.IDEAL_CITY_COUNT)
+
+    if itinerary.total_cost > 0:
+        stay_share = itinerary.cost_breakdown.accommodation / itinerary.total_cost
+        if stay_share >= EXPENSIVE_STAY_SHARE:
+            factors.append(ExplanationFactor.HIGH_ACCOMMODATION_COST)
+
+    if itinerary.ground_transfer_minutes >= LONG_TRANSFER_MINUTES:
+        factors.append(ExplanationFactor.LONG_TRANSFER_TIME)
+
+    for insight in itinerary.destination_insights:
+        if insight.dislikes_present:
+            factors.append(ExplanationFactor.CONTAINS_DISLIKED_EXPERIENCE)
+            break
+    for insight in itinerary.destination_insights:
+        if insight.previously_visited:
+            factors.append(ExplanationFactor.REVISITS_KNOWN_CITY)
             break
 
     # Preserve first-seen order while removing duplicates.

@@ -31,10 +31,16 @@ from ..models.transport import TransportType
 from ..models.trip import TripRequest
 from ..profiles import RecommendationProfile
 from ..providers.destinations import DestinationProvider
-from .scoring import ScoringEngine, clamp01
+from .accommodation_value import AccommodationAssessment, AccommodationScorer
+from .experience import ExperienceAssessment, ExperienceEngine
+from .intensity import IntensityAssessment, IntensityScorer
+from .scoring import Objectives, ScoringEngine, clamp01
 
 #: Days-per-city below which an itinerary reads as rushed regardless of price.
 MIN_DAYS_PER_CITY = 0.75
+
+#: Cities away from the ideal count at which CityCountFit reaches zero.
+CITY_COUNT_TOLERANCE = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,10 +75,16 @@ class TravelValueScorer:
         destinations: DestinationProvider,
         *,
         base: ScoringEngine | None = None,
+        experience: ExperienceEngine | None = None,
+        accommodation: AccommodationScorer | None = None,
+        intensity: IntensityScorer | None = None,
     ) -> None:
         self.config = config
         self.destinations = destinations
         self.base = base or ScoringEngine(config, destinations)
+        self.experience = experience or ExperienceEngine(config, destinations)
+        self.accommodation = accommodation or AccommodationScorer()
+        self.intensity = intensity or IntensityScorer()
 
     # ------------------------------------------------------------------
     # Cost
@@ -103,49 +115,33 @@ class TravelValueScorer:
     # ------------------------------------------------------------------
     # Experience
     # ------------------------------------------------------------------
-    def destination_quality(self, state: SearchState) -> float:
-        """Intrinsic appeal of the cities, independent of the user's taste.
+    def _stay_days(self, state: SearchState) -> list[tuple[str, float]]:
+        """``(city, usable days)`` for each completed stay.
 
-        Taste is PreferenceScore's job; this keeps the two from double-counting.
+        A partial state has not left its current city yet, so it has no usable
+        time there to judge; the optimistic minimum stay is assumed instead.
+        """
+        day = max(self.config.usable_day_minutes, 1)
+        pairs = [(stay.city, stay.usable_minutes / day) for stay in state.stays]
+        for city in state.cities[len(state.stays) :]:
+            pairs.append((city, float(self.config.min_city_stay_days)))
+        return pairs
+
+    def assess_experience(
+        self, state: SearchState, request: TripRequest
+    ) -> ExperienceAssessment:
+        """Full destination assessment, with per-city insights."""
+        return self.experience.assess(self._stay_days(state), request)
+
+    def experience_score(self, state: SearchState, request: TripRequest) -> float:
+        """Destination quality x preference match x stay quality, per city.
+
+        Uses the engine's memoized fast path: the full per-city insights are
+        built only for the itineraries that are actually returned.
         """
         if not state.cities:
             return 0.0
-        scores = []
-        for city in state.cities:
-            destination = self.destinations.get(city)
-            if destination is None:
-                scores.append(0.5)
-                continue
-            vector = destination.attribute_vector()
-            scores.append(sum(vector.values()) / len(vector))
-        return clamp01(sum(scores) / len(scores))
-
-    def stay_quality(self, state: SearchState) -> float:
-        """How well each stay matches what the city is worth, in *usable* time.
-
-        A 15-hour stop in London scores far below two real days there, because
-        the stay is measured against the city's recommended range in usable
-        days rather than in calendar nights.
-        """
-        if not state.stays:
-            return 0.0
-        day = max(self.config.usable_day_minutes, 1)
-        scores = []
-        for stay in state.stays:
-            usable_days = stay.usable_minutes / day
-            destination = self.destinations.get(stay.city)
-            if destination is None:
-                scores.append(0.5)
-                continue
-            if usable_days >= destination.recommended_min_days:
-                # Being at or beyond the recommended minimum is good; the V1
-                # stay_fit curve handles overstaying.
-                scores.append(self.base.stay_fit(stay.city, round(usable_days)))
-            else:
-                scores.append(
-                    clamp01(usable_days / max(destination.recommended_min_days, 1e-9))
-                )
-        return clamp01(sum(scores) / len(scores))
+        return self.experience.total_score(self._stay_days(state), request)
 
     def pace_quality(self, state: SearchState) -> float:
         """Penalizes cramming cities into days, however cheap the tickets are."""
@@ -159,18 +155,71 @@ class TravelValueScorer:
         span = max(comfortable - MIN_DAYS_PER_CITY, 1e-9)
         return clamp01((days_per_city - MIN_DAYS_PER_CITY) / span)
 
-    def experience_score(self, state: SearchState) -> float:
-        """Destination quality, stay quality and pace, equally weighted."""
+    # ------------------------------------------------------------------
+    # City count
+    # ------------------------------------------------------------------
+    def ideal_city_count(
+        self, request: TripRequest, profile: RecommendationProfile
+    ) -> int:
+        """How many cities this trip length and profile want.
+
+        Derived from the catalog's own recommended stays rather than a
+        hard-coded table, then shifted by the profile's bias: ADVENTURE aims one
+        city higher, CHEAPEST one lower.
+        """
+        days = float(request.duration_days)
+        ideal = self.experience.ideal_city_count(request, days)
+        if request.preferred_city_count is not None:
+            # An explicit number is the traveler's decision, not a suggestion.
+            return min(request.preferred_city_count, self.config.max_cities)
+        ceiling = self.experience.max_supportable_cities(days)
+        return max(1, min(ideal + profile.city_count_bias, ceiling))
+
+    def city_count_score(
+        self,
+        state: SearchState,
+        request: TripRequest,
+        profile: RecommendationProfile,
+    ) -> float:
+        """How close the itinerary is to the right number of cities.
+
+        Both directions cost: one city on a ten-day trip under-explores, five
+        cities on a five-day trip leaves no time anywhere. Being two cities off
+        the right number is a genuinely different trip from the one the traveler
+        asked for, so that is where the score bottoms out.
+        """
         if not state.cities:
             return 0.0
-        return clamp01(
-            (
-                self.destination_quality(state)
-                + self.stay_quality(state)
-                + self.pace_quality(state)
-            )
-            / 3.0
-        )
+        ideal = self.ideal_city_count(request, profile)
+        deviation = abs(len(state.cities) - ideal)
+        return clamp01(1.0 - deviation / CITY_COUNT_TOLERANCE)
+
+    # ------------------------------------------------------------------
+    # Accommodation, convenience, intensity
+    # ------------------------------------------------------------------
+    def assess_accommodation(
+        self, state: SearchState, request: TripRequest
+    ) -> AccommodationAssessment:
+        return self.accommodation.assess(state, request.accommodation_preference)
+
+    def accommodation_score(self, state: SearchState, request: TripRequest) -> float:
+        """Room quality only - price is BudgetEfficiency's job, not this one."""
+        return self.assess_accommodation(state, request).score
+
+    def convenience_score(self, state: SearchState) -> float:
+        """Leg count, mode comfort and hop length, from the V1 engine."""
+        return self.base.convenience_score(state)
+
+    def assess_intensity(
+        self, state: SearchState, request: TripRequest
+    ) -> IntensityAssessment:
+        return self.intensity.assess(state, request.travel_style)
+
+    def intensity_score(self, state: SearchState, request: TripRequest) -> float:
+        """``1`` when the trip is calm, ``0`` when it is all airports."""
+        if not state.route:
+            return 0.0
+        return self.assess_intensity(state, request).score
 
     # ------------------------------------------------------------------
     # Preferences
@@ -242,10 +291,14 @@ class TravelValueScorer:
     ) -> dict[str, float]:
         return {
             "cost": self.cost_score(state.total_cost, request, profile),
-            "experience": self.experience_score(state),
+            "experience": self.experience_score(state, request),
             "preferences": self.preference_score(state, request),
             "time": self.time_score(state, request, optimistic=optimistic),
             "diversity": self.diversity_score(state),
+            "city_count": self.city_count_score(state, request, profile),
+            "accommodation": self.accommodation_score(state, request),
+            "convenience": self.convenience_score(state),
+            "intensity": self.intensity_score(state, request),
         }
 
     def weighted_total(
@@ -263,6 +316,9 @@ class TravelValueScorer:
         """The full, explainable Travel Value of a completed itinerary."""
         components = self.components(state, request, profile)
         timing = self.time_profile(state, request)
+        experience = self.assess_experience(state, request)
+        rooms = self.assess_accommodation(state, request)
+        intensity = self.assess_intensity(state, request)
         return TravelValueBreakdown(
             profile=profile.name,
             **components,
@@ -274,6 +330,32 @@ class TravelValueScorer:
             usable_destination_minutes=timing.usable_destination_minutes,
             transport_minutes=timing.transport_minutes,
             usable_ratio=round(timing.usable_ratio, 4),
+            travel_intensity=intensity.intensity,
+            legs_per_day=intensity.legs_per_day,
+            destination_quality=experience.quality,
+            experience_richness=experience.richness,
+            stay_quality=experience.stay_quality,
+            accommodation_rating=rooms.rating,
+            accommodation_location=rooms.location,
+            ideal_city_count=self.ideal_city_count(request, profile),
+        )
+
+    def objectives(self, state: SearchState, request: TripRequest) -> Objectives:
+        """The multi-objective vector the Pareto filter compares.
+
+        Deliberately wider than V2's four: collapsing a trip to cost and time
+        hides exactly the trade-offs the product exists to surface, so usable
+        time, experience, room quality and convenience are on the frontier too.
+        """
+        return Objectives(
+            cost=state.total_cost,
+            travel_minutes=state.total_transport_minutes,
+            city_count=state.city_count,
+            preference_score=round(self.preference_score(state, request), 6),
+            usable_minutes=state.usable_destination_minutes,
+            experience=round(self.experience_score(state, request), 6),
+            accommodation=round(self.accommodation_score(state, request), 6),
+            convenience=round(self.convenience_score(state), 6),
         )
 
     def total(

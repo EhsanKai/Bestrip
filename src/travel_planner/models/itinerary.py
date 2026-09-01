@@ -44,20 +44,45 @@ class TravelValueBreakdown(BaseModel):
 
     profile: ProfileName
 
+    # --- the nine weighted components --------------------------------
     cost: float
+    """BudgetEfficiency."""
     experience: float
+    """DestinationExperience."""
     preferences: float
+    """PreferenceMatch."""
     time: float
+    """TimeUtilization."""
     diversity: float
+    city_count: float = 0.0
+    """CityCountFit (V3)."""
+    accommodation: float = 0.0
+    """AccommodationQuality (V3)."""
+    convenience: float = 0.0
+    """Convenience (V3)."""
+    intensity: float = 0.0
+    """TravelIntensity, as a score: 1 is calm, 0 is frantic (V3)."""
 
     total: float
     weights: dict[str, float] = Field(default_factory=dict)
 
+    # --- raw diagnostics, not weighted -------------------------------
     budget_utilization: float = 0.0
     usable_destination_minutes: int = 0
     transport_minutes: int = 0
     usable_ratio: float = 0.0
     """Usable destination time as a share of the requested days."""
+
+    travel_intensity: float = 0.0
+    """Raw transit share: transport minutes over trip minutes (V3)."""
+    legs_per_day: float = 0.0
+    destination_quality: float = 0.0
+    experience_richness: float = 0.0
+    stay_quality: float = 0.0
+    accommodation_rating: float = 0.0
+    accommodation_location: float = 0.0
+    ideal_city_count: int = 0
+    """How many cities this trip length and profile were aiming for (V3)."""
 
 
 class CostBreakdown(BaseModel):
@@ -74,6 +99,24 @@ class CostBreakdown(BaseModel):
         return round(self.transport + self.accommodation + self.ground_transfer, 2)
 
 
+class DestinationInsightSummary(BaseModel):
+    """Why one city in the itinerary scored the way it did (V3)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    city: str
+    score: float
+    quality: float
+    preference_match: float
+    stay_quality: float
+    usable_days: float
+    strengths: list[str] = Field(default_factory=list)
+    weaknesses: list[str] = Field(default_factory=list)
+    dislikes_present: list[str] = Field(default_factory=list)
+    previously_visited: bool = False
+    stay_note: str = ""
+
+
 class StaySummary(BaseModel):
     """One city stay as presented to a caller."""
 
@@ -86,6 +129,10 @@ class StaySummary(BaseModel):
     accommodation_cost: float = 0.0
     accommodation_name: str | None = None
     accommodation_tier: str | None = None
+    accommodation_type: str | None = None
+    accommodation_rating: float | None = None
+    accommodation_location_score: float | None = None
+    free_cancellation: bool = False
     usable_minutes: int = 0
 
 
@@ -114,6 +161,20 @@ class ExplanationFactor(str, Enum):
     VISITS_MANDATORY_DESTINATION = "visits_mandatory_destination"
     LOW_ACCOMMODATION_COST = "low_accommodation_cost"
     NEARBY_DEPARTURE_AIRPORT = "nearby_departure_airport"
+
+    # --- V3 ----------------------------------------------------------
+    GREAT_DESTINATION_MATCH = "great_destination_match"
+    WEAK_PREFERENCE_MATCH = "weak_preference_match"
+    LOW_TRAVEL_INTENSITY = "low_travel_intensity"
+    HIGH_TRAVEL_INTENSITY = "high_travel_intensity"
+    GOOD_ACCOMMODATION_VALUE = "good_accommodation_value"
+    HIGH_ACCOMMODATION_COST = "high_accommodation_cost"
+    BASIC_ACCOMMODATION = "basic_accommodation"
+    LONG_TRANSFER_TIME = "long_transfer_time"
+    LOW_USABLE_TIME = "low_usable_time"
+    IDEAL_CITY_COUNT = "ideal_city_count"
+    CONTAINS_DISLIKED_EXPERIENCE = "contains_disliked_experience"
+    REVISITS_KNOWN_CITY = "revisits_known_city"
 
 
 class BaselineResult(BaseModel):
@@ -180,6 +241,8 @@ class Itinerary(BaseModel):
     """The V1 six-component diagnostic, kept for continuity and tuning."""
 
     explanation_factors: list[ExplanationFactor] = Field(default_factory=list)
+    destination_insights: list[DestinationInsightSummary] = Field(default_factory=list)
+    """Per-city "why this destination?" data (V3)."""
 
     baseline_comparison: BaselineComparison | None = None
 
@@ -195,6 +258,15 @@ class Itinerary(BaseModel):
     @property
     def experience_score(self) -> float:
         return self.value_breakdown.experience if self.value_breakdown else 0.0
+
+    @property
+    def accommodation_score(self) -> float:
+        return self.value_breakdown.accommodation if self.value_breakdown else 0.0
+
+    @property
+    def travel_intensity(self) -> float:
+        """Raw transit share; lower is calmer."""
+        return self.value_breakdown.travel_intensity if self.value_breakdown else 0.0
 
     @property
     def route_nodes(self) -> list[str]:
@@ -215,6 +287,8 @@ class PlannerMetadata(BaseModel):
     origin_airports: list[str] = Field(default_factory=list)
     start_dates: list[str] = Field(default_factory=list)
     beam_width: int = 0
+    """The width actually used, after scaling for the number of start dates."""
+    configured_beam_width: int = 0
     max_cities: int = 0
     states_generated: int = 0
     states_rejected: int = 0
@@ -225,6 +299,8 @@ class PlannerMetadata(BaseModel):
     elapsed_seconds: float = 0.0
     currency: str = "EUR"
     warnings: list[str] = Field(default_factory=list)
+    provider_metrics: dict[str, float] = Field(default_factory=dict)
+    """Provider lookups, cache hits and upstream calls for this run (V3)."""
 
 
 class PlanResult(BaseModel):

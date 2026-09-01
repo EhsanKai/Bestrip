@@ -126,15 +126,39 @@ def test_recommendations_stay_below_the_similarity_threshold(planner, koln_reque
             assert jaccard_similarity(left, right) <= planner.config.diversity_similarity_threshold
 
 
-def test_planner_reports_diversity_filtering(planner, koln_request):
+def test_planner_reports_similarity_filtering(planner, koln_request):
+    """Both similarity stages report themselves with a similarity score.
+
+    V3 added an exact route-duplicate pass in front of the Jaccard filter, so
+    near-identical trips are usually removed there; the Jaccard pass then has
+    less to do, and on some requests nothing at all. Either stage firing is
+    evidence the pipeline is de-duplicating.
+    """
     result = planner.plan(koln_request, debug=True)
-    diversity_records = [
-        record for record in result.debug.filtered if record.stage.value == "DIVERSITY"
+    similarity_records = [
+        record
+        for record in result.debug.filtered
+        if record.stage.value in {"DIVERSITY", "DUPLICATE_ROUTE"}
     ]
-    assert diversity_records
-    record = diversity_records[0]
-    assert record.similarity is not None and record.similarity > 0
-    assert record.dominated_by
+    assert similarity_records
+    for record in similarity_records:
+        assert record.similarity is not None and record.similarity > 0
+        assert record.route
+
+
+def test_exact_route_duplicates_are_collapsed(planner, koln_request):
+    """The same airports and cities at a different time of day is one trip."""
+    result = planner.plan(koln_request, debug=True)
+    duplicates = [
+        record
+        for record in result.debug.filtered
+        if record.stage.value == "DUPLICATE_ROUTE"
+    ]
+    assert duplicates
+    assert all(record.similarity == 1.0 for record in duplicates)
+
+    routes = [i.route_label() for i in result.recommendations]
+    assert len(routes) == len(set(routes))
 
 
 def test_diversity_can_be_disabled(transport, destinations, config, koln_request):

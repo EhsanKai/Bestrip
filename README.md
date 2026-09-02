@@ -36,7 +36,7 @@ Two things, in one repository:
 
 | | |
 | --- | --- |
-| **The engine** (`src/detoura/`) | A deterministic, multi-objective trip optimizer. Beam search over *whole trips* — the ride to the airport, the flights and trains, the hotel and how good it is, the days you actually get on the ground, and how well the cities match the traveller. 711 tests. |
+| **The engine** (`src/detoura/`) | A deterministic, multi-objective trip optimizer. Beam search over *whole trips* — the ride to the airport, the flights and trains, the hotel and how good it is, the days you actually get on the ground, and how well the cities match the traveller. 728 tests. |
 | **The product** (`frontend/`) | A React/TypeScript application that makes that engine feel simple. Landing, discovery, search, results, comparison and trip detail, wired to the real API. |
 
 Between them sits `/api/v1` — a product contract that deliberately exposes
@@ -104,9 +104,25 @@ The dev server proxies `/api` to the backend, so the frontend uses the same
 paths in development and production.
 
 ```bash
-pytest                                       # 711 tests
+pytest                                       # 728 tests
 python examples/v4_capabilities.py           # the engine, on the terminal
 ```
+
+### Deploying
+
+One image serves both halves, and needs no configuration to do it — the client
+asks for the relative path `/api/v1`, so it never has to be told the hostname it
+is running on:
+
+```bash
+docker build -t detoura .
+docker run -p 8000:8000 detoura              # http://localhost:8000
+```
+
+Railway, Fly and Cloud Run detect the `Dockerfile` on their own; `render.yaml`
+is there for Render. Hosting the client separately on a CDN instead means
+setting `VITE_API_BASE` when building it and `DETOURA_CORS_ORIGINS` on the API —
+both, or every request fails. [`DEPLOY.md`](DEPLOY.md) has the detail.
 
 ---
 
@@ -1820,7 +1836,7 @@ those are the application's business, and a model asked to guess them will.
 ## Running the tests
 
 ```bash
-pytest                                       # 711 tests
+pytest                                       # 728 tests
 pytest tests/test_beam_search.py -v          # the non-greedy proof
 pytest tests/test_adversarial.py -v          # the 20 V2 spec scenarios
 pytest tests/test_v3_adversarial.py -v       # the 13 V3 scenarios
@@ -1876,7 +1892,8 @@ pre-existing test runs as written.
 | `test_v4_real_providers.py` | auth, mapping, currency, retries, backoff, rate limits | 57 |
 | `test_v4_llm.py` | the grounding guard, schema, retry, fallback, isolation | 45 |
 | `test_v5_product.py` | search modes, failure semantics, freshness, confidence, the product contract | 55 |
-| | **total** | **711** |
+| `test_deployment.py` | serving the built client, the API's precedence over it, cache policy, CORS | 17 |
+| | **total** | **728** |
 
 Determinism is asserted, not assumed: several tests plan the same request twice
 and compare the full result object, the budget sweep is compared for exact

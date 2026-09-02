@@ -1,0 +1,20 @@
+# One service, both halves, built from the repository's Dockerfile.
+#
+# Railway and Fly.io need no file at all - they detect the Dockerfile, and the
+# image honours $PORT for exactly that reason. This one is here because Render
+# is declarative, and because it documents what any host needs to know.
+
+services:
+  - type: web
+    name: detoura
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      # Unset on purpose. The client is served from this same service, so its
+      # requests are same-origin and CORS never comes into it. Set this only if
+      # a client hosted elsewhere needs to call this API.
+      - key: DETOURA_CORS_ORIGINS
+        sync: false

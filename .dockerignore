@@ -1,0 +1,28 @@
+# Keep the build context small and, more importantly, hermetic: node_modules
+# and frontend/dist must come from the image's own build, never from whatever
+# happens to be on the machine running `docker build`.
+.git
+.gitignore
+**/node_modules
+frontend/dist
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.venv
+venv
+htmlcov
+.coverage
+tests
+examples
+.github
+Dockerfile
+.dockerignore
+DEPLOY.md
+**/.DS_Store
+**/*.local
+**/.env
+**/.env.*
+!**/.env.example

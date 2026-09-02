@@ -74,6 +74,7 @@ def make_state(
     completed: bool = True,
     start: datetime | None = None,
     rooms: dict[str, AccommodationOption] | None = None,
+    cheapest_rooms: dict[str, AccommodationOption] | None = None,
     outbound_transfer: GroundTransferOption | None = None,
     return_transfer: GroundTransferOption | None = None,
 ) -> SearchState:
@@ -84,6 +85,11 @@ def make_state(
     dates exactly as beam search does it. ``rooms`` maps a city to the
     accommodation booked there; cities left out of it stay free, which keeps
     V1-era tests focused on transport economics.
+
+    ``cheapest_rooms`` (V4) maps a city to the cheapest room the provider would
+    have offered there, which is the baseline the value-for-money diagnostic
+    measures a premium against. Left out, the booked room is its own baseline
+    and the premium is zero - the same default beam search applies.
     """
     origin = legs[0].origin
     moment = start or datetime.combine(legs[0].departure.date(), time.min)
@@ -100,6 +106,7 @@ def make_state(
             travelers=travelers,
             is_return=is_return,
             accommodation=(rooms or {}).get(state.current_location),
+            cheapest_alternative=(cheapest_rooms or {}).get(state.current_location),
             usable_minutes=(
                 0
                 if index == 0

@@ -337,6 +337,8 @@ class TravelValueScorer:
             stay_quality=experience.stay_quality,
             accommodation_rating=rooms.rating,
             accommodation_location=rooms.location,
+            accommodation_value_for_money=rooms.value_for_money,
+            accommodation_premium=rooms.premium,
             ideal_city_count=self.ideal_city_count(request, profile),
         )
 

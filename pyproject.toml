@@ -13,6 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+llm = [
+    "anthropic>=0.40",
+]
 api = [
     "fastapi>=0.110",
     "uvicorn>=0.27",

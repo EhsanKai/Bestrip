@@ -242,6 +242,7 @@ class TravelPlanner:
             start_dates=[d.isoformat() for d in start_dates],
             beam_width=trace.effective_beam_width or self.config.beam_width,
             configured_beam_width=self.config.beam_width,
+            beam_rounds=[r.model_dump() for r in trace.beam_rounds],
             max_cities=self.config.max_cities,
             states_generated=trace.total_generated,
             states_rejected=trace.total_rejected,
@@ -445,6 +446,15 @@ class TravelPlanner:
                         stay.accommodation and stay.accommodation.free_cancellation
                     ),
                     usable_minutes=stay.usable_minutes,
+                    rooms_available=(
+                        stay.accommodation.rooms_available if stay.accommodation else None
+                    ),
+                    cheapest_alternative_cost=(
+                        stay.cheapest_alternative_cost
+                        if stay.cheapest_alternative
+                        else None
+                    ),
+                    accommodation_premium=stay.accommodation_premium,
                 )
                 for stay in state.stays
             ],

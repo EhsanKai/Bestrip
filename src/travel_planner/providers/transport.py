@@ -55,6 +55,7 @@ class SyntheticTransportDataProvider:
         start_date: date = NETWORK_START,
         end_date: date = NETWORK_END,
         price_variation: bool = True,
+        simulate_scarcity: bool = False,
     ) -> None:
         self._connections: dict[tuple[str, str], list[Connection]] = defaultdict(list)
         for connection in connections if connections is not None else CONNECTIONS:
@@ -62,6 +63,10 @@ class SyntheticTransportDataProvider:
         self._start_date = start_date
         self._end_date = end_date
         self._price_variation = price_variation
+        #: Attach seat counts (V4). Off by default so the dataset keeps
+        #: reporting availability as *unknown*, which is what a feed without
+        #: inventory data looks like and what every published number assumed.
+        self._simulate_scarcity = simulate_scarcity
         self._cache: dict[tuple[str, str, date], list[TransportOption]] = {}
         self.search_calls = 0
 
@@ -84,7 +89,10 @@ class SyntheticTransportDataProvider:
         for connection in self._connections.get((origin, destination), ()):
             options.extend(
                 build_options(
-                    connection, departure_date, price_variation=self._price_variation
+                    connection,
+                    departure_date,
+                    price_variation=self._price_variation,
+                    simulate_scarcity=self._simulate_scarcity,
                 )
             )
         # Deterministic ordering: cheapest first, then earliest, then by id.

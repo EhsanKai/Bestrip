@@ -27,6 +27,26 @@ class CityStay:
     accommodation_cost: float = 0.0
     usable_minutes: int = 0
 
+    cheapest_alternative: AccommodationOption | None = None
+    """The cheapest room the provider offered for this stay (V4).
+
+    Carried so the value-for-money diagnostic can answer "what did the premium
+    buy?" without going back to a provider. It is the *fetched* alternative,
+    not a hypothetical one: the engine can only be judged against options it
+    actually considered. When the booked room **is** the cheapest, this points
+    at the same object.
+    """
+
+    cheapest_alternative_cost: float = 0.0
+    """Party total the cheapest fetched alternative would have cost."""
+
+    @property
+    def accommodation_premium(self) -> float:
+        """What was paid above the cheapest room fetched for this stay."""
+        if self.accommodation is None:
+            return 0.0
+        return round(self.accommodation_cost - self.cheapest_alternative_cost, 2)
+
 
 @dataclass(frozen=True, slots=True)
 class SearchState:
@@ -166,6 +186,7 @@ class SearchState:
         accommodation: AccommodationOption | None = None,
         usable_minutes: int = 0,
         return_transfer: GroundTransferOption | None = None,
+        cheapest_alternative: AccommodationOption | None = None,
     ) -> "SearchState":
         """Return a new state with ``leg`` appended.
 
@@ -180,6 +201,11 @@ class SearchState:
             stay_cost = (
                 accommodation.total_price(travelers) if accommodation is not None else 0.0
             )
+            # Default the baseline to the booked room, so a stay with only one
+            # option on offer reports a premium of zero rather than of its whole
+            # price. "No alternative" is not "the alternative was free".
+            baseline = cheapest_alternative if cheapest_alternative is not None else accommodation
+            baseline_cost = baseline.total_price(travelers) if baseline is not None else 0.0
             stays = self.stays + (
                 CityStay(
                     city=self.current_location,
@@ -189,6 +215,8 @@ class SearchState:
                     accommodation=accommodation,
                     accommodation_cost=stay_cost,
                     usable_minutes=usable_minutes,
+                    cheapest_alternative=baseline,
+                    cheapest_alternative_cost=baseline_cost,
                 ),
             )
             accommodation_cost = round(accommodation_cost + stay_cost, 2)

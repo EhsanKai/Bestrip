@@ -79,6 +79,46 @@ class PlannerConfig(BaseModel):
     """
     max_effective_beam_width: int = Field(default=80, ge=1)
 
+    # --- adaptive beam (V4) ------------------------------------------
+    adaptive_beam: bool = False
+    """Widen the beam until widening stops paying, instead of guessing a width.
+
+    V3 measured what a fixed beam costs and admitted the default misses better
+    itineraries: ``beam_width=40`` found a 0.6802 trip that the default 20 never
+    reached. The honest fix is not a bigger guess, it is to stop guessing - run
+    the search, double the beam, and keep doubling while the best score is still
+    improving by more than :attr:`adaptive_beam_tolerance`.
+
+    Re-running is cheaper than it sounds: every provider lookup is already
+    cached from the previous round, so a widened round pays for search work
+    only, never for upstream calls. The ladder still costs real time - doubling
+    means the whole climb is a little under twice the widest round on its own.
+    Measured on the standard request: 0.98s at a fixed beam of 40, 13.9s for
+    the full ladder 40 -> 80 -> 160 -> 320, and the answer improves from 0.6729
+    to 0.6823. That is the trade, stated rather than hidden.
+
+    **Off by default**, because turning it on changes which itinerary wins and
+    every number published for V3 was measured with a fixed beam. Turn it on and
+    the engine finds better trips; leave it off and V3 reproduces exactly.
+    """
+    adaptive_beam_tolerance: float = Field(default=0.002, ge=0.0)
+    """Score gain below which a wider beam is judged not to have paid.
+
+    0.002 is about a tenth of the gap between adjacent recommendations on a
+    typical result set - small enough that a real improvement is never mistaken
+    for noise, large enough that the ladder stops.
+    """
+    adaptive_beam_max_rounds: int = Field(default=4, ge=1)
+    """Hard ceiling on widenings, so a pathological request cannot run away."""
+    adaptive_beam_max_width: int = Field(default=320, ge=1)
+    """Widest beam the ladder may climb to.
+
+    Deliberately *not* ``max_effective_beam_width``: that one exists to stop
+    flexible-date scaling from multiplying an already-wide beam, and reusing it
+    here would stop the ladder at 80 before it had plateaued - which is a
+    ceiling masquerading as a stopping rule.
+    """
+
     beam_slots_per_route: int = Field(default=2, ge=1)
     """Cap on beam slots sharing one city sequence.
 
@@ -116,6 +156,17 @@ class PlannerConfig(BaseModel):
     """Two itineraries are "the same trip" above this Jaccard city overlap."""
 
     # --- accommodation (V2) -------------------------------------------
+    # --- inventory (V4) ----------------------------------------------
+    require_availability: bool = True
+    """Refuse to book fares and rooms the provider says are sold out.
+
+    Harmless against a feed that reports no inventory - ``None`` means
+    *unknown*, and unknown stays bookable - so this is on by default and the
+    synthetic providers only report counts when asked to
+    (``simulate_scarcity``). Turn it off to price a trip against availability
+    you intend to re-check at booking time.
+    """
+
     enable_accommodation: bool = True
     """Charge for city stays. ``False`` restores the V1 "stays are free" model."""
     accommodation_options_per_stay: int = Field(default=2, ge=1)

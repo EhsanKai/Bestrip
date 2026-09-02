@@ -11,13 +11,16 @@ cities match the traveler — then searches the space of complete round trips fo
 the best one under the profile you ask for.
 
 > ⚠️ **All data is synthetic.** Flights, trains, buses, hotel rates, ratings,
-> airport transfers and destination metadata are fabricated to exercise the
-> optimizer. Nothing here reflects real prices or availability.
+> inventory, airport transfers and destination metadata are fabricated to
+> exercise the optimizer. Nothing here reflects real prices or availability.
+> A real transport provider is implemented and tested (V4) but ships without a
+> credential, so nothing in this repository makes a network call.
 
 ---
 
 ## Table of contents
 
+- [What V4 changed](#what-v4-changed)
 - [What V3 changed](#what-v3-changed)
 - [The five traps](#the-five-traps)
 - [Quick start](#quick-start)
@@ -35,6 +38,9 @@ the best one under the profile you ask for.
   - [10. Diversity filtering](#10-diversity-filtering)
   - [11. Baseline comparison](#11-baseline-comparison)
 - [Candidate generation and complexity](#candidate-generation-and-complexity)
+- [The adaptive beam](#the-adaptive-beam)
+- [Inventory and availability](#inventory-and-availability)
+- [Learning the profile weights](#learning-the-profile-weights)
 - [Budget sensitivity](#budget-sensitivity)
 - [Recommendation profiles](#recommendation-profiles)
 - [Worked example](#worked-example)
@@ -47,6 +53,46 @@ the best one under the profile you ask for.
 - [Running the tests](#running-the-tests)
 - [Performance](#performance)
 - [Known limitations](#known-limitations)
+- [What a V5 would be for](#what-a-v5-would-be-for)
+
+---
+
+## What V4 changed
+
+V3 closed with a list of six recommendations for V4 and a "ready for future
+implementation, not implemented" table. V4 is that list, done. Each item below
+names the V3 limitation it removes.
+
+| V3 said | V4 does |
+| --- | --- |
+| *"the default beam demonstrably misses a better trip"* | **Adaptive beam**: widen while widening still pays. Finds the 0.6823 itinerary a fixed beam of 40 never reached. |
+| *"rooms never sell out and flights never fill; there is no inventory model"* | **Inventory**: seat and room counts, two new rejection reasons, and refundability priced against scarcity instead of a flat bonus. |
+| *"profile weights are a starting point, not a claim about real travelers"* | **Learned weights**: fit the nine weights from chosen-vs-shown feedback the planner already produces. |
+| *"the HTTP clients and their response mapping"* are missing | **A real transport provider**, end to end: OAuth, retries, backoff, rate limiting, response mapping, currency normalization. Tested against recorded payloads. |
+| *"a model call, and the prompt/guardrails around it"* are missing | **Both LLM seams**, Claude-backed, with the guardrails that make them safe to install. |
+| *"the accommodation component cannot tell you whether a room was good value"* | **Value for money**: quality-per-euro against the cheapest room actually offered. A diagnostic, never a weighted component. |
+
+Three things did **not** change, and that is deliberate:
+
+- **The beam search is still the beam search.** Nothing was replaced.
+- **The optimizer still contains no LLM**, and the AST test that enforces it
+  now guards a package with a real model in it.
+- **Every V3 number in this README still reproduces.** Adaptive beam and
+  inventory simulation are both off by default, because turning either on
+  changes which itinerary wins, and a benchmark you cannot reproduce is not a
+  benchmark. Each is one config field.
+
+**Two bugs V4 found in its own new code**, both fixed and both tested:
+
+- **The prior did not out-vote thin evidence.** The weight fit averages its
+  gradient over pairs, so two observations pushed exactly as hard as two
+  hundred - and three clicks produced a *more* extreme profile than sixty. The
+  prior is now scaled against the amount of evidence, which is what a
+  fixed-strength prior against a summed likelihood would have done.
+- **A missing exchange rate silently returned zero flights.** The real provider
+  skipped offers it could not price, which is right for a malformed record and
+  catastrophic for a misconfiguration: "nobody configured GBP" came out as
+  "there are no flights". It now fails loudly.
 
 ---
 
@@ -162,7 +208,8 @@ refuses this one.
 ```bash
 pip install -e ".[dev]"
 
-pytest                                            # 443 tests
+pytest                                            # 654 tests
+python examples/v4_capabilities.py                # the six V4 additions
 python examples/v3_scenarios.py                   # A/B/C x three profiles
 python examples/v3_scenarios.py --budget-sensitivity
 python examples/v3_scenarios.py --baseline        # their idea vs. ours
@@ -246,7 +293,10 @@ travel_planner/
 │   ├── synthetic_transport.py the transport network
 │   ├── synthetic_accommodation.py  rates, tiers, ratings, locations
 │   └── ground_transfers.py    origin ↔ airport table
+├── learning.py                fitting profile weights from choices        (V4)
 ├── providers/
+│   ├── http.py                HttpClient, retries, backoff, rate limits  (V4)
+│   ├── amadeus.py             a real transport provider, end to end      (V4)
 │   ├── transport.py           TransportDataProvider  + Synthetic / Real
 │   ├── accommodation.py       AccommodationDataProvider + Synthetic / No / Real
 │   ├── ground_transfer.py     GroundTransferProvider + Synthetic / Free / Real
@@ -270,7 +320,11 @@ travel_planner/
 │   ├── accommodation_estimator.py  admissible bound on sleeping
 │   ├── budget_sensitivity.py  "what would more money buy?"                (V3)
 │   └── explanation.py         structured explanation factors
-├── llm/interfaces.py          PreferenceParser / ItineraryExplainer seams
+├── llm/
+│   ├── interfaces.py          PreferenceParser / ItineraryExplainer seams
+│   ├── client.py              LlmClient, AnthropicClient, ScriptedClient  (V4)
+│   ├── explainer.py           Claude explainer + numeric grounding guard  (V4)
+│   └── parser.py              Claude parser + schema, retry, fallback     (V4)
 └── api/                       FastAPI adapter (optional)
 ```
 
@@ -405,6 +459,29 @@ than model it. The result is that a €120 4.8★ room does not automatically be
 a €60 4.4★ one: it wins only when the quality gain outweighs what the extra €60
 costs on the budget axis. `tests/test_v3_accommodation_value.py` walks the
 break-even and asserts monotonicity across it.
+
+**Was the upgrade worth it?** (V4) That is the one question quality-only
+scoring cannot answer, and V3 listed it as a known gap. `value_for_money`
+compares the premium paid against the quality it bought, relative to the
+cheapest room the provider *actually offered* for the same stay — because that
+is the alternative the traveler really had:
+
+```
+Prague     standard  paid 148.50  cheapest offered  96.51  premium 51.99  → worth it
+Berlin     budget    paid 153.72  cheapest offered 153.72  premium  0.00  → nothing traded
+```
+
+`0.5` is neutral: either no premium was paid, or it bought exactly the going
+rate. The reference rate is **measured, not guessed** — it is the rate at which
+the whole tier ladder trades quality for money for a balanced traveler, which
+makes budget→comfort land on neutral by construction and then says something
+useful about the halves: budget→standard scores **0.89**, standard→comfort
+**0.27**. The first step up is good value and the second is not, and a single
+"room quality" number cannot tell those apart.
+
+It is a **diagnostic, never a weighted component** — a test asserts
+`value_for_money` is not in `COMPONENTS`. Putting it in the objective would
+score price for a third time.
 
 ### 4. Constraints and admissible bounds
 
@@ -666,6 +743,167 @@ than a constant buried in the search. **And the last row is the cap doing its
 job**: `max_effective_beam_width = 80` stops flexible-date scaling from
 multiplying a wide beam into an unbounded one, so `beam_width=80` here buys
 nothing over 40.
+
+---
+
+## The adaptive beam
+
+V3 measured the cost of its own heuristic and published the awkward result: a
+beam of 40 found a **0.6802** itinerary that the default 20 never reached. That
+is what "heuristic" means, and widening the guess would only have moved the
+problem to a different request.
+
+V4 stops guessing. `adaptive_beam=True` runs the search, doubles the beam, and
+keeps doubling while the best completed score is still improving by more than
+`adaptive_beam_tolerance`:
+
+```
+$ python examples/v4_capabilities.py --beam
+
+  fixed (V3)      0.94s  beam 40   score 0.6729  CGN → Munich → Vienna → CGN
+  adaptive (V4)  13.98s  beam 320  score 0.6823  CGN → Prague → Vienna → CGN
+       rung w=40   best 0.6729  completed 786   states 12374    gain +0.0000
+       rung w=80   best 0.6802  completed 1584  states 26362    gain +0.0073
+       rung w=160  best 0.6823  completed 3658  states 50864    gain +0.0021
+       rung w=320  best 0.6823  completed 7348  states 95090    gain +0.0000
+```
+
+The ladder is the point. It finds the trip V3 knew it was missing, it shows
+*where* the gain came from (the first doubling bought 0.0073, the second
+0.0021, the third nothing), and it stops on evidence rather than on a constant.
+`metadata.beam_rounds` carries every rung, so a caller can tell whether the
+search stopped because widening stopped paying or because it hit a ceiling.
+
+**What it costs.** Doubling means the whole climb is a little under twice the
+widest round alone — 14s against 0.94s here, for +0.0094 of score. Re-running
+is cheaper than it sounds because every provider lookup is already cached from
+the previous rung, so a widened round pays for search work and never for
+upstream calls; but it is not free, and `metadata.states_generated` reports the
+*whole* ladder including the rounds whose results were thrown away. Reporting
+only the final round would understate what the answer cost.
+
+**Off by default.** Turning it on changes which itinerary wins, and every
+number published for V3 was measured with a fixed beam. One config field.
+
+| field | default | |
+| --- | --- | --- |
+| `adaptive_beam` | `False` | opt in |
+| `adaptive_beam_tolerance` | `0.002` | gain below which a rung did not pay |
+| `adaptive_beam_max_rounds` | `4` | hard ceiling on widenings |
+| `adaptive_beam_max_width` | `320` | widest rung — deliberately *not* `max_effective_beam_width`, which exists to cap flexible-date scaling and would stop the ladder at 80 before it had plateaued |
+
+---
+
+## Inventory and availability
+
+V3's limitations said it plainly: *"rooms never sell out and flights never fill;
+there is no inventory model"*, and `free_cancellation` was carried but unpriced.
+
+**Unknown is not unlimited.** `TransportOption.seats_available` and
+`AccommodationOption.rooms_available` are `int | None`, and `None` means the
+provider did not say — which keeps the option bookable. A feed that quotes
+fares without inventory counts is most of the real world, and an engine that
+refused to book anything a provider declines to count would refuse to work.
+`0` is a genuine sell-out.
+
+**Sold out is not the same as absent.** Two rejection reasons, because
+"there are no hotels in Prague" and "the last double went" are different facts
+and a traveler told the wrong one has been misled:
+
+```
+SOLD_OUT_TRANSPORT           2601
+SOLD_OUT_ACCOMMODATION        635
+NO_ACCOMMODATION_AVAILABLE      …
+```
+
+**Sold-out fares are excluded before the branching cap, not after.** With
+`max_transport_options_per_leg = 4`, letting an unbookable fare occupy one of
+those four slots would push a bookable one out of the search entirely. A test
+constructs exactly that case: two fares, the cheaper sold out, one slot.
+
+**Refundability is now worth something.** V3 paid a flat `+0.05` for free
+cancellation, which says that being able to cancel the last room in town is
+worth exactly as much as cancelling one of forty. The bonus now scales with
+scarcity, up to `+0.05` more — and stays exactly flat when the provider reports
+no inventory, so an uncounted feed reproduces V3 to the last decimal.
+
+Scarcity bites, which is the point of modelling it:
+
+```
+$ python examples/v4_capabilities.py --inventory
+
+  no inventory data      786 completed   #1 CGN → Munich → Vienna → CGN
+  with inventory         305 completed   #1 DUS → Budapest → Vienna → CGN
+```
+
+The synthetic counts are a **deterministic** function of city, date and tier —
+the cheap rooms go first, some dates are much tighter than others, and no
+randomness is involved, because the determinism guarantee is worth more than a
+plausible-looking simulation. `simulate_scarcity=True` on either synthetic
+provider turns them on; `require_availability=False` on the config turns
+enforcement off for a caller who intends to re-check at booking time.
+
+---
+
+## Learning the profile weights
+
+V3 was honest about the three profiles: *"tuned against the synthetic dataset.
+They are a starting point, not a claim about real travelers."*
+
+**The signal already exists.** Every planning run shows a handful of
+itineraries and one gets chosen. That single fact — *this one beat those* — is
+a pairwise preference, and a few dozen of them pin down nine weights. Nothing
+extra needs collecting:
+
+```python
+observation = observations_from_result(result, chosen_rank=3)
+report = fit_weights(history)          # a list of those
+profile = learned_profile(report)      # plan() already accepts this
+```
+
+**The method** is exponentiated gradient ascent on the Bradley-Terry likelihood
+— a few dozen lines of arithmetic, deterministic, no dependency. Two details
+carry it:
+
+- **Direction and sharpness are fitted separately.** The weights live on the
+  simplex, which fixes their total and so also fixes how large a score gap the
+  model can express. Coupled, the only way for the likelihood to sharpen its
+  margins is to pile the whole budget onto the single most discriminative
+  component — a traveler weighing experience 0.45 and city count 0.30 came back
+  as experience **0.97**. Giving sharpness its own parameter recovers
+  **0.62 / 0.28**, with pairwise agreement rising from 80% to 94%.
+- **The prior is scaled against the amount of evidence.** This was the second
+  bug: the likelihood gradient is averaged over pairs, so two observations
+  shoved as hard as two hundred and *thin evidence produced the wilder
+  profile*. Scaled by `REFERENCE_PAIRS / pairs`, the prior now dominates when
+  evidence is thin and is out-voted as it accumulates — which is what the
+  docstring had been claiming all along.
+
+A cohort that always books the cheapest thing it was shown:
+
+```
+$ python examples/v4_capabilities.py --learning
+
+Fitted on 7 choices (28 pairs)
+  ranking accuracy  50.0% -> 75.0%  (+25.0%)
+    cost           0.3170  (+0.1270)
+    experience     0.1393  (-0.0707)
+    city_count     0.0077  (-0.0723)
+    …
+  default profile #1:  409.74 EUR  CGN → Munich → Vienna → CGN
+  learned profile #1:  342.32 EUR  CGN → Berlin → CGN
+```
+
+**Weights are taste; thresholds are policy.** `learned_profile` fits the nine
+weights and inherits everything else — the budget-utilization split, the
+diversity threshold, the city-count bias — from a template profile. Nothing in
+a click stream identifies those, and pretending otherwise would be fitting
+noise.
+
+**It does not touch the optimizer.** It produces a `RecommendationProfile`,
+which the planner has accepted from any caller since V2. An AST test asserts
+that `algorithms/`, `constraints/`, `providers/`, `data/` and `models/` never
+import it.
 
 ---
 
@@ -973,6 +1211,11 @@ PlannerConfig(
     enable_pareto=True, enable_diversity=True,
     diversity_similarity_threshold=0.5,
 
+    # V4 - both off by default, so every V3 number reproduces
+    adaptive_beam=False, adaptive_beam_tolerance=0.002,
+    adaptive_beam_max_rounds=4, adaptive_beam_max_width=320,
+    require_availability=True,   # harmless when a feed reports no inventory
+
     # Instrumentation
     collect_provider_metrics=True, debug_example_limit=5,
     currency="EUR",
@@ -1194,13 +1437,45 @@ class AccommodationEstimator(Protocol):
     def min_stay_cost(self, city: str, nights: int, travelers: int) -> float: ...
 ```
 
-Implement against Amadeus / Kiwi / DB for transport, Booking / Expedia for
-rooms, a routing API for transfers, normalize into the domain models, and pass
-the instances to `TravelPlanner(...)`. `Real*Provider` classes mark each seam
-and deliberately raise `NotImplementedError` — the MVP must not present invented
-numbers as real availability.
+### One is now written (V4)
 
-V3 added the three things a real integration would otherwise have to invent.
+V3 shipped the protocols and a stub that raised `NotImplementedError`, and
+listed *"the HTTP clients and their response mapping"* as what remained.
+`providers/amadeus.py` is that, written against the Amadeus Flight Offers
+Search shape:
+
+```python
+planner = TravelPlanner(
+    transport_provider=AmadeusTransportProvider(
+        client_id=..., client_secret=...,
+    )
+)
+```
+
+That is the entire migration. It satisfies `TransportDataProvider`, so no
+algorithm changed, and `TravelPlanner` wraps it in the caching decorator
+automatically — which is what turns twelve thousand lookups into seventeen
+hundred calls.
+
+What is actually implemented: OAuth2 client-credentials with a cached token and
+an expiry margin, request construction, offer→`TransportOption` mapping,
+per-party→per-person conversion, currency normalization, ISO-8601 durations,
+seat inventory, deterministic cheapest-first ordering, an admissible `min_price`
+bound, and the failure behaviour below.
+
+**The only thing missing is a credential**, and the tests do not need one: the
+HTTP client is injected, so all 57 of them drive the real provider through
+recorded payloads. An integration whose test suite needs a live API and a secret
+is an integration nobody runs.
+
+The transport layer underneath it (`providers/http.py`) is stdlib-only —
+`urllib`, behind an `HttpClient` protocol — with retries on 408/425/429/5xx,
+exponential backoff that honours `Retry-After`, a rate limiter, and call
+metrics. A deployment that already has `httpx` supplies its own client in about
+fifteen lines and inherits the retry behaviour, because it is a decorator.
+
+Implement the other two the same way — Booking / Expedia for rooms, a routing
+API for transfers.
 
 ### Price normalization
 
@@ -1242,7 +1517,15 @@ zero on a replan.
 ### What a real provider must still guarantee
 
 - **Never raise on "nothing found"** — return an empty list. An exception in a
-  provider aborts a search that had 800 other viable itineraries.
+  provider aborts a search that had 800 other viable itineraries. `Amadeus`
+  returns `[]` for an empty page and for a 404, and raises for auth failures
+  and exhausted retries: silently returning nothing for a broken integration
+  would look like a network with no flights in it.
+- **Distinguish a bad record from a bad configuration.** One malformed offer in
+  a page of twenty is skipped; a missing exchange rate is not. That was a real
+  bug in this code: skipping unpriceable offers turned "nobody configured GBP"
+  into "there are no flights" — silent, total, and indistinguishable from a
+  quiet route. It now fails loudly.
 - **`min_return_*` and `min_price_per_night` must be admissible** — a true lower
   bound, or pruning discards feasible trips. Returning `None` (unknown) is
   always safe and is handled as "assume zero"; returning an optimistic guess is
@@ -1260,71 +1543,113 @@ zero on a replan.
 
 ```
 free text ─► PreferenceParser ─► TripRequest ─► [ deterministic optimizer ] ─► Itinerary ─► ItineraryExplainer ─► prose
-             (LLM may live here)                 (never an LLM)                             (LLM may live here)
+             (Claude lives here)                (never an LLM)                             (Claude lives here)
 ```
 
-`llm/interfaces.py` defines both protocols and ships dependency-free local
-implementations (`KeywordPreferenceParser`, `TemplateItineraryExplainer`) so the
-pipeline runs end to end with no external API. **No LLM is called anywhere in
-this repository**, and a test walks the AST of every module in `algorithms/`,
-`constraints/`, `services/`, `providers/` and `data/` asserting that none of
-them imports the `llm` package at all.
+V3 defined both protocols and shipped dependency-free stand-ins
+(`KeywordPreferenceParser`, `TemplateItineraryExplainer`), and listed *"a model
+call, and the prompt/guardrails around it"* as what remained. V4 adds both,
+backed by `claude-opus-5`.
 
-Prices, availability, travel time, route feasibility, constraints and scores are
-never a model's job. What V3 added is the *material* an explainer would consume,
-so that the seam is genuinely usable rather than nominal:
+**The optimizer is still LLM-free, and the test that says so now guards a
+package with a real model in it.** An AST walk over every module in
+`algorithms/`, `constraints/`, `services/`, `providers/` and `data/` fails if
+any of them imports `travel_planner.llm`. Prices, availability, travel time,
+feasibility and scores are computed; nothing at either seam can change one.
 
-| structured input | what an explainer would say with it |
+`anthropic` is an optional extra (`pip install ".[llm]"`). The package imports
+and the whole test suite runs without it, and **no test in this repository makes
+a network call** — `LlmClient` is a protocol, so both seams are driven by
+scripted replies, including the replies a real model gets wrong.
+
+### Behind: the explainer
+
+The low-risk seam, and deliberately first. V3 built the material it consumes —
+typed factors, per-city insights, the nine-component breakdown — precisely so a
+generative layer would have nothing left to invent:
+
+| structured input | what the explainer says with it |
 | --- | --- |
 | `explanation_factors` | which claims are true of this trip, as typed flags |
 | `destination_insights[j].strengths` / `.weaknesses` | *why this city*, in the traveler's own preference terms |
-| `destination_insights[j].stay_note` | whether the stay length suits the city |
 | `value_breakdown` (9 components + weights) | which trade-off the profile actually made |
 | `cost_breakdown`, `stays[j]` | where the money went, tier by tier |
 | `baseline_comparison` | how it compares to what they asked for |
 
-The contract is one-directional: the explainer restates, it never computes.
-Because every field above is derived from the finished itinerary, a generated
-sentence cannot contradict the optimization — the worst an explainer can do is
-omit something, not invent it.
+"It only restates" is a claim, though, and an unchecked claim about a language
+model is worth nothing. So **every number in the generated prose is checked
+against the numbers that were actually put in the prompt**, and a reply
+containing a figure the optimizer never computed is rejected:
 
-The same is true in front. `PreferenceParser` returns a `TripRequest`, which is
-a validated pydantic model: an LLM that hallucinates a destination or an
-experience name produces a `422`, not a silently wrong search. That validation
-was tightened in V3 precisely because it is the layer that would eventually face
-model output.
+```
+model said : A wonderful trip, and only 199.99 EUR for the two of you.
+rejected   : True (199.99 was never computed)
+shipped    : #1: CGN → Munich → Vienna → CGN  …   ← the template explainer
+```
+
+A slightly duller sentence beats a confidently wrong price. The check is cheap
+and total — an explanation is a handful of sentences over a known set of
+figures, so grounding is decidable here in a way it is not in general.
+
+The guard is deliberately not stricter than the prompt. Every reasonable
+rendering of a given number is allowed: two decimals, one, rounded, or
+truncated, with or without thousands separators, and minutes read back as
+hours. *"57 hours on the ground"* for 57.8 is good prose, and a guard that
+fires on the writing instead of on the facts is useless exactly when it
+matters. `explainer.rejections` keeps what was thrown away, so the firing rate
+is observable rather than invisible.
+
+### In front: the parser
+
+The higher-risk seam, and second on purpose: a model here decides *what gets
+searched*, so a hallucinated destination is not a cosmetic error — it is a
+wrong trip, confidently delivered.
+
+**The guard is the type.** `TripRequest` already rejects unknown experience
+names, contradictory destination lists, impossible windows and non-positive
+budgets. V3 tightened that validation "precisely because it is the layer that
+would eventually face model output"; this is that layer arriving.
+
+Three lines of defence, in order:
+
+1. **Structured output** constrains the reply to a JSON schema derived from the
+   domain model — so a new experience attribute cannot be added to the engine
+   and forgotten here.
+2. **Validation** rejects what a schema cannot express: a schema can say "a
+   string", only `TripRequest` knows whether *this* string is a city the catalog
+   has heard of.
+3. **One retry with the error fed back**, then the keyword parser answers. The
+   retry earns its cost because the common failure is one the model can fix
+   when it is told:
+
+```
+attempt 1 rejected: 1 validation error for TripRequest …
+accepted request  : 600 EUR, 2 travelers, ['culture', 'food']
+```
+
+The pipeline degrades to V3, never to nothing. What the traveler did not say —
+the origin, the date window — comes from the caller's defaults, not the model:
+those are the application's business, and a model asked to guess them will.
 
 ---
 
 ## Running the tests
 
 ```bash
-pytest                                       # 443 tests
+pytest                                       # 654 tests
 pytest tests/test_beam_search.py -v          # the non-greedy proof
 pytest tests/test_adversarial.py -v          # the 20 V2 spec scenarios
 pytest tests/test_v3_adversarial.py -v       # the 13 V3 scenarios
+pytest -k "v4"                               # the V4 additions
 pytest -k "not api"                          # skip the FastAPI tests
 ```
 
-**All 323 V2 tests still pass. None was deleted, skipped, or weakened.**
-Sixteen were *updated*, each because V3 intentionally changed the behaviour the
-test asserted, and each with the reason written into the test:
-
-| what changed | tests touched | why |
-| --- | --- | --- |
-| beam scaling on flexible dates | 3 | `metadata.beam_width` is now the effective width; the configured one moved to `configured_beam_width` |
-| exact route-duplicate stage | 2 | near-duplicates are usually removed by `DUPLICATE_ROUTE` now, so the assertion accepts either similarity stage |
-| nine-component Travel Value | 4 | weight sets are asserted against `COMPONENTS` instead of five hard-coded names; `experience_score` takes the request |
-| stay quality moved into the experience engine | 1 | asserted through `assess_experience(...).stay_quality` |
-| room-tier branching | 1 | the party-size test pins one tier, so it stays a test about party pricing rather than tier selection |
-| eight-objective Pareto | 2 | the ground-transfer trap now asserts on what the *search found* (via the new `completed_states` helper) rather than on what survived filtering — the losing airport is now correctly Pareto-dominated |
-| **the return-bound admissibility fix** | 1 | `test_missing_return_connection_is_pruned` asserted the bug: a city with no *direct* flight home was pruned even though it was reachable onward. Renamed to `test_an_unknown_return_bound_does_not_prune` and inverted. |
-| BEST_VALUE no longer promises "cheaper" | 1 | the profile can legitimately prefer a dearer, richer trip; the test now checks the comparison is *correct*, and separately that CHEAPEST still undercuts the baseline |
-
-The last two are the ones worth arguing about, and both were changed because
-the old assertion was wrong about the world, not because the new code was
-inconvenient. One V2 test was added (exact-duplicate collapse), which is why
-`test_diversity.py` shows 14.
+**All 443 V3 tests pass unmodified.** Not one was edited, skipped, or deleted —
+the only change to a pre-existing test file is an additive optional argument on
+a `conftest.py` helper. Where V3 had to update sixteen tests because it changed
+behaviour they asserted, V4 changed none, because the two additions that *would*
+have changed behaviour (the adaptive beam and inventory simulation) are both
+opt-in. Every published V3 figure still reproduces to the decimal.
 
 | File | Covers | tests |
 | --- | --- | --- |
@@ -1351,65 +1676,66 @@ inconvenient. One V2 test was added (exact-duplicate collapse), which is why
 | `test_v3_providers.py` | Money, PriceBasis, normalization, caching, call metrics | 28 |
 | `test_v3_budget_sensitivity.py` | the sweep, its invariants, the HTTP endpoint | 16 |
 | `test_v3_adversarial.py` | the 13 V3 scenarios, including **traps 4 and 5** | 13 |
-| | **total** | **443** |
+| `test_v4_value_for_money.py` | the premium, the reference rate, monotonicity, the dead zone | 22 |
+| `test_v4_adaptive_beam.py` | the ladder, the stopping rule, honest cost reporting | 19 |
+| `test_v4_availability.py` | unknown vs. sold out, scarcity, priced refundability | 35 |
+| `test_v4_learning.py` | weight recovery, held-out accuracy, the prior, validation | 33 |
+| `test_v4_real_providers.py` | auth, mapping, currency, retries, backoff, rate limits | 57 |
+| `test_v4_llm.py` | the grounding guard, schema, retry, fallback, isolation | 45 |
+| | **total** | **654** |
 
 Determinism is asserted, not assumed: several tests plan the same request twice
-and compare the full result object, and the budget sweep is compared for exact
-equality across runs.
+and compare the full result object, the budget sweep is compared for exact
+equality across runs, and the weight fit is asserted to be reproducible.
+
+**No test makes a network call.** The real provider is driven through recorded
+payloads and both LLM seams through scripted replies, because an integration
+whose tests need a live API and a secret is an integration nobody runs.
 
 ---
 
 ## Performance
 
 Measured on the standard request (Köln, €450, 2 travelers, 5 days, prefers
-Madrid, avoids Paris), cold caches, best of three runs, on the same machine.
+Madrid, avoids Paris), cold caches, best of three runs, same machine.
 
-| | V2 | V3 | states generated | completed |
-| --- | --- | --- | --- | --- |
-| fixed dates | 0.283 s | **0.397 s** | 3,086 → 5,804 | 480 → 385 |
-| flexible dates | 0.284 s | **0.830 s** | 3,248 → 12,374 | 480 → 783 |
-| 7 days, €600 | 0.570 s | **0.739 s** | 4,698 → 8,428 | 882 → 833 |
+| | V2 | V3 | V4 | states | completed |
+| --- | --- | --- | --- | --- | --- |
+| fixed dates | 0.283 s | 0.397 s | **0.428 s** | 5,804 | 385 |
+| flexible dates | 0.284 s | 0.830 s | **0.873 s** | 12,374 | 783 |
+| 7 days, €600 | 0.570 s | 0.739 s | **0.802 s** | 8,428 | 833 |
 
-V3 is 1.3–2.9× slower, and it is slower **because it searches more**, not
-because it got sloppier. Two lines are worth reading carefully.
+**V4 costs about 5–8% over V3 and searches exactly the same space** — the state
+and completion counts are identical to the decimal, which is the strongest
+available evidence that nothing about the search changed. The overhead is the
+value-for-money plumbing: each stay now carries the cheapest alternative the
+provider offered, and every completed itinerary is scored for it.
 
-**The flexible-dates row is a bug fix, not a regression.** V2 spent 0.284 s and
-generated 3,248 states on a flexible request — essentially the same as on the
-fixed one. That is the whole problem: this request has two viable start dates
-rather than one, so the search space doubles, and V2 spread the same 20-wide
-beam across both of them. *Offering flexibility made the search worse.* V3
-scales the beam with the number of start dates (20 → an effective 40), generates
-12,374 states, and finds 783 complete itineraries against V2's 480. Roughly
-three times the time for 63% more finished trips and a genuinely wider search.
-A longer window means more start dates and a proportionally wider beam, up to
-`max_effective_beam_width`.
+The two features that *would* change the search are opt-in, and here is what
+each costs when you opt in:
 
-**The fixed-dates row is accommodation branching.** Each stay now branches into
-two room tiers, which roughly doubles the state count. With
-`accommodation_options_per_stay=1` — one tier, no trade-off to make, V2's
-behaviour — V3 runs the same request in **0.293 s** against V2's 0.283 s. That
-is the honest measure of V3's added machinery: within noise of V2, despite the
-12-attribute experience model, nine-component scoring, eight-objective Pareto
-and full provider instrumentation.
+| | time | states | best score |
+| --- | --- | --- | --- |
+| flexible dates, V3 defaults | 0.873 s | 12,374 | 0.6719 |
+| **+ inventory** (`simulate_scarcity`) | 0.488 s | 10,126 | 0.6761 |
+| **+ adaptive beam** (`adaptive_beam=True`) | 15.3 s | 184,888 | 0.6810 |
 
-Getting there took work. The first V3 build ran **5.1× slower** than V2. cProfile
-found four causes, none of them in the search itself:
+Inventory is *faster*: sold-out fares are excluded before the branching cap, so
+the search does less work and finds fewer itineraries (305 against 783) — that
+is scarcity being real, not an optimization. The adaptive beam is 17× slower
+and finds the trip V3 knew it was missing. Both numbers are the trade stated
+rather than hidden.
 
-| fix | why it mattered |
-| --- | --- |
-| `lru_cache` on `canonical_key` / `normalize_key` | Unicode normalization of city names, called on every candidate |
-| precomputed Pareto tuples | objective vectors were rebuilt inside the O(n²) dominance loop |
-| direct `SearchState` construction | `dataclasses.replace` was ~40% of state extension |
-| memoized `ExperienceEngine.city_score` | the same (city, preferences) pair scored thousands of times |
+The V3 optimization history still applies — the first V3 build ran 5.1× slower
+than V2 until `canonical_key` was cached, Pareto tuples were precomputed,
+`SearchState` was constructed directly, and `city_score` was memoized. With
+`accommodation_options_per_stay=1` (V2's behaviour) the same request still runs
+in **0.29 s** against V2's 0.283 s.
 
-Note also that the Pareto frontier moved from 22 (V2, four objectives) to
-59–123 (V3, eight objectives with ε-dominance). More objectives means a larger
-frontier by construction; without the ε grid the same run keeps 248 rather than
-124, which is a frontier doing half as much work.
-
-Provider cost, which is what would actually dominate against a real API: the
-flexible-date run above issues **12,096 lookups** and makes **1,713 upstream
-calls** on a cold cache, and **0** on any replan.
+Provider cost, which is what would dominate against a real API: **12,078
+lookups → 1,710 upstream calls** cold, **0** on any replan — unchanged from V3,
+and now with a real provider behind it and an `HttpMetrics` counter on the
+transport as well.
 
 ---
 
@@ -1421,7 +1747,10 @@ calls** on a cold cache, and **0** on any replan.
 
 - Everything is synthetic. No external call is made anywhere. **No output should
   be read as a real price, a real hotel, or real availability.**
-- Rooms never sell out and flights never fill; there is no inventory model.
+- Inventory is modelled but **synthetic**: room and seat counts are a
+  deterministic function of city, date and tier, not a simulation of demand.
+  They produce a realistic *shape* (the cheap rooms go first, some dates are
+  much tighter) and nothing more. Off by default.
 - Ground transfers are a static table plus a distance fallback — no traffic, no
   timetables, no public-transport API.
 - The 12 destination attributes are hand-assigned editorial judgements about 16
@@ -1433,10 +1762,12 @@ calls** on a cold cache, and **0** on any replan.
 
 **Model**
 
-- `AccommodationScore` deliberately ignores price. Price is already the `cost`
-  component, and scoring it twice would make expensive rooms lose on both.
-  The consequence is that the accommodation component alone cannot tell you
-  whether a room was *good value* — only whether it was good.
+- `AccommodationScore` still deliberately ignores price, because price is
+  already the `cost` component. The gap V3 noted — that it could not say whether
+  a room was *good value* — is closed by the `value_for_money` diagnostic, which
+  is reported and never weighted. Its reference rate is calibrated against this
+  dataset's tier ladder and must be re-derived if the tiers change; a test
+  asserts that.
 - Room tiers are branched two-deep by default. A trip could in principle want a
   five-star room for one night and a hostel for four; the engine will find that
   only if the tiers it fetched happen to include both.
@@ -1454,16 +1785,20 @@ calls** on a cold cache, and **0** on any replan.
 - Stay length is whole calendar days. Sub-day connections are not modelled.
 - The usable-day window is one global 08:00–21:00 setting: no seasonality, no
   opening hours, no jet lag.
-- Profile weights are tuned against the synthetic dataset. They are a starting
-  point, not a claim about real travelers.
+- The shipped profile weights are still tuned against the synthetic dataset.
+  They are now a *prior* rather than the answer: `learning.py` fits them from
+  observed choices. The fit is biased towards the dominant component — inherent
+  to learning a fixed-budget weight vector from choices alone — which is why it
+  is anchored to that prior rather than trusted outright.
 
 **Search**
 
-- Beam search is a heuristic, and on the standard scenario **the default beam
-  demonstrably misses a better trip**: `beam_width=40` finds a 0.6802 itinerary
-  the default 20 never reaches, for twice the runtime. Nothing guarantees the
-  global optimum; `beam_width` is the knob, and both its benefit and its cost
-  are measured rather than assumed.
+- Beam search is a heuristic and nothing guarantees the global optimum. V3's
+  finding — that the default beam misses a better trip — is now **addressed
+  rather than merely reported**: `adaptive_beam=True` climbs until widening
+  stops paying and finds the 0.6823 itinerary. It is off by default and costs
+  ~17× the runtime, so the limitation is now a priced choice rather than an
+  unknown.
 - The ε-dominance grid is a deliberate approximation. Two itineraries within €5
   and 15 minutes of each other are treated as equivalent, so a genuinely
   slightly-better trip can be filtered as a near-duplicate. Set
@@ -1480,19 +1815,48 @@ calls** on a cold cache, and **0** on any replan.
 
 ### Ready for future implementation, not implemented
 
-These are seams with defined contracts, local stand-ins and tests — the work
-that remains is an integration, not a redesign.
+V3's table had five rows. Four are now implemented; what remains is genuinely
+one row plus the two providers nobody has written yet.
 
 | | what exists | what is missing |
 | --- | --- | --- |
-| **Real transport / accommodation / transfer APIs** | three protocols, `Real*Provider` stubs that raise `NotImplementedError`, caching decorators, call metrics | the HTTP clients and their response mapping |
-| **Currency conversion** | `Money`, `PriceBasis`, `PriceNormalizer`, `ExchangeRateSource`, `FixedExchangeRates` | a live rate feed |
-| **LLM preference parsing** | `PreferenceParser` protocol, `KeywordPreferenceParser` stand-in, a validated `TripRequest` as the contract | a model call, and the prompt/guardrails around it |
-| **LLM explanations** | `ItineraryExplainer` protocol, `TemplateItineraryExplainer`, typed factors and per-city insights as structured input | a model call |
+| **Real transport API** | ✅ **implemented** — `AmadeusTransportProvider`, HTTP transport with retries/backoff/rate limiting, 57 tests against recorded payloads | a credential |
+| **Real accommodation / transfer APIs** | the protocols, the caching decorators, and a worked example to copy in `providers/amadeus.py` | the two clients and their response mapping |
+| **Currency conversion** | ✅ **wired end to end** — `Money`, `PriceBasis`, `PriceNormalizer`, applied at the provider boundary, and a loud failure when a rate is missing | a live rate feed |
+| **LLM preference parsing** | ✅ **implemented** — `LlmPreferenceParser`, schema-constrained, validated, one retry, keyword fallback | nothing; install the `llm` extra |
+| **LLM explanations** | ✅ **implemented** — `LlmItineraryExplainer` with the numeric grounding guard and template fallback | nothing; install the `llm` extra |
+| **Learned profiles** | ✅ **implemented** — `learning.py`, fitted from `observations_from_result` | a place to persist a cohort's history |
 | **Persistent caching** | in-process `ProviderCache` with hit/miss metrics | TTLs, eviction, a shared store |
 
-The distinction matters: the deterministic core does not import any of the
-right-hand column, and adding it cannot change a score.
+The distinction still matters and still holds: the deterministic core does not
+import any of it. Two AST tests enforce that — one for `travel_planner.llm`,
+one for `travel_planner.learning` — and a third asserts that no module under
+`algorithms/` or `constraints/` imports a networking library.
 
 **Not built, deliberately**: restaurants, visas, weather, maps, auth, a
-database, a frontend, and any LLM call at all.
+database, a frontend.
+
+---
+
+## What a V5 would be for
+
+V4 finished V3's list. What is left is no longer a list of missing pieces — it
+is the two questions this design has not had to answer yet.
+
+1. **Real data will break the admissible bounds.** Every pruning bound here is
+   admissible because the synthetic dataset is complete and static. A live feed
+   is neither: prices move between the bound and the booking, and a bound
+   computed from a cached minimum is only admissible until the cache is stale.
+   The honest V5 answer is probably to make bounds *probabilistic* and let the
+   search prune on a confidence level it reports, rather than to pretend to a
+   guarantee it no longer has.
+2. **The engine has no notion of a traveler who is wrong about what they want.**
+   It optimizes the stated request faithfully, and the learning module now
+   corrects the *weights* from behaviour — but a traveler who asks for four
+   cities in five days gets an argument from `city_count`, not a conversation.
+   That is a product question before it is an engineering one, and it is the
+   first thing here that genuinely wants the LLM seams to be more than
+   one-directional.
+
+Everything else — the second and third real providers, persistence, a frontend —
+is work, not design.

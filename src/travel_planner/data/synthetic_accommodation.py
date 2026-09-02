@@ -98,6 +98,26 @@ def date_factor(check_in: date, check_out: date) -> float:
     return total / nights
 
 
+#: Rooms notionally on sale per tier before any are taken (V4).
+INVENTORY_PER_TIER = 12
+
+
+def rooms_left(city: str, check_in: date, tier_index: int) -> int:
+    """How many rooms of one tier remain, deterministically (V4).
+
+    Real inventory is the one thing a cached, deterministic optimizer cannot
+    honestly fake, so this does not try to be plausible - it is a fixed
+    function of city, date and tier that produces a realistic *shape*: the
+    cheapest rooms go first, and some dates are much tighter than others.
+    Randomness would break the determinism guarantee for no gain.
+    """
+    pressure = (sum(ord(c) for c in city) + check_in.toordinal()) % 7
+    # The budget tier sells out soonest - which is what makes scarcity
+    # interesting rather than uniform, since it is what most trips want.
+    taken = pressure * 2 + (2 - tier_index) * 2
+    return max(INVENTORY_PER_TIER - taken, 0)
+
+
 def build_options(
     city: str,
     check_in: date,
@@ -105,18 +125,21 @@ def build_options(
     *,
     base_rate: float | None = None,
     date_variation: bool = True,
+    simulate_scarcity: bool = False,
 ) -> list[AccommodationOption]:
     """Materialize every tier available in ``city`` for the given nights.
 
     ``base_rate`` overrides the built-in standard-tier price, which is how test
-    fixtures pin exact accommodation economics.
+    fixtures pin exact accommodation economics. ``simulate_scarcity`` (V4)
+    attaches room counts; without it every option reports availability as
+    unknown, which is what a feed with no inventory data looks like.
     """
     if check_out <= check_in:
         return []
     rate = nightly_rate(city) if base_rate is None else base_rate
     base = rate * (date_factor(check_in, check_out) if date_variation else 1.0)
     options: list[AccommodationOption] = []
-    for spec in TIERS:
+    for index, spec in enumerate(TIERS):
         options.append(
             AccommodationOption(
                 id=(
@@ -134,6 +157,9 @@ def build_options(
                 rating=spec.rating,
                 location_score=spec.location_score,
                 free_cancellation=spec.free_cancellation,
+                rooms_available=(
+                    rooms_left(city, check_in, index) if simulate_scarcity else None
+                ),
             )
         )
     return options

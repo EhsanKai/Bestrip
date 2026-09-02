@@ -18,6 +18,7 @@ signature.
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Iterable, Sequence
 
@@ -29,6 +30,7 @@ from ..constraints.validator import (
 )
 from ..models.accommodation import AccommodationOption
 from ..models.debug import (
+    BeamRound,
     IterationDebug,
     PrunedState,
     RejectedState,
@@ -46,6 +48,27 @@ from ..providers.transport import TransportDataProvider
 from ..usable_time import usable_minutes
 from .scoring import ScoringEngine
 from .travel_value import TravelValueScorer
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateAction:
+    """One legal move out of a search state.
+
+    A named record rather than a tuple: this grew a field in every version, and
+    positional unpacking makes a mis-ordered argument a silent behaviour change
+    instead of an error.
+    """
+
+    leg: TransportOption
+    is_return: bool
+    accommodation: AccommodationOption | None
+    cheapest_alternative: AccommodationOption | None
+    rejection: RejectionReason | None = None
+    """Set when the move is illegal before the validator ever sees it."""
+
+    @property
+    def bookable(self) -> bool:
+        return self.rejection is None
 
 
 def _route_labels(state: SearchState) -> list[str]:
@@ -107,8 +130,117 @@ class BeamSearchOptimizer:
         start_dates: Sequence[date],
         debug: SearchDebug | None = None,
     ) -> list[SearchState]:
-        """Run beam search and return all completed states found, best first."""
-        self._beam_width = self._effective_beam_width(len(start_dates))
+        """Run beam search and return all completed states found, best first.
+
+        With ``adaptive_beam`` on this runs the search several times at
+        increasing widths and returns the widest round's result; otherwise it
+        is a single pass at the configured width.
+        """
+        if self.config.adaptive_beam:
+            return self._adaptive_search(
+                request,
+                origin_airports=origin_airports,
+                start_dates=start_dates,
+                debug=debug,
+            )
+        return self._search_once(
+            request,
+            origin_airports=origin_airports,
+            start_dates=start_dates,
+            beam_width=self._effective_beam_width(len(start_dates)),
+            debug=debug,
+        )
+
+    def _adaptive_search(
+        self,
+        request: TripRequest,
+        *,
+        origin_airports: Sequence[str],
+        start_dates: Sequence[date],
+        debug: SearchDebug | None = None,
+    ) -> list[SearchState]:
+        """Widen the beam while widening still improves the best itinerary.
+
+        The stopping rule is the only interesting part: a round is worth its
+        cost when the best completed score improved by more than
+        ``adaptive_beam_tolerance``. It stops on the first round that does not,
+        and keeps that round's result anyway - a wider search is never *worse*,
+        it just stopped being worth paying for.
+
+        Rounds share the optimizer's provider caches, so round *n+1* re-fetches
+        nothing round *n* already asked for.
+        """
+        ceiling = self.config.adaptive_beam_max_width
+        width = min(self._effective_beam_width(len(start_dates)), ceiling)
+        best_score = None
+        completed: list[SearchState] = []
+        rounds: list[BeamRound] = []
+
+        for attempt in range(self.config.adaptive_beam_max_rounds):
+            # Only the final round's trace is kept: the intermediate ones
+            # describe searches whose results were thrown away, and reporting
+            # them as if they were the run would misstate what happened.
+            round_debug = SearchDebug() if debug is not None else None
+            found = self._search_once(
+                request,
+                origin_airports=origin_airports,
+                start_dates=start_dates,
+                beam_width=width,
+                debug=round_debug,
+            )
+            score = found[0].score if found else 0.0
+            improvement = 0.0 if best_score is None else round(score - best_score, 9)
+            rounds.append(
+                BeamRound(
+                    beam_width=width,
+                    best_score=round(score, 6),
+                    completed=len(found),
+                    states_generated=(
+                        round_debug.total_generated if round_debug else 0
+                    ),
+                    improvement=improvement,
+                    accepted=True,
+                )
+            )
+            completed, best_score = found, score
+            if debug is not None and round_debug is not None:
+                # The previous round's work is now discarded, but it was still
+                # paid for: move its cost into the discarded counters before
+                # this round's trace replaces it.
+                debug.discarded_states_generated += sum(
+                    it.generated for it in debug.iterations
+                )
+                debug.discarded_states_rejected += sum(
+                    it.rejected for it in debug.iterations
+                )
+                debug.iterations = round_debug.iterations
+                debug.initial_states = round_debug.initial_states
+                debug.origin_airports = round_debug.origin_airports
+                debug.start_dates = round_debug.start_dates
+                debug.effective_beam_width = width
+
+            stalled = attempt > 0 and improvement <= self.config.adaptive_beam_tolerance
+            if stalled or width >= ceiling:
+                break
+            width = min(width * 2, ceiling)
+
+        self._beam_width = width
+        if debug is not None:
+            debug.beam_rounds = rounds
+            debug.completed_itineraries = len(completed)
+        return completed
+
+    def _search_once(
+        self,
+        request: TripRequest,
+        *,
+        origin_airports: Sequence[str],
+        start_dates: Sequence[date],
+        beam_width: int,
+        debug: SearchDebug | None = None,
+    ) -> list[SearchState]:
+        """One complete beam search at a fixed width."""
+        self._beam_width = beam_width
         beam = self._initial_states(origin_airports, start_dates, request.travelers)
         if debug is not None:
             debug.effective_beam_width = self._beam_width
@@ -214,21 +346,36 @@ class BeamSearchOptimizer:
         return dates
 
     def _departures(
-        self, origin: str, destination: str, day: date, after: datetime
-    ) -> list[TransportOption]:
-        """Bookable departures for one leg, capped and ordered deterministically.
+        self,
+        origin: str,
+        destination: str,
+        day: date,
+        after: datetime,
+        travelers: int,
+    ) -> tuple[list[TransportOption], list[TransportOption]]:
+        """``(bookable departures, sold-out departures)`` for one leg.
 
         The provider may return far more than the search can afford to branch
         on - a real API certainly will - so only the cheapest
         ``max_transport_options_per_leg`` are kept. They arrive cheapest-first
         from the provider, so the cap is a prefix, not a re-sort.
+
+        Sold-out fares (V4) are excluded *before* the cap, because a fare the
+        party cannot board is not a cheaper option, it is not an option - and
+        letting one occupy a cap slot would push a bookable fare out of the
+        search. They are returned rather than discarded so the rejection reaches
+        the trace instead of the cheapest fares silently vanishing.
         """
-        options = [
-            option
-            for option in self.transport.search(origin, destination, day)
-            if option.departure >= after
-        ]
-        return options[: self.config.max_transport_options_per_leg]
+        options: list[TransportOption] = []
+        sold_out: list[TransportOption] = []
+        for option in self.transport.search(origin, destination, day):
+            if option.departure < after:
+                continue
+            if self.config.require_availability and not option.has_seats_for(travelers):
+                sold_out.append(option)
+                continue
+            options.append(option)
+        return options[: self.config.max_transport_options_per_leg], sold_out
 
     def _candidate_pool(self) -> list:
         """The bounded set of destinations this run will ever price.
@@ -256,37 +403,62 @@ class BeamSearchOptimizer:
 
     def _book_accommodation(
         self, state: SearchState, leg: TransportOption, travelers: int
-    ) -> list[AccommodationOption | None] | None:
-        """Rooms the traveler could take for the stay this leg ends.
+    ) -> tuple[list[AccommodationOption | None], RejectionReason | None]:
+        """``(rooms, rejection)`` for the stay this leg ends.
 
-        Returns ``[None]`` when there is nothing to book - accommodation is off,
-        the traveler is still at home, or no night is actually spent - so the
-        caller always has exactly one branch in the V1-equivalent configuration.
-        ``None`` means the stay is *required* but nothing is available, which is
-        a real rejection rather than "no cost".
+        ``([None], None)`` means there is nothing to book - accommodation is
+        off, the traveler is still at home, or no night is actually spent - so
+        the caller always has exactly one branch in the V1-equivalent
+        configuration.
+
+        A rejection means the stay is *required* but cannot be booked, which is
+        a real rejection rather than "no cost". V4 distinguishes the two ways
+        that happens: the city has nothing on offer at all, or what it has is
+        sold out for this party. A traveler told "no rooms in Prague" when the
+        truth is "the last double went" has been told the wrong thing.
         """
         if (
             not state.cities
             or not self.config.enable_accommodation
             or self.accommodation is None
         ):
-            return [None]
+            return [None], None
         check_in = state.current_datetime.date()
         check_out = leg.departure.date()
         if check_out <= check_in:
             # Same-day hop: no night is spent, so nothing to book.
-            return [None]
+            return [None], None
         options = self.accommodation.search(
             state.current_location, check_in, check_out, travelers
         )
         if not options:
+            return [], RejectionReason.NO_ACCOMMODATION_AVAILABLE
+        if self.config.require_availability:
+            bookable = [
+                option for option in options if option.has_capacity_for(travelers)
+            ]
+            if not bookable:
+                return [], RejectionReason.SOLD_OUT_ACCOMMODATION
+            options = bookable
+        return list(options[: self.config.accommodation_options_per_stay]), None
+
+    @staticmethod
+    def _cheapest(rooms: Sequence[AccommodationOption | None]) -> AccommodationOption | None:
+        """The cheapest room among the ones fetched for a stay.
+
+        The provider contract is cheapest-first, but this does not rely on it:
+        a real provider that sorts by relevance must not silently corrupt the
+        value-for-money baseline.
+        """
+        priced = [room for room in rooms if room is not None]
+        if not priced:
             return None
-        return list(options[: self.config.accommodation_options_per_stay])
+        return min(priced, key=lambda room: (room.price_per_night, room.id))
 
     def _candidate_actions(
         self, state: SearchState, request: TripRequest
-    ) -> Iterable[tuple[TransportOption, bool, AccommodationOption | None, bool]]:
-        """Yield ``(leg, is_return, accommodation, bookable)`` for every legal move.
+    ) -> Iterable["CandidateAction"]:
+        """Yield one :class:`CandidateAction` for every legal move.
 
         Action A ("continue") moves on to another destination city; action B
         ("return") flies home to one of the origin airports. Both are generated
@@ -301,38 +473,40 @@ class BeamSearchOptimizer:
         may_return = bool(state.cities) and not (mandatory - state.visited_cities)
 
         for departure_date in self._departure_dates(state, request):
+            targets: list[tuple[str, bool]] = []
             if may_continue:
-                for destination in self._candidate_destinations(state):
-                    for option in self._departures(
-                        state.current_location,
-                        destination.id,
-                        departure_date,
-                        state.current_datetime,
-                    ):
-                        rooms = self._book_accommodation(
-                            state, option, request.travelers
-                        )
-                        if rooms is None:
-                            yield option, False, None, False
-                            continue
-                        for room in rooms:
-                            yield option, False, room, True
+                targets += [
+                    (destination.id, False)
+                    for destination in self._candidate_destinations(state)
+                ]
             if may_return:
-                for airport in sorted(self.validator.origin_airports):
-                    for option in self._departures(
-                        state.current_location,
-                        airport,
-                        departure_date,
-                        state.current_datetime,
-                    ):
-                        rooms = self._book_accommodation(
-                            state, option, request.travelers
-                        )
-                        if rooms is None:
-                            yield option, True, None, False
-                            continue
-                        for room in rooms:
-                            yield option, True, room, True
+                targets += [
+                    (airport, True) for airport in sorted(self.validator.origin_airports)
+                ]
+
+            for target, is_return in targets:
+                departures, sold_out = self._departures(
+                    state.current_location,
+                    target,
+                    departure_date,
+                    state.current_datetime,
+                    request.travelers,
+                )
+                for option in sold_out:
+                    yield CandidateAction(
+                        option, is_return, None, None,
+                        RejectionReason.SOLD_OUT_TRANSPORT,
+                    )
+                for option in departures:
+                    rooms, rejection = self._book_accommodation(
+                        state, option, request.travelers
+                    )
+                    if rejection is not None:
+                        yield CandidateAction(option, is_return, None, None, rejection)
+                        continue
+                    cheapest = self._cheapest(rooms)
+                    for room in rooms:
+                        yield CandidateAction(option, is_return, room, cheapest)
 
     def _expand_beam(
         self,
@@ -344,28 +518,40 @@ class BeamSearchOptimizer:
         finished: list[SearchState] = []
 
         for state in beam:
-            for option, is_return, room, bookable in self._candidate_actions(
-                state, request
-            ):
+            for action in self._candidate_actions(state, request):
+                option = action.leg
                 trace.generated += 1
-                if not bookable:
+                if action.rejection is not None:
                     trace.rejected += 1
-                    reason = RejectionReason.NO_ACCOMMODATION_AVAILABLE
+                    reason = action.rejection
                     trace.rejection_counts[reason] = (
                         trace.rejection_counts.get(reason, 0) + 1
                     )
+                    if len(trace.rejected_examples) < self.config.debug_example_limit:
+                        trace.rejected_examples.append(
+                            RejectedState(
+                                iteration=trace.iteration,
+                                route=_route_labels(state) + [option.destination],
+                                reason=reason,
+                                detail=(
+                                    f"{option.origin} -> {option.destination} "
+                                    f"on {option.departure:%Y-%m-%d %H:%M}"
+                                ),
+                            )
+                        )
                     continue
                 candidate = state.extend(
                     option,
                     travelers=request.travelers,
-                    is_return=is_return,
-                    accommodation=room,
+                    is_return=action.is_return,
+                    accommodation=action.accommodation,
                     usable_minutes=self._usable_minutes(state, option),
                     return_transfer=(
                         self.ground_transfers.get(option.destination)
-                        if is_return
+                        if action.is_return
                         else None
                     ),
+                    cheapest_alternative=action.cheapest_alternative,
                 )
                 result = self.validator.validate(candidate, request)
                 if not result.valid:

@@ -84,6 +84,16 @@ class TravelValueBreakdown(BaseModel):
     ideal_city_count: int = 0
     """How many cities this trip length and profile were aiming for (V3)."""
 
+    accommodation_value_for_money: float = 0.5
+    """Did the room premium earn its keep? (V4)
+
+    ``0.5`` = nothing traded, or exactly the expected quality per euro. This is
+    a **diagnostic**, not a weighted component: price already enters through
+    ``cost``, and scoring it twice would bias the trade rather than report it.
+    """
+    accommodation_premium: float = 0.0
+    """Party total paid above the cheapest rooms on offer (V4)."""
+
 
 class CostBreakdown(BaseModel):
     """Where the money goes. All figures are party totals."""
@@ -135,6 +145,14 @@ class StaySummary(BaseModel):
     free_cancellation: bool = False
     usable_minutes: int = 0
 
+    rooms_available: int | None = None
+    """Rooms left at this rate, or ``None`` when the provider does not say (V4)."""
+
+    cheapest_alternative_cost: float | None = None
+    """What the cheapest room offered for this stay would have cost (V4)."""
+    accommodation_premium: float = 0.0
+    """What was actually paid above that. Zero means the cheapest was taken."""
+
 
 class ExplanationFactor(str, Enum):
     """Deterministic, structured reasons an itinerary was recommended.
@@ -170,6 +188,17 @@ class ExplanationFactor(str, Enum):
     GOOD_ACCOMMODATION_VALUE = "good_accommodation_value"
     HIGH_ACCOMMODATION_COST = "high_accommodation_cost"
     BASIC_ACCOMMODATION = "basic_accommodation"
+    ROOM_UPGRADE_WORTH_IT = "room_upgrade_worth_it"
+    """A premium over the cheapest room was paid, and it bought more quality
+    than the going rate (V4)."""
+    ROOM_UPGRADE_POOR_VALUE = "room_upgrade_poor_value"
+    """A premium was paid and it bought less than the going rate (V4)."""
+    CHEAPEST_ROOMS_TAKEN = "cheapest_rooms_taken"
+    """Every stay took the cheapest room on offer (V4)."""
+    LIMITED_AVAILABILITY = "limited_availability"
+    """At least one room on this trip is nearly sold out (V4)."""
+    FULLY_REFUNDABLE = "fully_refundable"
+    """Every booked room on this trip can be cancelled free (V4)."""
     LONG_TRANSFER_TIME = "long_transfer_time"
     LOW_USABLE_TIME = "low_usable_time"
     IDEAL_CITY_COUNT = "ideal_city_count"
@@ -289,6 +318,12 @@ class PlannerMetadata(BaseModel):
     beam_width: int = 0
     """The width actually used, after scaling for the number of start dates."""
     configured_beam_width: int = 0
+    beam_rounds: list[dict] = Field(default_factory=list)
+    """The adaptive-beam ladder: what each widening cost and bought (V4).
+
+    Empty when the beam is fixed. A caller can read straight off it whether the
+    search stopped because widening stopped paying or because it hit a ceiling.
+    """
     max_cities: int = 0
     states_generated: int = 0
     states_rejected: int = 0

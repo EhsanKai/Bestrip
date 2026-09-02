@@ -18,6 +18,15 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+#: Rooms at which a rate stops feeling scarce (V4). Above this, availability
+#: carries no information a traveler would act on.
+SCARCITY_HORIZON_ROOMS = 10
+
+
+def clamp01(value: float) -> float:
+    return 0.0 if value < 0.0 else 1.0 if value > 1.0 else value
+
+
 class AccommodationTier(str, Enum):
     """Quality bands offered in every city."""
 
@@ -64,6 +73,32 @@ class AccommodationOption(BaseModel):
 
     currency: str = "EUR"
     """Currency of :attr:`price_per_night`. Providers normalize before returning."""
+
+    rooms_available: int | None = Field(default=None, ge=0)
+    """Rooms left at this rate, or ``None`` when the provider does not say (V4).
+
+    ``None`` is *unknown*, not *unlimited*: the search treats it as available
+    because refusing to book anything a provider declines to count would reject
+    every real inventory-less feed. ``0`` is a genuine sell-out.
+    """
+
+    def has_capacity_for(self, travelers: int) -> bool:
+        """Whether enough rooms remain to sleep the whole party (V4)."""
+        if self.rooms_available is None:
+            return True
+        return self.rooms_available >= self.rooms_required(travelers)
+
+    @property
+    def scarcity(self) -> float:
+        """How close this rate is to selling out, in ``[0, 1]`` (V4).
+
+        ``0.0`` when availability is unknown or plentiful, approaching ``1.0``
+        as the last rooms go. Used to price refundability: a booking you might
+        not be able to replace is worth more when it can be cancelled.
+        """
+        if self.rooms_available is None:
+            return 0.0
+        return clamp01(1.0 - self.rooms_available / SCARCITY_HORIZON_ROOMS)
 
     @property
     def stars(self) -> float:

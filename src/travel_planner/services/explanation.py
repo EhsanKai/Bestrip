@@ -33,6 +33,13 @@ CALM_INTENSITY = 0.12
 FRANTIC_INTENSITY = 0.25
 GOOD_ROOM = 0.7
 BASIC_ROOM = 0.45
+#: Value-for-money bands (V4). 0.5 is "exactly the going rate", so these sit
+#: either side of it with a deliberate dead zone: a marginal call is not worth
+#: a claim in either direction.
+WORTHWHILE_UPGRADE = 0.6
+POOR_UPGRADE = 0.4
+#: Rooms left at which a booking is worth flagging as nearly gone (V4).
+SCARCE_ROOMS = 3
 #: Ground-transfer minutes above which the ride to the airport is a real cost.
 LONG_TRANSFER_MINUTES = 180
 
@@ -124,10 +131,31 @@ def explanation_factors(
         elif value.accommodation <= BASIC_ROOM:
             factors.append(ExplanationFactor.BASIC_ACCOMMODATION)
 
+        # V4: whether the *upgrade* was worth it, which room quality alone
+        # cannot say. Silent when no premium was paid over the cheapest room.
+        if value.accommodation_premium <= 0.0:
+            if any(stay.accommodation_cost > 0 for stay in itinerary.stays):
+                factors.append(ExplanationFactor.CHEAPEST_ROOMS_TAKEN)
+        elif value.accommodation_value_for_money >= WORTHWHILE_UPGRADE:
+            factors.append(ExplanationFactor.ROOM_UPGRADE_WORTH_IT)
+        elif value.accommodation_value_for_money <= POOR_UPGRADE:
+            factors.append(ExplanationFactor.ROOM_UPGRADE_POOR_VALUE)
+
         if value.usable_ratio < WEAK:
             factors.append(ExplanationFactor.LOW_USABLE_TIME)
         if value.ideal_city_count and len(itinerary.cities) == value.ideal_city_count:
             factors.append(ExplanationFactor.IDEAL_CITY_COUNT)
+
+    # --- V4 inventory -------------------------------------------------
+    # Silent unless the provider actually reported counts, so a feed without
+    # availability data says nothing rather than reassuring.
+    booked = [stay for stay in itinerary.stays if stay.accommodation_cost > 0]
+    if booked:
+        counted = [stay for stay in booked if stay.rooms_available is not None]
+        if counted and min(stay.rooms_available for stay in counted) <= SCARCE_ROOMS:
+            factors.append(ExplanationFactor.LIMITED_AVAILABILITY)
+        if all(stay.free_cancellation for stay in booked):
+            factors.append(ExplanationFactor.FULLY_REFUNDABLE)
 
     if itinerary.total_cost > 0:
         stay_share = itinerary.cost_breakdown.accommodation / itinerary.total_cost

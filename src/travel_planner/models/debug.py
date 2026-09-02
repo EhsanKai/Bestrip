@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RejectionReason(str, Enum):
@@ -32,6 +32,10 @@ class RejectionReason(str, Enum):
     NO_ACCOMMODATION_AVAILABLE = "NO_ACCOMMODATION_AVAILABLE"
     NO_CITIES_VISITED = "NO_CITIES_VISITED"
     INVALID_CONNECTION = "INVALID_CONNECTION"
+    SOLD_OUT_TRANSPORT = "SOLD_OUT_TRANSPORT"
+    """Not enough seats left on this fare for the whole party (V4)."""
+    SOLD_OUT_ACCOMMODATION = "SOLD_OUT_ACCOMMODATION"
+    """Not enough rooms left at this rate for the whole party (V4)."""
 
 
 class FilterStage(str, Enum):
@@ -112,6 +116,26 @@ class FilteredItinerary(BaseModel):
     similarity: float | None = None
 
 
+class BeamRound(BaseModel):
+    """One rung of the adaptive beam ladder (V4).
+
+    A fixed beam is a number someone guessed. The adaptive beam widens until
+    widening stops paying, and this records what each widening actually bought
+    so the decision is auditable rather than asserted.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    beam_width: int
+    best_score: float
+    completed: int
+    states_generated: int
+    improvement: float
+    """Gain in best score over the previous, narrower round. 0.0 on the first."""
+    accepted: bool
+    """Whether this round's result was kept. The last round is always kept."""
+
+
 class SearchDebug(BaseModel):
     """The full, structured trace of one planning run."""
 
@@ -119,6 +143,8 @@ class SearchDebug(BaseModel):
     start_dates: list[str] = Field(default_factory=list)
     initial_states: int = 0
     effective_beam_width: int = 0
+    beam_rounds: list[BeamRound] = Field(default_factory=list)
+    """The adaptive-beam ladder, empty when the beam is fixed (V4)."""
     iterations: list[IterationDebug] = Field(default_factory=list)
     completed_itineraries: int = 0
     scored_itineraries: list[dict] = Field(default_factory=list)
@@ -129,13 +155,27 @@ class SearchDebug(BaseModel):
     filtered: list[FilteredItinerary] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
+    discarded_states_generated: int = 0
+    """States built by adaptive-beam rounds whose results were thrown away (V4).
+
+    Counted separately so ``total_generated`` stays the honest cost of the run
+    while ``iterations`` still describes only the search that produced the
+    answer. Reporting the final round alone would understate what the ladder
+    actually cost.
+    """
+    discarded_states_rejected: int = 0
+
     @property
     def total_generated(self) -> int:
-        return sum(it.generated for it in self.iterations)
+        return (
+            sum(it.generated for it in self.iterations) + self.discarded_states_generated
+        )
 
     @property
     def total_rejected(self) -> int:
-        return sum(it.rejected for it in self.iterations)
+        return (
+            sum(it.rejected for it in self.iterations) + self.discarded_states_rejected
+        )
 
     def render(self) -> str:
         """A readable report of the whole search."""

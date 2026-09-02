@@ -201,13 +201,39 @@ def _parse_time(value: str) -> time:
     return time(int(hour), int(minute))
 
 
+#: Seats notionally on sale per departure before any are taken (V4).
+INVENTORY_PER_DEPARTURE = 6
+
+
+def seats_left(connection: "Connection", departure_date: date, slot: int) -> int:
+    """Seats remaining on one departure, deterministically (V4).
+
+    A fixed function of route, date and slot rather than anything random: the
+    engine's determinism guarantee is worth more than a plausible-looking
+    simulation. The shape is the realistic part - the cheap early slots on
+    popular routes are the ones that go.
+    """
+    pressure = (
+        sum(ord(c) for c in connection.origin + connection.destination)
+        + departure_date.toordinal()
+        + slot * 3
+    ) % 8
+    return max(INVENTORY_PER_DEPARTURE - pressure, 0)
+
+
 def build_options(
     connection: Connection,
     departure_date: date,
     *,
     price_variation: bool = True,
+    simulate_scarcity: bool = False,
 ) -> list[TransportOption]:
-    """Materialize the timetable of ``connection`` on ``departure_date``."""
+    """Materialize the timetable of ``connection`` on ``departure_date``.
+
+    ``simulate_scarcity`` (V4) attaches seat counts; without it every fare
+    reports availability as unknown, which is what a feed with no inventory
+    data looks like.
+    """
     options: list[TransportOption] = []
     date_factor = (
         DATE_PRICE_FACTORS[departure_date.toordinal() % len(DATE_PRICE_FACTORS)]
@@ -236,6 +262,11 @@ def build_options(
                 transport_type=connection.transport_type,
                 duration_minutes=connection.duration_minutes,
                 operator=f"synthetic-{connection.transport_type.value}",
+                seats_available=(
+                    seats_left(connection, departure_date, slot)
+                    if simulate_scarcity
+                    else None
+                ),
             )
         )
     return options

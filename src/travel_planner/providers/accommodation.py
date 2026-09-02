@@ -49,9 +49,13 @@ class SyntheticAccommodationDataProvider:
         rates: dict[str, float] | None = None,
         *,
         date_variation: bool = True,
+        simulate_scarcity: bool = False,
     ) -> None:
         self._rates = rates
         self._date_variation = date_variation
+        #: Attach room counts (V4). See the transport provider for why this is
+        #: off by default.
+        self._simulate_scarcity = simulate_scarcity
         self._cache: dict[tuple[str, date, date, int], list[AccommodationOption]] = {}
         self._min_cache: dict[tuple[str, int], float] = {}
         self.search_calls = 0
@@ -91,6 +95,7 @@ class SyntheticAccommodationDataProvider:
             check_out,
             base_rate=rate,
             date_variation=self._date_variation,
+            simulate_scarcity=self._simulate_scarcity,
         )
         # Deterministic: cheapest party total first, then tier name, then id.
         options.sort(key=lambda o: (o.total_price(travelers), o.tier.value, o.id))

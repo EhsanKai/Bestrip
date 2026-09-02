@@ -35,6 +35,20 @@ class TransportOption(BaseModel):
     duration_minutes: int = Field(ge=0)
     operator: str = "synthetic"
 
+    seats_available: int | None = Field(default=None, ge=0)
+    """Seats left at this fare, or ``None`` when the provider does not say (V4).
+
+    ``None`` is *unknown*, not *unlimited*. A real feed that quotes a fare
+    without an inventory count must still be bookable, so unknown means the
+    search proceeds; ``0`` is a genuine sell-out and the leg is not offered.
+    """
+
+    def has_seats_for(self, travelers: int) -> bool:
+        """Whether the whole party can still be seated on this leg (V4)."""
+        if self.seats_available is None:
+            return True
+        return self.seats_available >= travelers
+
     @model_validator(mode="before")
     @classmethod
     def _derive_duration(cls, data: object) -> object:

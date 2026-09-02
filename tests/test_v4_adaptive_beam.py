@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from travel_planner.config import PlannerConfig
-from travel_planner.profiles import ProfileName
-from travel_planner.services.planner import TravelPlanner
+from detoura.config import PlannerConfig
+from detoura.profiles import ProfileName
+from detoura.services.planner import TravelPlanner
 
 from .conftest import trip_request
 
@@ -181,13 +181,66 @@ def test_the_width_ceiling_is_honoured():
         assert rung["beam_width"] <= 45
 
 
-def test_a_generous_tolerance_stops_the_ladder_early():
-    """The tolerance is the knob, and it must actually be the knob."""
+def test_the_tolerance_alone_no_longer_stops_the_ladder():
+    """V5.2.1 changed this behaviour on purpose.
+
+    In V4 a generous tolerance stopped the climb after two rounds, because the
+    score was the only signal. The spec's instruction - *"do not stop solely on
+    raw score improvement"* - makes that wrong: a round that raises the score by
+    nothing and finds three city combinations nobody had seen is exactly the
+    round "search deeper" exists to run.
+
+    So the tolerance is now one signal of three, and setting it absurdly high
+    no longer ends the search on its own. What ends it is a round that buys
+    nothing on *any* axis - asserted in the test below.
+    """
     planner = TravelPlanner(
         config=PlannerConfig(adaptive_beam=True, adaptive_beam_tolerance=1.0)
     )
     result = planner.plan(request_for_the_ladder())
-    assert len(result.metadata.beam_rounds) == 2
+    rounds = result.metadata.beam_rounds
+    assert len(rounds) > 2
+    # It kept climbing because widening kept finding things, not by accident.
+    assert any(
+        r["new_city_sets"] > 0 or r["competitive_found"] > 0 for r in rounds[1:]
+    )
+
+
+def test_the_ladder_stops_when_a_round_discovers_nothing():
+    """The replacement stopping rule, asserted directly."""
+    planner = TravelPlanner(config=PlannerConfig(adaptive_beam=True))
+    result = planner.plan(request_for_the_ladder())
+    rounds = result.metadata.beam_rounds
+    final = rounds[-1]
+    if final["stop_reason"] == "diminishing_returns":
+        assert final["improvement"] <= PlannerConfig().adaptive_beam_tolerance
+        assert final["new_city_sets"] == 0
+        assert final["competitive_found"] == 0
+    else:
+        # Any other ending must name itself rather than being a silent stop.
+        assert final["stop_reason"] in {
+            "width_ceiling",
+            "rounds_exhausted",
+            "time_budget",
+        }
+
+
+def test_a_time_budget_ends_the_climb():
+    """DEEP promises a duration; an unbounded ladder cannot keep that promise."""
+    planner = TravelPlanner(
+        config=PlannerConfig(
+            adaptive_beam=True,
+            adaptive_beam_time_budget_seconds=0.01,
+            adaptive_beam_max_rounds=5,
+        )
+    )
+    result = planner.plan(request_for_the_ladder())
+    rounds = result.metadata.beam_rounds
+    # One full round always runs: the budget decides whether the *next* one
+    # starts, so it can never truncate a round mid-flight.
+    assert len(rounds) >= 1
+    assert rounds[-1]["stop_reason"] in {"time_budget", "diminishing_returns"}
+    assert result.recommendations
 
 
 def test_it_stays_deterministic():

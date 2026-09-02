@@ -1,0 +1,13 @@
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app__main {
+  flex: 1;
+}
+
+.app__state {
+  padding-block: var(--space-7);
+}

@@ -10,8 +10,8 @@ from __future__ import annotations
 import argparse
 from datetime import date
 
-from travel_planner import TravelPlanner, TravelPreferences, TripRequest
-from travel_planner.profiles import PROFILES, ProfileName
+from detoura import TravelPlanner, TravelPreferences, TripRequest
+from detoura.profiles import PROFILES, ProfileName
 
 
 def build_request(budget: float) -> TripRequest:

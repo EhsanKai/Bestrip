@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from travel_planner.models.itinerary import BaselineResult
-from travel_planner.services.baseline import BaselinePlanner, compare_to_baseline
-from travel_planner.services.planner import TravelPlanner
+from detoura.models.itinerary import BaselineResult
+from detoura.services.baseline import BaselinePlanner, compare_to_baseline
+from detoura.services.planner import TravelPlanner
 
 from .conftest import WINDOW_FROM, trip_request
 

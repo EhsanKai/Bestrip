@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from travel_planner.algorithms.diversity import diversify, jaccard_similarity
-from travel_planner.services.planner import TravelPlanner
+from detoura.algorithms.diversity import diversify, jaccard_similarity
+from detoura.services.planner import TravelPlanner
 
 
 def cities(*names: str) -> frozenset[str]:

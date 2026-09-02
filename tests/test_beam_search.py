@@ -6,12 +6,12 @@ from datetime import date, timedelta
 
 import pytest
 
-from travel_planner.algorithms.beam_search import BeamSearchOptimizer
-from travel_planner.algorithms.scoring import ScoringEngine
-from travel_planner.config import PlannerConfig
-from travel_planner.constraints.validator import ConstraintValidator
-from travel_planner.models.debug import SearchDebug
-from travel_planner.services.return_estimator import CachedReturnEstimator
+from detoura.algorithms.beam_search import BeamSearchOptimizer
+from detoura.algorithms.scoring import ScoringEngine
+from detoura.config import PlannerConfig
+from detoura.constraints.validator import ConstraintValidator
+from detoura.models.debug import SearchDebug
+from detoura.services.return_estimator import CachedReturnEstimator
 
 from .conftest import TRAP_ROUTE_COSTS, WINDOW_FROM, WINDOW_TO
 
@@ -254,7 +254,7 @@ def test_stay_durations_are_explored_not_hardcoded(trap):
 
 @pytest.mark.parametrize("max_cities", [1, 2, 3])
 def test_max_cities_is_enforced(trap, max_cities):
-    from travel_planner.services.planner import TravelPlanner
+    from detoura.services.planner import TravelPlanner
 
     config = trap.config.model_copy(update={"max_cities": max_cities})
     planner = TravelPlanner(trap.transport, trap.destinations, config=config)

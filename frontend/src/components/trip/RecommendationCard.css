@@ -1,0 +1,156 @@
+.rec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.rec__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.rec__rank {
+  color: var(--accent);
+  margin-bottom: 0.2rem;
+}
+
+.rec__title {
+  font-size: 1.5rem;
+  letter-spacing: var(--tracking-tight);
+}
+
+.rec__meta {
+  font-size: var(--text-sm);
+  margin-top: 0.15rem;
+}
+
+.rec__price {
+  text-align: right;
+  flex: none;
+}
+
+.rec__total {
+  font-size: 1.75rem;
+  font-weight: var(--weight-extrabold);
+  letter-spacing: var(--tracking-tighter);
+  line-height: 1.1;
+}
+
+.rec__pp {
+  font-size: var(--text-xs);
+}
+
+/* Four columns on desktop, two on a phone: any narrower and the numbers stop
+ * being comparable at a glance, which is the only reason they are here. */
+.rec__stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-4) 0;
+  border-block: 1px solid var(--border);
+}
+
+.rec__stat dt {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-bottom: 0.15rem;
+}
+
+.rec__stat dd {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+}
+
+.rec__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.rec__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.rec__prose {
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+}
+
+/* The trade-off gets a coral rule: it is the sentence that distinguishes this
+ * product from a price sort, and it should not read as a footnote. */
+.rec__section--tradeoff {
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--accent);
+}
+
+.rec__highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.rec__costs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  font-size: var(--text-xs);
+}
+
+.rec__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.rec__save {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color var(--duration) var(--ease),
+    border-color var(--duration) var(--ease),
+    background var(--duration) var(--ease);
+}
+
+.rec__save:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.rec__save--on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+@media (max-width: 720px) {
+  .rec__stats {
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-4) var(--space-3);
+  }
+  .rec__title {
+    font-size: 1.3rem;
+  }
+  .rec__total {
+    font-size: 1.5rem;
+  }
+  .rec__actions .btn {
+    flex: 1;
+  }
+}

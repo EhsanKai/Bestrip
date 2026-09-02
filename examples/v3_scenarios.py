@@ -14,9 +14,9 @@ import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from travel_planner import TravelPlanner, TravelPreferences, TripRequest
-from travel_planner.profiles import PROFILES, ProfileName
-from travel_planner.services.budget_sensitivity import analyze_budget_sensitivity
+from detoura import TravelPlanner, TravelPreferences, TripRequest
+from detoura.profiles import PROFILES, ProfileName
+from detoura.services.budget_sensitivity import analyze_budget_sensitivity
 
 
 @dataclass(frozen=True)

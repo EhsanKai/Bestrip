@@ -6,22 +6,22 @@ from datetime import date, datetime
 
 import pytest
 
-from travel_planner.algorithms.accommodation_value import (
+from detoura.algorithms.accommodation_value import (
     TYPE_FIT,
     AccommodationScorer,
 )
-from travel_planner.algorithms.travel_value import TravelValueScorer
-from travel_planner.config import PlannerConfig
-from travel_planner.models.accommodation import (
+from detoura.algorithms.travel_value import TravelValueScorer
+from detoura.config import PlannerConfig
+from detoura.models.accommodation import (
     AccommodationOption,
     AccommodationTier,
     AccommodationType,
     rating_from_stars,
 )
-from travel_planner.models.trip import AccommodationPreference
-from travel_planner.profiles import PROFILES, ProfileName
-from travel_planner.providers.accommodation import SyntheticAccommodationDataProvider
-from travel_planner.services.planner import TravelPlanner
+from detoura.models.trip import AccommodationPreference
+from detoura.profiles import PROFILES, ProfileName
+from detoura.providers.accommodation import SyntheticAccommodationDataProvider
+from detoura.services.planner import TravelPlanner
 
 from .conftest import leg, make_state, trip_request
 

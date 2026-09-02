@@ -6,10 +6,10 @@ from datetime import datetime
 
 import pytest
 
-from travel_planner.config import PlannerConfig
-from travel_planner.constraints.validator import ConstraintValidator
-from travel_planner.models.debug import RejectionReason
-from travel_planner.models.transport import TransportType
+from detoura.config import PlannerConfig
+from detoura.constraints.validator import ConstraintValidator
+from detoura.models.debug import RejectionReason
+from detoura.models.transport import TransportType
 
 from .conftest import leg, make_state, trip_request
 

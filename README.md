@@ -1,63 +1,312 @@
-# Travel Intelligence Engine
+# Detoura
 
-A deterministic, multi-objective trip optimizer. It answers:
+**Don't take the obvious trip.**
 
-> *Given my money, my time and my preferences, what is the best trip you can build me?*
+*AI travel discovery and optimization.*
 
-Not "find me a cheap flight". The optimizer prices and scores the **whole
-trip** — the ride to the airport, the flights and trains, the hotel and how
-good it is, the days you actually get to spend somewhere, and how well the
-cities match the traveler — then searches the space of complete round trips for
-the best one under the profile you ask for.
+Detoura doesn't just find flights. It discovers the trips you didn't think to
+search for.
 
-> ⚠️ **All data is synthetic.** Flights, trains, buses, hotel rates, ratings,
-> inventory, airport transfers and destination metadata are fabricated to
-> exercise the optimizer. Nothing here reflects real prices or availability.
-> A real transport provider is implemented and tested (V4) but ships without a
-> credential, so nothing in this repository makes a network call.
+A conventional travel search asks *"where do you want to go?"* Detoura asks
+*"given how you want to travel, what trips are actually worth taking?"*
+
+You think **Cologne → Madrid**. Detoura finds **Cologne → Munich → Vienna →
+Cologne**: €71 more, a second city, and 21 more hours actually spent somewhere.
+Madrid isn't a bad choice — that's the point. Detoura shows you what else the
+same budget buys.
+
+```
+Your original idea          Detoura found
+Madrid                      Munich + Vienna
+€338 · 1 city · 36.6h       €410 · 2 cities · 57.8h
+                            +€71 · +1 city · +21h usable
+```
+
+> ⚠️ **All data is synthetic.** Prices, schedules, hotel rates, inventory,
+> transfers and destination metadata are fabricated to exercise the engine.
+> A real transport provider is implemented and tested but ships without a
+> credential, so nothing in this repository makes a network call. **Detoura
+> cannot book anything.**
+
+---
+
+## What this is
+
+Two things, in one repository:
+
+| | |
+| --- | --- |
+| **The engine** (`src/detoura/`) | A deterministic, multi-objective trip optimizer. Beam search over *whole trips* — the ride to the airport, the flights and trains, the hotel and how good it is, the days you actually get on the ground, and how well the cities match the traveller. 711 tests. |
+| **The product** (`frontend/`) | A React/TypeScript application that makes that engine feel simple. Landing, discovery, search, results, comparison and trip detail, wired to the real API. |
+
+Between them sits `/api/v1` — a product contract that deliberately exposes
+none of the optimizer's internals. No screen in Detoura knows what a beam is.
 
 ---
 
 ## Table of contents
 
-- [What V4 changed](#what-v4-changed)
-- [What V3 changed](#what-v3-changed)
+- [What V5 added](#what-v5-added)
+- [Running Detoura](#running-detoura)
+- [The product API](#the-product-api)
+- [Search modes](#search-modes)
+- [Provider failure semantics](#provider-failure-semantics)
+- [Price freshness](#price-freshness)
+- [Recommendation confidence](#recommendation-confidence)
+- [The frontend](#the-frontend)
+- [Version history](#version-history)
+  - [What V4 changed](#what-v4-changed)
+  - [What V3 changed](#what-v3-changed)
 - [The five traps](#the-five-traps)
-- [Quick start](#quick-start)
 - [Architecture](#architecture)
 - [How the algorithm works](#how-the-algorithm-works)
-  - [1. Origin discovery and ground transfer](#1-origin-discovery-and-ground-transfer)
-  - [2. Beam search, and why it is not greedy](#2-beam-search-and-why-it-is-not-greedy)
-  - [3. Accommodation](#3-accommodation)
-  - [4. Constraints and admissible bounds](#4-constraints-and-admissible-bounds)
-  - [5. Travel Value](#5-travel-value)
-  - [6. The destination experience model](#6-the-destination-experience-model)
-  - [7. Travel intensity](#7-travel-intensity)
-  - [8. Usable destination time](#8-usable-destination-time)
-  - [9. Pareto filtering](#9-pareto-filtering)
-  - [10. Diversity filtering](#10-diversity-filtering)
-  - [11. Baseline comparison](#11-baseline-comparison)
-- [Candidate generation and complexity](#candidate-generation-and-complexity)
-- [The adaptive beam](#the-adaptive-beam)
-- [Inventory and availability](#inventory-and-availability)
-- [Learning the profile weights](#learning-the-profile-weights)
-- [Budget sensitivity](#budget-sensitivity)
 - [Recommendation profiles](#recommendation-profiles)
-- [Worked example](#worked-example)
-- [Observability](#observability)
-- [Configuration](#configuration)
-- [The API](#the-api)
-- [Synthetic data](#synthetic-data)
-- [Plugging in real APIs](#plugging-in-real-apis)
-- [Where an LLM fits](#where-an-llm-fits)
 - [Running the tests](#running-the-tests)
 - [Performance](#performance)
 - [Known limitations](#known-limitations)
-- [What a V5 would be for](#what-a-v5-would-be-for)
+- [Roadmap](#roadmap)
 
 ---
 
-## What V4 changed
+## What V5 added
+
+V4 finished the engine. V5 turns it into a product — and the work divides
+cleanly into "things a product needs that an engine doesn't".
+
+| | |
+| --- | --- |
+| **Search modes** | QUICK / SMART / DEEP replace `adaptive_beam=True`. Nobody choosing a holiday has an opinion about beam width. |
+| **Provider failure semantics** | Nine typed failure kinds. Infrastructure failure is *never* reported as "no trips found". |
+| **Price freshness** | FRESH / RECENT / STALE / UNKNOWN, with provenance on every offer. The engine never pretends a stale price is fresh. |
+| **Recommendation confidence** | Qualitative levels with their reasons. No fake statistical certainty. |
+| **A product API** | `/api/v1` — the contract the frontend consumes, containing no beam, no frontier, no search state. |
+| **The Detoura UI** | Landing, Discover, Search, Results, Compare, Trip detail, Saved. Real components against the real API. |
+| **Smarter adaptive stopping** | Widening stops when it stops buying *anything* — score, new city combinations, or new competitive alternatives — not on score alone. |
+
+Everything V4 could do, V5 still does, with identical numbers.
+
+---
+
+## Running Detoura
+
+```bash
+# Backend
+pip install -e ".[dev,api]"
+uvicorn detoura.api.app:app --reload        # http://127.0.0.1:8000
+
+# Frontend
+cd frontend
+npm install
+npm run dev                                  # http://127.0.0.1:5173
+```
+
+The dev server proxies `/api` to the backend, so the frontend uses the same
+paths in development and production.
+
+```bash
+pytest                                       # 711 tests
+python examples/v4_capabilities.py           # the engine, on the terminal
+```
+
+---
+
+## The product API
+
+`/api/v1` is what the frontend talks to. The engine's own routes stay mounted
+at the root for development and for anyone who wants the full search trace.
+
+```
+POST /api/v1/search                 find trips
+POST /api/v1/budget-sensitivity     what would EUR 50 more unlock?
+GET  /api/v1/origins/{place}        departure airports + what they cost to reach
+GET  /api/v1/destinations           the catalog, described in interests
+GET  /api/v1/profiles               the three ways of answering "best trip?"
+GET  /api/v1/search-modes           how hard we can look, and what it costs
+GET  /api/v1/health
+```
+
+**The contract deliberately hides the optimizer.** A test asserts that the
+response contains none of `beam_rounds`, `beam_width`, `states_generated`,
+`pareto_kept` or `value_breakdown`. This is a coupling rule, not a cosmetic
+one: if a screen reads `beam_rounds`, changing the search strategy becomes a
+frontend release.
+
+A recommendation carries what a traveller can act on — route, prices, usable
+hours, transit hours, experience and preference scores, intensity band,
+confidence with reasons, price freshness, availability, the baseline
+comparison, stays, legs, and per-city match data — and nothing that only
+explains *how* it was found.
+
+---
+
+## Search modes
+
+```
+QUICK   ~0.3-1.5s   Strong candidates, fast.
+SMART   ~0.8-3s     Good alternatives without the wait.   (default)
+DEEP    ~8-20s      Search deeper for less obvious alternatives.
+```
+
+Modes are a **mapping to existing configuration**, not a second search path —
+nothing in `beam_search.py` knows a mode exists.
+
+QUICK narrows the two branching factors that actually dominate cost (transport
+options per leg, room tiers per stay) rather than only the beam: halving the
+beam alone does not reach a second, because branching, not the beam, is what
+generates states. SMART is V4's default exactly, so every published benchmark
+still describes the default experience. DEEP is V4's adaptive ladder plus a
+wall-clock ceiling, because a mode that promises "10-15 seconds" must not start
+a doubling it has no time to finish.
+
+**Adaptive stopping got smarter (V5.2.1).** V4 stopped when the best score
+stopped improving. That is too narrow in both directions: a round can leave the
+top score untouched and still find the only three-city itinerary in the result,
+and a round can nudge the score by a hair while discovering nothing. A round is
+now productive if it beats the score, discovers a **city combination** no
+narrower round found, or finds a **competitive** alternative within 0.03 of the
+best. Every signal is a deterministic function of what was found, so the ladder
+is still reproducible.
+
+---
+
+## Provider failure semantics
+
+The rule, stated as plainly as the spec states it:
+
+> Never silently convert infrastructure failure into "No trips found."
+
+Those are different sentences with different next steps. *"No flights under
+€450"* is an answer — the search worked, the budget is the problem, and the
+useful move is to relax something. *"The flight provider is unavailable"* is not
+an answer at all. A UI that renders both as an empty list has told the user
+something false in one of the two cases.
+
+So a failure is a **value**, not an exception that aborts the run:
+
+```
+NO_RESULTS             the provider answered, and the answer was "nothing"
+SOLD_OUT               options existed, none had inventory for this party
+TIMEOUT                ─┐
+UNAVAILABLE             │
+MALFORMED_RESPONSE      ├─ infrastructure: never "no trips found"
+CURRENCY_UNAVAILABLE    │
+STALE_OFFER             │
+AUTHENTICATION_FAILED   │
+RATE_LIMITED           ─┘
+```
+
+Resilient provider decorators record the failure, return nothing *for that
+lookup*, and let the run finish on the data that did arrive. The response then
+says so: `issues[]` non-empty means the search ran on incomplete data, and the
+UI shows a banner **over real results** rather than an error page. Partial data
+honestly labelled beats either a lie or a crash.
+
+One detail worth calling out: a degraded accommodation bound returns `None`,
+not `0.0` and never a guess. `None` means *unknown*, which the constraint layer
+treats as "do not prune" — so a provider failure costs pruning efficiency and
+never correctness. Guessing here is exactly the inadmissibility bug V3 found
+and fixed once already.
+
+---
+
+## Price freshness
+
+Real prices move. An engine that caches a quote for twenty minutes and presents
+it with the same confidence as one fetched a second ago is telling the user
+something it does not know.
+
+```
+FRESH     fetched moments ago; quote it plainly
+RECENT    within the window a price usually holds
+STALE     old enough to re-check before booking
+UNKNOWN   no provenance at all
+```
+
+`UNKNOWN` is deliberately *not* `STALE`: "we never knew" and "we knew a while
+ago" are different claims. The synthetic providers report `UNKNOWN`, honestly,
+because their prices are fabricated — which is why every recommendation in this
+build shows "Estimated" and why the confidence panel counts that against
+itself.
+
+An itinerary's freshness is the **worst** of its parts. A trip is only as
+current as its oldest quote, and averaging would let three fresh legs hide one
+that expired.
+
+---
+
+## Recommendation confidence
+
+> Do NOT present fake statistical certainty.
+
+There is no probability here, because there is none to be had — nothing in this
+system knows how likely a traveller is to enjoy a trip. What it *does* know is
+how much work went into the answer and how solid it looked while that work
+happened:
+
+```
+Good confidence
+  ✓ Compared against 788 possible trips
+  ✓ Several strong alternatives evaluated
+  ✓ No other trip beats it on every measure
+  ⚠ Prices are estimates, not live quotes
+```
+
+The arithmetic is deliberately crude — count the good signals, count the
+disqualifying ones — because anything more elaborate would imply a precision
+that is not there. The value is in *which* signals fired, and those are reported
+individually. Two facts are disqualifying regardless of how many positives
+accumulate: a degraded search and a dominated itinerary can never be HIGH.
+
+---
+
+## The frontend
+
+```
+frontend/src/
+├── api/          typed contract mirror + the single fetch client
+├── design/       brand tokens (light + dark), base layer
+├── components/
+│   ├── ui/       Button, Card, Badge, Score, Icon
+│   ├── trip/     RecommendationCard, BaselineComparison, RouteMap,
+│   │             RouteLine, Timeline
+│   ├── search/   SearchProgress, ProviderIssues, NoResults, ErrorState
+│   └── shell/    Header, MobileNav
+├── screens/      Landing, Discover, Results, TripDetail, Compare, SavedTrips
+├── state/        useSearch, useSaved
+└── lib/          formatting
+```
+
+**Business logic stays out of components.** Screens receive typed data and
+callbacks; `useSearch` owns the three ways a search can end (results, nothing
+matched, the search failed) and keeps them apart, because the whole failure
+contract collapses if the UI treats them the same.
+
+**Prose is built on the backend.** "Why we like it" and the trade-off sentence
+are assembled from typed factors and real numbers where the numbers are. A
+frontend writing that prose would be a frontend inventing facts.
+
+A few decisions worth naming:
+
+- **The baseline comparison shows the deltas in both directions**, including
+  the one that makes us look worse. A component that reported "+1 city, +20
+  hours" and hid "+€71" would be an advertisement; showing all three makes it
+  advice.
+- **Compare names its winners** ("Best price", "Most usable time") rather than
+  leaving sixteen numbers for the reader to scan. Ties are left unmarked.
+- **The map auto-fits what it draws.** A Cologne–Munich–Vienna trip framed on
+  all of Europe is three dots in an empty continent.
+- **The timeline distinguishes travel time from destination time visually** —
+  travel is a quiet dashed rule, a stay is a solid block with its usable hours
+  called out. That distinction is most of what separates this from a booking
+  confirmation.
+- **Dark mode is founded on Midnight Navy**, not an inversion. Coral stays
+  exactly where it is, because it is the brand's one constant.
+
+---
+
+## Version history
+
+### What V4 changed
 
 V3 closed with a list of six recommendations for V4 and a "ready for future
 implementation, not implemented" table. V4 is that list, done. Each item below
@@ -96,7 +345,7 @@ Three things did **not** change, and that is deliberate:
 
 ---
 
-## What V3 changed
+### What V3 changed
 
 V1 optimized a transport route. V2 optimized a trip's *cost*. V3 optimizes the
 trip. The beam search, the constraint engine, the Pareto and diversity filters
@@ -200,71 +449,6 @@ intensity of 0.032, with the four-city loop discovered, affordable and rejected.
 Intensity is what stops "more cities" from becoming "four airports in four
 days" — and note that ADVENTURE, the profile that most wants cities, still
 refuses this one.
-
----
-
-## Quick start
-
-```bash
-pip install -e ".[dev]"
-
-pytest                                            # 654 tests
-python examples/v4_capabilities.py                # the six V4 additions
-python examples/v3_scenarios.py                   # A/B/C x three profiles
-python examples/v3_scenarios.py --budget-sensitivity
-python examples/v3_scenarios.py --baseline        # their idea vs. ours
-python examples/profiles_demo.py                  # the V2 comparison
-python examples/koln_scenario.py --debug          # one profile, full search trace
-
-uvicorn travel_planner.api.app:app --reload       # http://127.0.0.1:8000/docs
-```
-
-As a library — no FastAPI required:
-
-```python
-from datetime import date
-from travel_planner import TravelPlanner, TripRequest, TravelPreferences
-from travel_planner.profiles import ProfileName
-
-planner = TravelPlanner()          # synthetic transport, hotels and transfers
-result = planner.plan(
-    TripRequest(
-        origin="Köln",
-        budget=450, travelers=2, duration_days=5,
-        date_from=date(2026, 9, 10), date_to=date(2026, 9, 15), date_flexible=True,
-        transport_preferences=["flight", "train"],
-        preferred_destinations=["Madrid"],
-        avoid_destinations=["Paris"],
-        preferences=TravelPreferences(history=0.8, culture=0.8, multiple_cities=0.9),
-
-        # V3, all optional
-        preferred_experiences=["culture", "history", "food"],
-        disliked_experiences=["nightlife"],
-        previously_visited=["Amsterdam"],
-        preferred_city_count=2,
-    ),
-    profile=ProfileName.ADVENTURE,     # or BEST_VALUE (default), or CHEAPEST
-)
-
-for itinerary in result.recommendations:
-    print(itinerary.rank, itinerary.route_label(), itinerary.total_cost)
-    print("  ", itinerary.cost_breakdown)
-    print("  ", itinerary.value_breakdown)          # nine components + weights
-    print("  ", itinerary.destination_insights)     # why each city
-    print("  ", [f.value for f in itinerary.explanation_factors])
-```
-
-Every provider is injectable:
-
-```python
-planner = TravelPlanner(
-    transport_provider=my_transport,
-    destination_provider=my_destinations,
-    accommodation_provider=my_hotels,
-    ground_transfer_provider=my_transfers,
-    config=PlannerConfig(beam_width=40, max_cities=3),
-)
-```
 
 ---
 
@@ -1247,9 +1431,9 @@ The four knobs that matter most:
 
 ---
 
-## The API
+## The engine API
 
-The API is only an adapter: it validates, calls the planner, serializes. A test
+The engine API is only an adapter: it validates, calls the planner, serializes. A test
 plans the same request directly and over HTTP and asserts the two results are
 identical.
 
@@ -1636,7 +1820,7 @@ those are the application's business, and a model asked to guess them will.
 ## Running the tests
 
 ```bash
-pytest                                       # 654 tests
+pytest                                       # 711 tests
 pytest tests/test_beam_search.py -v          # the non-greedy proof
 pytest tests/test_adversarial.py -v          # the 20 V2 spec scenarios
 pytest tests/test_v3_adversarial.py -v       # the 13 V3 scenarios
@@ -1650,6 +1834,15 @@ a `conftest.py` helper. Where V3 had to update sixteen tests because it changed
 behaviour they asserted, V4 changed none, because the two additions that *would*
 have changed behaviour (the adaptive beam and inventory simulation) are both
 opt-in. Every published V3 figure still reproduces to the decimal.
+
+**V5 rewrote exactly one test, and it says why.** `test_v4_adaptive_beam.py`
+asserted that a generous tolerance stops the ladder after one round. V5.2.1
+changed that deliberately — widening now has to stop buying *anything*, not
+just score — so the old assertion described behaviour we no longer want. It was
+replaced by `test_the_tolerance_alone_no_longer_stops_the_ladder`, whose
+docstring records the change, and joined by two tests covering the new stopping
+signals. Nothing was deleted, skipped, or weakened to make V5 pass; every other
+pre-existing test runs as written.
 
 | File | Covers | tests |
 | --- | --- | --- |
@@ -1677,12 +1870,13 @@ opt-in. Every published V3 figure still reproduces to the decimal.
 | `test_v3_budget_sensitivity.py` | the sweep, its invariants, the HTTP endpoint | 16 |
 | `test_v3_adversarial.py` | the 13 V3 scenarios, including **traps 4 and 5** | 13 |
 | `test_v4_value_for_money.py` | the premium, the reference rate, monotonicity, the dead zone | 22 |
-| `test_v4_adaptive_beam.py` | the ladder, the stopping rule, honest cost reporting | 19 |
+| `test_v4_adaptive_beam.py` | the ladder, the stopping rule, honest cost reporting | 21 |
 | `test_v4_availability.py` | unknown vs. sold out, scarcity, priced refundability | 35 |
 | `test_v4_learning.py` | weight recovery, held-out accuracy, the prior, validation | 33 |
 | `test_v4_real_providers.py` | auth, mapping, currency, retries, backoff, rate limits | 57 |
 | `test_v4_llm.py` | the grounding guard, schema, retry, fallback, isolation | 45 |
-| | **total** | **654** |
+| `test_v5_product.py` | search modes, failure semantics, freshness, confidence, the product contract | 55 |
+| | **total** | **711** |
 
 Determinism is asserted, not assumed: several tests plan the same request twice
 and compare the full result object, the budget sweep is compared for exact
@@ -1813,50 +2007,56 @@ transport as well.
   budget. That is correct, and it means budgets that worked in V1 may now return
   few results or none.
 
-### Ready for future implementation, not implemented
+### Implemented vs. provider-dependent vs. planned
 
-V3's table had five rows. Four are now implemented; what remains is genuinely
-one row plus the two providers nobody has written yet.
+The spec asks these to be clearly distinguished, and they are.
+
+**Implemented and tested — works today on synthetic data**
+
+Beam search over whole trips · adaptive beam · Pareto with ε-dominance ·
+diversity filtering · destination experience model · accommodation tier
+branching · ground transfers · Travel Value · three profiles · baseline
+comparison · budget sensitivity · explainability · inventory and availability ·
+value-for-money diagnostic · learned preference weights · search modes ·
+provider failure semantics · price-freshness model · recommendation confidence ·
+the `/api/v1` contract · the Detoura UI.
+
+**Provider-dependent — the code is written, the credential is not**
 
 | | what exists | what is missing |
 | --- | --- | --- |
-| **Real transport API** | ✅ **implemented** — `AmadeusTransportProvider`, HTTP transport with retries/backoff/rate limiting, 57 tests against recorded payloads | a credential |
-| **Real accommodation / transfer APIs** | the protocols, the caching decorators, and a worked example to copy in `providers/amadeus.py` | the two clients and their response mapping |
-| **Currency conversion** | ✅ **wired end to end** — `Money`, `PriceBasis`, `PriceNormalizer`, applied at the provider boundary, and a loud failure when a rate is missing | a live rate feed |
-| **LLM preference parsing** | ✅ **implemented** — `LlmPreferenceParser`, schema-constrained, validated, one retry, keyword fallback | nothing; install the `llm` extra |
-| **LLM explanations** | ✅ **implemented** — `LlmItineraryExplainer` with the numeric grounding guard and template fallback | nothing; install the `llm` extra |
-| **Learned profiles** | ✅ **implemented** — `learning.py`, fitted from `observations_from_result` | a place to persist a cohort's history |
-| **Persistent caching** | in-process `ProviderCache` with hit/miss metrics | TTLs, eviction, a shared store |
+| Real transport data | `AmadeusTransportProvider` end to end: OAuth, retries, backoff, rate limiting, mapping, currency normalization. 57 tests against recorded payloads. | an API credential |
+| Real accommodation data | the protocol, the caching decorators, and a worked provider to copy | the client and its response mapping |
+| Live currency rates | `Money`, `PriceBasis`, `PriceNormalizer`, `ExchangeRateSource` | a rate feed |
+| Live price freshness | the full model, wired through the API and rendered in the UI | a provider that stamps provenance |
+| LLM parsing and explanation | both seams implemented against `claude-opus-5`, with a numeric grounding guard and schema-validated parsing | the `llm` extra installed and a key |
 
-The distinction still matters and still holds: the deterministic core does not
-import any of it. Two AST tests enforce that — one for `travel_planner.llm`,
-one for `travel_planner.learning` — and a third asserts that no module under
-`algorithms/` or `constraints/` imports a networking library.
+**Planned — not built**
 
-**Not built, deliberately**: restaurants, visas, weather, maps, auth, a
-database, a frontend.
+Booking · saved-trip price re-checking against a live provider · editable trips
+with re-optimization · the contextual assistant · accounts and persistence ·
+restaurants, visas, weather.
+
+**Detoura cannot book anything, and does not claim to.**
 
 ---
 
-## What a V5 would be for
+## Roadmap
 
-V4 finished V3's list. What is left is no longer a list of missing pieces — it
-is the two questions this design has not had to answer yet.
-
-1. **Real data will break the admissible bounds.** Every pruning bound here is
-   admissible because the synthetic dataset is complete and static. A live feed
-   is neither: prices move between the bound and the booking, and a bound
-   computed from a cached minimum is only admissible until the cache is stale.
-   The honest V5 answer is probably to make bounds *probabilistic* and let the
-   search prune on a confidence level it reports, rather than to pretend to a
-   guarantee it no longer has.
-2. **The engine has no notion of a traveler who is wrong about what they want.**
-   It optimizes the stated request faithfully, and the learning module now
-   corrects the *weights* from behaviour — but a traveler who asks for four
-   cities in five days gets an argument from `city_count`, not a conversation.
-   That is a product question before it is an engineering one, and it is the
-   first thing here that genuinely wants the LLM seams to be more than
-   one-directional.
-
-Everything else — the second and third real providers, persistence, a frontend —
-is work, not design.
+1. **Integrate one real provider end to end.** Everything else is speculation
+   until real prices, real latency and real "nothing found" hit the caching
+   layer and the admissible bounds. That is where the freshness model earns its
+   keep and where `min_return_price_per_person` will be hardest to keep
+   admissible.
+2. **Editable trips.** Lock a city, swap a hotel, change a stay length,
+   re-optimize around what was locked. The engine can already answer this
+   shape of question; it needs a constrained re-plan and a UI for it.
+3. **Price re-checking on saved trips.** The model is built (`PriceChange`,
+   with a `confident` flag so an uncertain comparison is hedged rather than
+   announced); it needs a scheduler and somewhere to persist.
+4. **Personalization with a face.** The weight learner works. What is missing
+   is the honest surface: "you seem to prefer good-value trips", shown only once
+   the evidence supports it, with a control to disagree.
+5. **Adaptive beam in parallel.** 14 seconds is too slow for an interactive
+   request. The rungs are independent searches; running the widest two
+   concurrently would roughly halve DEEP.

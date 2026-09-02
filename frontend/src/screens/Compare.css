@@ -1,0 +1,103 @@
+.compare {
+  padding-block: var(--space-5) var(--space-9);
+}
+
+.compare__back {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: var(--space-2) 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.compare__back:hover {
+  color: var(--accent);
+}
+
+.compare__title {
+  margin-block: var(--space-3) var(--space-6);
+}
+
+/* CSS subgrid keeps every row aligned to the header columns without a table,
+ * which is what lets each cell be a card-like block rather than a <td>. */
+.compare__grid {
+  display: grid;
+  gap: var(--space-3);
+  align-items: stretch;
+}
+
+.compare__row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  padding-block: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.compare__corner {
+  content: "";
+}
+
+.compare__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.compare__name {
+  font-size: var(--text-h3);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+}
+
+.compare__head-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.compare__label {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  font-weight: var(--weight-semibold);
+}
+
+.compare__cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+}
+
+.compare__value {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+}
+
+/* The winner is a tinted cell with a named badge, so each row resolves into a
+ * claim rather than leaving the reader to scan for the biggest number. */
+.compare__cell--win {
+  background: var(--accent-soft);
+}
+
+.compare__cell--win .compare__value {
+  color: var(--coral-dark);
+}
+
+.compare__empty {
+  padding-block: var(--space-9);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+@media (max-width: 900px) {
+  .compare__grid {
+    overflow-x: auto;
+  }
+}

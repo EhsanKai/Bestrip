@@ -6,14 +6,14 @@ from datetime import datetime
 
 import pytest
 
-from travel_planner.algorithms.intensity import (
+from detoura.algorithms.intensity import (
     MAX_TRANSIT_SHARE,
     STYLE_TOLERANCE,
     IntensityScorer,
 )
-from travel_planner.algorithms.travel_value import TravelValueScorer
-from travel_planner.models.trip import TravelStyle
-from travel_planner.profiles import PROFILES, ProfileName
+from detoura.algorithms.travel_value import TravelValueScorer
+from detoura.models.trip import TravelStyle
+from detoura.profiles import PROFILES, ProfileName
 
 from .conftest import leg, make_state, transfer, trip_request
 
@@ -98,7 +98,7 @@ def test_ground_transfers_count_as_transit(scorer):
 
 def test_airport_churn_is_counted(scorer):
     """Flights and transfers each cost a check-in that duration alone misses."""
-    from travel_planner.models.transport import TransportType
+    from detoura.models.transport import TransportType
 
     flights = make_state(
         [

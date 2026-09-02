@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from datetime import date
 
-from travel_planner.llm import (
+from detoura.llm import (
     ItineraryExplainer,
     KeywordPreferenceParser,
     PreferenceParser,
     TemplateItineraryExplainer,
 )
-from travel_planner.models.trip import TripRequest
-from travel_planner.services.planner import TravelPlanner
+from detoura.models.trip import TripRequest
+from detoura.services.planner import TravelPlanner
 
 from .conftest import trip_request
 
@@ -82,9 +82,9 @@ def test_the_optimizer_does_not_depend_on_the_llm_package():
     import ast
     import pathlib
 
-    import travel_planner
+    import detoura
 
-    root = pathlib.Path(travel_planner.__file__).parent
+    root = pathlib.Path(detoura.__file__).parent
     optimizer_packages = ("algorithms", "constraints", "services", "providers", "data")
     offenders = []
     for package in optimizer_packages:

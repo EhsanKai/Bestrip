@@ -6,10 +6,10 @@ from datetime import datetime
 
 import pytest
 
-from travel_planner.algorithms.travel_value import TravelValueScorer
-from travel_planner.config import PlannerConfig
-from travel_planner.models.trip import TravelPreferences
-from travel_planner.profiles import (
+from detoura.algorithms.travel_value import TravelValueScorer
+from detoura.config import PlannerConfig
+from detoura.models.trip import TravelPreferences
+from detoura.profiles import (
     COMPONENTS,
     DEFAULT_PROFILE,
     PROFILES,
@@ -18,7 +18,7 @@ from travel_planner.profiles import (
     TravelValueWeights,
     get_profile,
 )
-from travel_planner.services.planner import TravelPlanner
+from detoura.services.planner import TravelPlanner
 
 from .conftest import leg, make_state, room, trip_request
 

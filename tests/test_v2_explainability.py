@@ -7,12 +7,12 @@ import pytest
 fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from travel_planner.api.app import create_app  # noqa: E402
-from travel_planner.api.routes import get_planner  # noqa: E402
-from travel_planner.models.itinerary import ExplanationFactor  # noqa: E402
-from travel_planner.models.trip import TravelPreferences  # noqa: E402
-from travel_planner.profiles import ProfileName  # noqa: E402
-from travel_planner.services.planner import TravelPlanner  # noqa: E402
+from detoura.api.app import create_app  # noqa: E402
+from detoura.api.routes import get_planner  # noqa: E402
+from detoura.models.itinerary import ExplanationFactor  # noqa: E402
+from detoura.models.trip import TravelPreferences  # noqa: E402
+from detoura.profiles import ProfileName  # noqa: E402
+from detoura.services.planner import TravelPlanner  # noqa: E402
 
 from .conftest import trip_request  # noqa: E402
 

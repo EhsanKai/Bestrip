@@ -6,19 +6,19 @@ from datetime import date
 
 import pytest
 
-from travel_planner.config import PlannerConfig
-from travel_planner.models.money import (
+from detoura.config import PlannerConfig
+from detoura.models.money import (
     BASE_CURRENCY,
     FixedExchangeRates,
     Money,
     PriceBasis,
     PriceNormalizer,
 )
-from travel_planner.providers.accommodation import (
+from detoura.providers.accommodation import (
     AccommodationDataProvider,
     SyntheticAccommodationDataProvider,
 )
-from travel_planner.providers.cache import (
+from detoura.providers.cache import (
     CacheStats,
     CachingAccommodationProvider,
     CachingGroundTransferProvider,
@@ -26,15 +26,15 @@ from travel_planner.providers.cache import (
     ProviderCache,
     ProviderMetrics,
 )
-from travel_planner.providers.ground_transfer import (
+from detoura.providers.ground_transfer import (
     GroundTransferProvider,
     SyntheticGroundTransferProvider,
 )
-from travel_planner.providers.transport import (
+from detoura.providers.transport import (
     SyntheticTransportDataProvider,
     TransportDataProvider,
 )
-from travel_planner.services.planner import TravelPlanner
+from detoura.services.planner import TravelPlanner
 
 from .conftest import trip_request
 

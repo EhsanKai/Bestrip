@@ -7,9 +7,9 @@ import pytest
 fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from travel_planner.api.app import create_app  # noqa: E402
-from travel_planner.api.routes import get_planner  # noqa: E402
-from travel_planner.services.planner import TravelPlanner  # noqa: E402
+from detoura.api.app import create_app  # noqa: E402
+from detoura.api.routes import get_planner  # noqa: E402
+from detoura.services.planner import TravelPlanner  # noqa: E402
 
 #: The exact request body from the spec.
 PAYLOAD = {
@@ -133,7 +133,7 @@ def test_config_endpoint(client):
 
 def test_api_is_only_an_adapter(transport, destinations, config):
     """The same request, planned without touching FastAPI, gives the same answer."""
-    from travel_planner.models.trip import TripRequest
+    from detoura.models.trip import TripRequest
 
     planner = TravelPlanner(transport, destinations, config=config)
     direct = planner.plan(TripRequest(**PAYLOAD))

@@ -12,8 +12,8 @@ import random
 
 import pytest
 
-from travel_planner.config import PlannerConfig
-from travel_planner.learning import (
+from detoura.config import PlannerConfig
+from detoura.learning import (
     DEFAULT_ITERATIONS,
     MAX_SCALE,
     FitReport,
@@ -23,8 +23,8 @@ from travel_planner.learning import (
     learned_profile,
     observations_from_result,
 )
-from travel_planner.profiles import COMPONENTS, PROFILES, ProfileName, TravelValueWeights
-from travel_planner.services.planner import TravelPlanner
+from detoura.profiles import COMPONENTS, PROFILES, ProfileName, TravelValueWeights
+from detoura.services.planner import TravelPlanner
 
 from .conftest import trip_request
 
@@ -341,9 +341,9 @@ def test_the_optimizer_does_not_depend_on_the_learning_module():
     import ast
     import pathlib
 
-    import travel_planner
+    import detoura
 
-    root = pathlib.Path(travel_planner.__file__).parent
+    root = pathlib.Path(detoura.__file__).parent
     offenders = []
     for package in ("algorithms", "constraints", "providers", "data", "models"):
         for path in (root / package).rglob("*.py"):

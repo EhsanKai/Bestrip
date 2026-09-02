@@ -7,21 +7,21 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from travel_planner.algorithms.experience import (
+from detoura.algorithms.experience import (
     DISLIKE_PENALTY,
     REVISIT_FACTOR,
     ExperienceEngine,
 )
-from travel_planner.algorithms.travel_value import TravelValueScorer
-from travel_planner.data.destinations import DESTINATIONS
-from travel_planner.models.destination import (
+from detoura.algorithms.travel_value import TravelValueScorer
+from detoura.data.destinations import DESTINATIONS
+from detoura.models.destination import (
     ATTRIBUTES,
     EXPERIENCE_ATTRIBUTES,
     V3_ATTRIBUTES,
     Destination,
 )
-from travel_planner.models.trip import TravelPreferences
-from travel_planner.profiles import PROFILES, ProfileName
+from detoura.models.trip import TravelPreferences
+from detoura.profiles import PROFILES, ProfileName
 
 from .conftest import leg, make_state, trip_request
 
@@ -342,7 +342,7 @@ def test_insights_reach_the_itinerary(planner):
 
 
 def test_a_disliked_experience_is_flagged(planner):
-    from travel_planner.models.itinerary import ExplanationFactor
+    from detoura.models.itinerary import ExplanationFactor
 
     result = planner.plan(
         trip_request(

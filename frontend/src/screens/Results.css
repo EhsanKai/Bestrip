@@ -1,0 +1,116 @@
+.results {
+  padding-block: var(--space-6) var(--space-9);
+}
+
+.results__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+  flex-wrap: wrap;
+}
+
+.results__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.results__dot {
+  color: var(--border-strong);
+}
+
+.results__toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-block: var(--space-6) var(--space-4);
+}
+
+.results__profiles {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+}
+
+.results__profile {
+  padding: 0.5rem 1.1rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  min-height: 40px;
+}
+
+.results__profile.is-on {
+  background: var(--bg-raised);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.results__filters {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.results__select select {
+  padding: 0.5rem 0.85rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  min-height: 40px;
+}
+
+.results__count {
+  margin-bottom: var(--space-4);
+}
+
+.results__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.results__deeper {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-5);
+  margin-top: var(--space-6);
+  flex-wrap: wrap;
+  border-style: dashed;
+  background: transparent;
+}
+
+@media (max-width: 720px) {
+  .results__toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .results__profiles {
+    justify-content: space-between;
+  }
+  .results__profile {
+    flex: 1;
+  }
+  .results__deeper {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

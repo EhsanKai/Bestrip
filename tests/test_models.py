@@ -7,10 +7,10 @@ from datetime import date, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from travel_planner.models.destination import Destination
-from travel_planner.models.search import SearchState
-from travel_planner.models.transport import TransportOption, TransportType
-from travel_planner.models.trip import TravelPreferences, TripRequest
+from detoura.models.destination import Destination
+from detoura.models.search import SearchState
+from detoura.models.transport import TransportOption, TransportType
+from detoura.models.trip import TravelPreferences, TripRequest
 
 from .conftest import leg, make_state, trip_request
 

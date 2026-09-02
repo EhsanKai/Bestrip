@@ -17,15 +17,15 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from travel_planner.models.money import FixedExchangeRates, PriceNormalizer
-from travel_planner.models.transport import TransportType
-from travel_planner.providers.amadeus import (
+from detoura.models.money import FixedExchangeRates, PriceNormalizer
+from detoura.models.transport import TransportType
+from detoura.providers.amadeus import (
     AmadeusAuthError,
     AmadeusTransportProvider,
     parse_iso_duration,
 )
-from travel_planner.providers.cache import CachingTransportProvider
-from travel_planner.providers.http import (
+from detoura.providers.cache import CachingTransportProvider
+from detoura.providers.http import (
     HttpMetrics,
     HttpResponse,
     ProviderHttpError,
@@ -34,7 +34,7 @@ from travel_planner.providers.http import (
     RetryingHttpClient,
     UrllibHttpClient,
 )
-from travel_planner.providers.transport import TransportDataProvider
+from detoura.providers.transport import TransportDataProvider
 
 DAY = date(2026, 9, 10)
 
@@ -543,7 +543,7 @@ def test_invalid_transport_settings_are_rejected():
 
 def test_the_stdlib_client_satisfies_the_protocol():
     """It is not exercised against the network here - only its shape is."""
-    from travel_planner.providers.http import HttpClient
+    from detoura.providers.http import HttpClient
 
     assert isinstance(UrllibHttpClient(), HttpClient)
 
@@ -580,7 +580,7 @@ def test_it_works_behind_the_caching_decorator():
 
 def test_the_planner_accepts_it_without_an_algorithm_change():
     """Going live is a constructor argument."""
-    from travel_planner.services.planner import TravelPlanner
+    from detoura.services.planner import TravelPlanner
 
     http = RecordedHttp(*[search_response(offer(str(i))) for i in range(400)])
     planner = TravelPlanner(transport_provider=provider(http))
@@ -593,9 +593,9 @@ def test_the_search_never_calls_the_api_itself():
     import ast
     import pathlib
 
-    import travel_planner
+    import detoura
 
-    root = pathlib.Path(travel_planner.__file__).parent
+    root = pathlib.Path(detoura.__file__).parent
     offenders = []
     for package in ("algorithms", "constraints"):
         for path in (root / package).rglob("*.py"):

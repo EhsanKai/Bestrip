@@ -11,10 +11,10 @@ from datetime import date, datetime
 
 import pytest
 
-from travel_planner.config import PlannerConfig
-from travel_planner.models.trip import TravelPreferences
-from travel_planner.profiles import PROFILES, ProfileName
-from travel_planner.services.planner import TravelPlanner
+from detoura.config import PlannerConfig
+from detoura.models.trip import TravelPreferences
+from detoura.profiles import PROFILES, ProfileName
+from detoura.services.planner import TravelPlanner
 
 from .conftest import (
     TRAP_ROUTE_COSTS,
@@ -255,7 +255,7 @@ def test_13_an_early_departure_reduces_usable_time():
 # 14 & 15. Cheap is not the same as good
 # ---------------------------------------------------------------------------
 def test_14_a_cheap_three_city_slog_ranks_below_a_sane_trip(destinations, config):
-    from travel_planner.algorithms.travel_value import TravelValueScorer
+    from detoura.algorithms.travel_value import TravelValueScorer
 
     scorer = TravelValueScorer(config, destinations)
     request = trip_request(travelers=1, budget=400, preferred_destinations=[])

@@ -7,28 +7,28 @@ from datetime import date, datetime, time, timedelta
 
 import pytest
 
-from travel_planner.config import PlannerConfig
-from travel_planner.data.destinations import DESTINATIONS
-from travel_planner.data.synthetic_transport import Connection
-from travel_planner.models.accommodation import AccommodationOption
-from travel_planner.models.search import SearchState
-from travel_planner.models.transfer import GroundTransferMode, GroundTransferOption
-from travel_planner.models.transport import TransportOption, TransportType
-from travel_planner.models.trip import TravelPreferences, TripRequest
-from travel_planner.profiles import ProfileName
-from travel_planner.providers.accommodation import (
+from detoura.config import PlannerConfig
+from detoura.data.destinations import DESTINATIONS
+from detoura.data.synthetic_transport import Connection
+from detoura.models.accommodation import AccommodationOption
+from detoura.models.search import SearchState
+from detoura.models.transfer import GroundTransferMode, GroundTransferOption
+from detoura.models.transport import TransportOption, TransportType
+from detoura.models.trip import TravelPreferences, TripRequest
+from detoura.profiles import ProfileName
+from detoura.providers.accommodation import (
     NoAccommodationProvider,
     SyntheticAccommodationDataProvider,
 )
-from travel_planner.providers.destinations import StaticDestinationProvider
-from travel_planner.providers.ground_transfer import (
+from detoura.providers.destinations import StaticDestinationProvider
+from detoura.providers.ground_transfer import (
     FreeGroundTransferProvider,
     SyntheticGroundTransferProvider,
 )
-from travel_planner.providers.transport import SyntheticTransportDataProvider
-from travel_planner.services.origin_resolver import StaticOriginResolver
-from travel_planner.services.planner import TravelPlanner
-from travel_planner.usable_time import usable_minutes
+from detoura.providers.transport import SyntheticTransportDataProvider
+from detoura.services.origin_resolver import StaticOriginResolver
+from detoura.services.planner import TravelPlanner
+from detoura.usable_time import usable_minutes
 
 WINDOW_FROM = date(2026, 9, 10)
 WINDOW_TO = date(2026, 9, 15)
@@ -156,11 +156,11 @@ def completed_states(planner: TravelPlanner, request: TripRequest):
     discover, so tests about discovery must look here rather than at the final
     five.
     """
-    from travel_planner.algorithms.beam_search import BeamSearchOptimizer
-    from travel_planner.algorithms.scoring import ScoringEngine
-    from travel_planner.constraints.validator import ConstraintValidator
-    from travel_planner.profiles import get_profile
-    from travel_planner.services.return_estimator import CachedReturnEstimator
+    from detoura.algorithms.beam_search import BeamSearchOptimizer
+    from detoura.algorithms.scoring import ScoringEngine
+    from detoura.constraints.validator import ConstraintValidator
+    from detoura.profiles import get_profile
+    from detoura.services.return_estimator import CachedReturnEstimator
 
     candidates = planner.origin_resolver.resolve(request.origin, planner.config)
     airports = [c.code for c in candidates]

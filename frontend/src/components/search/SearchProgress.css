@@ -1,0 +1,91 @@
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-8) 0;
+  max-width: 560px;
+  margin-inline: auto;
+}
+
+.progress__headline {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.progress__sparkle {
+  color: var(--accent);
+  margin-top: 0.35rem;
+  flex: none;
+  animation: sparkle 2.4s var(--ease) infinite;
+}
+
+@keyframes sparkle {
+  0%, 100% { opacity: 1; transform: none; }
+  50% { opacity: 0.55; transform: scale(0.92); }
+}
+
+.progress__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.progress__step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-base);
+  color: var(--text-subtle);
+  transition: color var(--duration) var(--ease);
+}
+
+.progress__step--done {
+  color: var(--text);
+}
+
+.progress__step--active {
+  color: var(--text);
+  font-weight: var(--weight-semibold);
+}
+
+.progress__marker {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  flex: none;
+  transition:
+    background var(--duration) var(--ease),
+    border-color var(--duration) var(--ease),
+    color var(--duration) var(--ease);
+}
+
+.progress__step--done .progress__marker {
+  background: var(--sage);
+  border-color: var(--sage);
+  color: #fff;
+}
+
+.progress__step--active .progress__marker {
+  border-color: var(--accent);
+}
+
+.progress__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.progress__step--active .progress__dot {
+  background: var(--accent);
+  animation: pulse 1s var(--ease) infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}

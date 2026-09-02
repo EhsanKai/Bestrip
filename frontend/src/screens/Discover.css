@@ -1,0 +1,379 @@
+.discover {
+  padding-block: var(--space-7) var(--space-9);
+}
+
+.discover__header {
+  max-width: 52ch;
+  margin-bottom: var(--space-6);
+}
+
+.discover__header .lead {
+  margin-top: var(--space-3);
+}
+
+/* Two columns of cards; the wide ones span both. A single column would make
+ * the page feel like a long form, which is what Part 6 asks us to avoid. */
+.discover__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.discover__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.discover__card--wide {
+  grid-column: 1 / -1;
+}
+
+.discover__label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--weight-bold);
+  font-size: var(--text-base);
+}
+
+.discover__label-icon {
+  color: var(--accent);
+  display: inline-flex;
+}
+
+.discover__input {
+  width: 100%;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  transition: border-color var(--duration) var(--ease);
+}
+
+.discover__input:focus {
+  border-color: var(--accent);
+}
+
+.discover__input--lg {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  padding: 0.85rem 1rem;
+}
+
+.discover__input--budget {
+  width: 8rem;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+}
+
+.discover__hint {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.discover__hint--warn {
+  color: var(--warning);
+}
+
+.discover__airports {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.discover__airport {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+
+.discover__airport-code {
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.02em;
+}
+
+.discover__airport-cost {
+  font-size: var(--text-xs);
+}
+
+/* --- stepper ----------------------------------------------------------- */
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.stepper button {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  font-size: 1.25rem;
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+  color: var(--text);
+  transition: border-color var(--duration) var(--ease), color var(--duration) var(--ease);
+}
+
+.stepper button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.stepper button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.stepper__value {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+}
+
+/* --- toggle ------------------------------------------------------------ */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle__track {
+  width: 42px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  position: relative;
+  transition: background var(--duration) var(--ease);
+  flex: none;
+}
+
+.toggle__thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform var(--duration) var(--ease);
+}
+
+.toggle input:checked + .toggle__track {
+  background: var(--accent);
+}
+
+.toggle input:checked + .toggle__track .toggle__thumb {
+  transform: translateX(18px);
+}
+
+.toggle input:focus-visible + .toggle__track {
+  box-shadow: var(--shadow-focus);
+}
+
+/* --- budget ------------------------------------------------------------ */
+.discover__budget {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.discover__slider {
+  width: 100%;
+  accent-color: var(--accent);
+  height: 4px;
+}
+
+.discover__budget-value {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* --- profiles ---------------------------------------------------------- */
+.discover__profiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+}
+
+.discover__profile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  align-items: flex-start;
+  text-align: left;
+  padding: var(--space-4);
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    border-color var(--duration) var(--ease),
+    background var(--duration) var(--ease);
+}
+
+.discover__profile:hover {
+  border-color: var(--text-muted);
+}
+
+.discover__profile.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.discover__profile-name {
+  font-weight: var(--weight-bold);
+}
+
+.discover__profile-blurb {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.discover__profile.is-on .discover__profile-blurb {
+  color: var(--coral-dark);
+}
+
+/* --- chips ------------------------------------------------------------- */
+.discover__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.chip {
+  padding: 0.45rem 0.95rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  min-height: 38px;
+  transition:
+    border-color var(--duration) var(--ease),
+    background var(--duration) var(--ease),
+    color var(--duration) var(--ease);
+}
+
+.chip:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+.chip--on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-coral);
+}
+
+/* --- advanced ---------------------------------------------------------- */
+.discover__advanced {
+  grid-column: 1 / -1;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+}
+
+.discover__advanced summary {
+  cursor: pointer;
+  font-weight: var(--weight-semibold);
+  color: var(--text-muted);
+}
+
+.discover__advanced-body {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.discover__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.discover__field label {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+
+/* --- submit ------------------------------------------------------------ */
+.discover__submit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-top: var(--space-6);
+  flex-wrap: wrap;
+  position: sticky;
+  bottom: var(--space-4);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(8px);
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+}
+
+.discover__modes {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+}
+
+.discover__mode {
+  padding: 0.45rem 1rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  min-height: 38px;
+}
+
+.discover__mode.is-on {
+  background: var(--bg-raised);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+@media (max-width: 800px) {
+  .discover__grid,
+  .discover__profiles,
+  .discover__advanced-body {
+    grid-template-columns: 1fr;
+  }
+  .discover__submit {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .discover__submit .btn {
+    width: 100%;
+  }
+  .discover__modes {
+    justify-content: center;
+  }
+}

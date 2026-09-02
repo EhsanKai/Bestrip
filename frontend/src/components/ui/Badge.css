@@ -1,0 +1,59 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0;
+  line-height: 1.4;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+/* Every tone pairs a tinted ground with a darker ink, so the badge reads as
+ * text with emphasis rather than as a coloured block. */
+.badge--neutral {
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+.badge--accent {
+  background: var(--accent-soft);
+  color: var(--coral-dark);
+  border-color: color-mix(in srgb, var(--coral) 30%, transparent);
+}
+.badge--sage {
+  background: var(--sage-soft);
+  color: var(--sage);
+  border-color: color-mix(in srgb, var(--sage) 32%, transparent);
+}
+.badge--sand {
+  background: color-mix(in srgb, var(--sand) 45%, transparent);
+  color: #8a6d3b;
+  border-color: color-mix(in srgb, var(--sand) 80%, transparent);
+}
+.badge--success {
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 30%, transparent);
+}
+.badge--warning {
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 32%, transparent);
+}
+.badge--error {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 30%, transparent);
+}
+
+:root[data-theme="dark"] .badge--sage,
+:root[data-theme="dark"] .badge--success {
+  color: #8fc4a6;
+}
+:root[data-theme="dark"] .badge--sand {
+  color: #d8b478;
+}

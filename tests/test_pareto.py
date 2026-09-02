@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from travel_planner.algorithms.pareto import dominates, pareto_filter
-from travel_planner.algorithms.scoring import Objectives, ScoringEngine
+from detoura.algorithms.pareto import dominates, pareto_filter
+from detoura.algorithms.scoring import Objectives, ScoringEngine
 
 from .conftest import leg, make_state, trip_request
 
@@ -129,7 +129,7 @@ def test_planner_reports_pareto_filtering(planner, koln_request):
 
 
 def test_pareto_can_be_disabled(transport, destinations, config, koln_request):
-    from travel_planner.services.planner import TravelPlanner
+    from detoura.services.planner import TravelPlanner
 
     off = TravelPlanner(
         transport,

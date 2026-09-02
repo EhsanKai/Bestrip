@@ -6,21 +6,21 @@ from datetime import date
 
 import pytest
 
-from travel_planner.config import PlannerConfig
-from travel_planner.data.destinations import (
+from detoura.config import PlannerConfig
+from detoura.data.destinations import (
     ALL_NODES,
     DESTINATIONS,
     ORIGIN_AIRPORTS,
     canonical_key,
 )
-from travel_planner.data.synthetic_transport import CONNECTIONS, NETWORK_END, NETWORK_START
-from travel_planner.models.transport import TransportType
-from travel_planner.providers.transport import (
+from detoura.data.synthetic_transport import CONNECTIONS, NETWORK_END, NETWORK_START
+from detoura.models.transport import TransportType
+from detoura.providers.transport import (
     RealTransportDataProvider,
     SyntheticTransportDataProvider,
     TransportDataProvider,
 )
-from travel_planner.services.origin_resolver import StaticOriginResolver
+from detoura.services.origin_resolver import StaticOriginResolver
 
 REQUIRED_NODES = {
     "CGN",

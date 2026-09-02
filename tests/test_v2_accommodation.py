@@ -6,16 +6,16 @@ from datetime import date
 
 import pytest
 
-from travel_planner.config import PlannerConfig
-from travel_planner.models.accommodation import AccommodationOption, AccommodationTier
-from travel_planner.models.debug import RejectionReason
-from travel_planner.providers.accommodation import (
+from detoura.config import PlannerConfig
+from detoura.models.accommodation import AccommodationOption, AccommodationTier
+from detoura.models.debug import RejectionReason
+from detoura.providers.accommodation import (
     AccommodationDataProvider,
     NoAccommodationProvider,
     RealAccommodationDataProvider,
     SyntheticAccommodationDataProvider,
 )
-from travel_planner.services.accommodation_estimator import CachedAccommodationEstimator
+from detoura.services.accommodation_estimator import CachedAccommodationEstimator
 
 from .conftest import STAY_TRAP_RATES, leg, make_state, room, trip_request
 
@@ -240,8 +240,8 @@ def test_the_optimizer_prices_the_whole_trip_not_just_the_flights(stay_trap):
 
 def test_accommodation_can_be_switched_off(stay_trap):
     """With stays free, the V1 answer comes back - London wins on transport."""
-    from travel_planner.providers.ground_transfer import FreeGroundTransferProvider
-    from travel_planner.services.planner import TravelPlanner
+    from detoura.providers.ground_transfer import FreeGroundTransferProvider
+    from detoura.services.planner import TravelPlanner
 
     planner = TravelPlanner(
         stay_trap.transport,
@@ -276,11 +276,11 @@ def test_budget_pruning_accounts_for_accommodation(stay_trap):
 
 def test_a_city_with_no_rooms_is_reported_not_silently_skipped():
     """An unbookable required stay is a rejection with a reason."""
-    from travel_planner.data.destinations import DESTINATIONS
-    from travel_planner.providers.destinations import StaticDestinationProvider
-    from travel_planner.providers.ground_transfer import FreeGroundTransferProvider
-    from travel_planner.providers.transport import SyntheticTransportDataProvider
-    from travel_planner.services.planner import TravelPlanner
+    from detoura.data.destinations import DESTINATIONS
+    from detoura.providers.destinations import StaticDestinationProvider
+    from detoura.providers.ground_transfer import FreeGroundTransferProvider
+    from detoura.providers.transport import SyntheticTransportDataProvider
+    from detoura.services.planner import TravelPlanner
 
     from .conftest import STAY_TRAP_CONNECTIONS
 
@@ -334,8 +334,8 @@ def test_accommodation_reaches_the_api(planner, koln_request):
 
 def test_option_branching_is_configurable(stay_trap):
     """Raising the per-stay branching lets the search trade room quality."""
-    from travel_planner.services.planner import TravelPlanner
-    from travel_planner.providers.ground_transfer import FreeGroundTransferProvider
+    from detoura.services.planner import TravelPlanner
+    from detoura.providers.ground_transfer import FreeGroundTransferProvider
 
     tiers = TravelPlanner(
         stay_trap.transport,

@@ -1,0 +1,127 @@
+.baseline {
+  background: var(--bg-inverse);
+  color: var(--text-inverse);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.baseline__heading {
+  color: color-mix(in srgb, var(--text-inverse) 60%, transparent);
+}
+
+.baseline__pair {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.baseline__side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.baseline__label {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+/* Ours is the one with the coral marker. Theirs is stated plainly, not
+ * diminished: the point is a comparison, not a correction. */
+.baseline__side--ours .baseline__label {
+  color: var(--coral);
+}
+
+.baseline__side .subtle,
+.baseline__side.baseline__side .subtle {
+  color: color-mix(in srgb, var(--text-inverse) 55%, transparent);
+}
+
+.baseline__place {
+  font-size: 1.4rem;
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+}
+
+.baseline__price {
+  font-size: 2rem;
+  font-weight: var(--weight-extrabold);
+  letter-spacing: var(--tracking-tighter);
+  line-height: 1.1;
+}
+
+.baseline__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: color-mix(in srgb, var(--text-inverse) 70%, transparent);
+}
+
+.baseline__arrow {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--text-inverse) 25%, transparent);
+  color: var(--coral);
+}
+
+.baseline__deltas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: 1px solid color-mix(in srgb, var(--text-inverse) 16%, transparent);
+}
+
+.baseline__delta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--text-inverse) 8%, transparent);
+}
+
+.baseline__delta-value {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-extrabold);
+}
+
+.baseline__delta-label {
+  font-size: var(--text-xs);
+  color: color-mix(in srgb, var(--text-inverse) 65%, transparent);
+}
+
+.baseline__delta--gain .baseline__delta-value {
+  color: #8fc4a6;
+}
+.baseline__delta--cost .baseline__delta-value {
+  color: var(--coral);
+}
+
+.baseline__note {
+  font-size: var(--text-sm);
+  color: color-mix(in srgb, var(--text-inverse) 55%, transparent);
+}
+
+@media (max-width: 720px) {
+  .baseline {
+    padding: var(--space-5);
+  }
+  .baseline__pair {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+  }
+  .baseline__arrow {
+    justify-self: start;
+  }
+}

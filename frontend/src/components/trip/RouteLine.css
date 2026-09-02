@@ -1,0 +1,61 @@
+.route {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.15rem 0;
+  font-size: var(--text-base);
+}
+
+.route__segment {
+  display: flex;
+  align-items: center;
+}
+
+.route__node {
+  font-weight: var(--weight-semibold);
+  color: var(--text-subtle);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* The cities are the trip; the airports are how you get there. */
+.route__node--city {
+  color: var(--text);
+  font-weight: var(--weight-bold);
+}
+
+.route__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+
+.route__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-inline: 0.5rem;
+  color: var(--text-subtle);
+}
+
+.route__rule {
+  width: 14px;
+  height: 1px;
+  background: var(--border-strong);
+}
+
+.route--compact {
+  font-size: var(--text-sm);
+}
+
+.route--compact .route__link {
+  margin-inline: 0.35rem;
+}
+
+.route--compact .route__rule {
+  width: 9px;
+}

@@ -1,1 +1,1 @@
-"""Test suite for the travel planner."""
+"""Detoura test suite."""

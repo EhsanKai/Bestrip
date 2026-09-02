@@ -16,29 +16,29 @@ from datetime import date
 
 import pytest
 
-from travel_planner.llm.client import (
+from detoura.llm.client import (
     DEFAULT_MODEL,
     AnthropicClient,
     LlmError,
     ScriptedClient,
     parse_json_object,
 )
-from travel_planner.llm.explainer import (
+from detoura.llm.explainer import (
     LlmItineraryExplainer,
     facts_for,
 )
-from travel_planner.llm.interfaces import (
+from detoura.llm.interfaces import (
     ItineraryExplainer,
     PreferenceParser,
     TemplateItineraryExplainer,
 )
-from travel_planner.llm.parser import (
+from detoura.llm.parser import (
     PREFERENCE_KEYS,
     LlmPreferenceParser,
     request_schema,
 )
-from travel_planner.models.destination import EXPERIENCE_ATTRIBUTES
-from travel_planner.services.planner import TravelPlanner
+from detoura.models.destination import EXPERIENCE_ATTRIBUTES
+from detoura.services.planner import TravelPlanner
 
 from .conftest import trip_request
 
@@ -58,9 +58,9 @@ def test_the_optimizer_still_never_imports_the_llm_package():
     import ast
     import pathlib
 
-    import travel_planner
+    import detoura
 
-    root = pathlib.Path(travel_planner.__file__).parent
+    root = pathlib.Path(detoura.__file__).parent
     offenders = []
     for package in ("algorithms", "constraints", "services", "providers", "data"):
         for path in (root / package).rglob("*.py"):
@@ -77,7 +77,7 @@ def test_the_optimizer_still_never_imports_the_llm_package():
 
 def test_the_package_imports_without_the_sdk():
     """``anthropic`` is an optional extra; importing must not require it."""
-    from travel_planner import llm
+    from detoura import llm
 
     assert llm.LlmItineraryExplainer and llm.LlmPreferenceParser
 

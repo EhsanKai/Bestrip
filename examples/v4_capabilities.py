@@ -21,19 +21,19 @@ import json
 import time
 from datetime import date, timedelta
 
-from travel_planner import TravelPlanner, TravelPreferences, TripRequest
-from travel_planner.config import PlannerConfig
-from travel_planner.learning import fit_weights, learned_profile, observations_from_result
-from travel_planner.llm import (
+from detoura import TravelPlanner, TravelPreferences, TripRequest
+from detoura.config import PlannerConfig
+from detoura.learning import fit_weights, learned_profile, observations_from_result
+from detoura.llm import (
     LlmItineraryExplainer,
     LlmPreferenceParser,
     ScriptedClient,
 )
-from travel_planner.profiles import COMPONENTS, PROFILES, ProfileName
-from travel_planner.providers.accommodation import SyntheticAccommodationDataProvider
-from travel_planner.providers.amadeus import AmadeusTransportProvider
-from travel_planner.providers.http import HttpResponse
-from travel_planner.providers.transport import SyntheticTransportDataProvider
+from detoura.profiles import COMPONENTS, PROFILES, ProfileName
+from detoura.providers.accommodation import SyntheticAccommodationDataProvider
+from detoura.providers.amadeus import AmadeusTransportProvider
+from detoura.providers.http import HttpResponse
+from detoura.providers.transport import SyntheticTransportDataProvider
 
 RULE = "=" * 92
 

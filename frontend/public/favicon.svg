@@ -1,0 +1,28 @@
+<!--
+  The Detoura mark: a straight dashed line from A to B - the obvious trip -
+  with the coral route arcing away from it and touching a second stop before
+  arriving. The brand argument in one glyph.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" rx="7" fill="#0B132B" />
+  <path
+    d="M8 23 L24 9"
+    fill="none"
+    stroke="#F8F5EF"
+    stroke-opacity="0.28"
+    stroke-width="1.6"
+    stroke-linecap="round"
+    stroke-dasharray="2 3"
+  />
+  <path
+    d="M8 23 Q9 12 16 12 Q23 12 24 9"
+    fill="none"
+    stroke="#F26B5E"
+    stroke-width="2.4"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="8" cy="23" r="2.6" fill="#F8F5EF" />
+  <circle cx="16" cy="12" r="2.2" fill="#7A9E8E" />
+  <circle cx="24" cy="9" r="2.6" fill="#F26B5E" />
+</svg>

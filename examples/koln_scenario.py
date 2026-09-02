@@ -10,8 +10,8 @@ from __future__ import annotations
 import sys
 from datetime import date
 
-from travel_planner import TravelPlanner, TravelPreferences, TripRequest
-from travel_planner.llm import TemplateItineraryExplainer
+from detoura import TravelPlanner, TravelPreferences, TripRequest
+from detoura.llm import TemplateItineraryExplainer
 
 REQUEST = TripRequest(
     origin="Köln",

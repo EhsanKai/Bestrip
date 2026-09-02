@@ -1,0 +1,159 @@
+.landing__hero {
+  background: var(--navy);
+  color: var(--ivory);
+  padding-block: var(--space-9) var(--space-8);
+  position: relative;
+  overflow: hidden;
+}
+
+/* A single warm wash from the coral, low opacity: it should feel like light
+ * on the navy, not a gradient effect. */
+.landing__hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 70% 55% at 78% 30%,
+    color-mix(in srgb, var(--coral) 20%, transparent),
+    transparent 70%
+  );
+  pointer-events: none;
+}
+
+.landing__hero-inner {
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  gap: var(--space-8);
+  align-items: center;
+  position: relative;
+  z-index: 1;
+}
+
+.landing__eyebrow {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--ivory) 55%, transparent);
+  margin-bottom: var(--space-4);
+}
+
+.landing__title {
+  color: var(--ivory);
+  margin-bottom: var(--space-5);
+}
+
+.landing__title-accent {
+  color: var(--coral);
+}
+
+.landing__lead {
+  font-size: var(--text-lg);
+  line-height: var(--leading-normal);
+  color: color-mix(in srgb, var(--ivory) 72%, transparent);
+  max-width: 44ch;
+  margin-bottom: var(--space-6);
+}
+
+.landing__actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.landing__visual {
+  color: var(--ivory);
+}
+
+/* --- how it works ------------------------------------------------------ */
+.landing__pitch {
+  padding-block: var(--space-9);
+}
+
+.landing__pitch-title {
+  max-width: 20ch;
+  margin-bottom: var(--space-4);
+}
+
+.landing__pitch-lead {
+  max-width: 58ch;
+  margin-bottom: var(--space-7);
+}
+
+.landing__steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-6);
+}
+
+.landing__step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-4);
+  border-top: 2px solid var(--sand);
+}
+
+.landing__step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.landing__step-icon {
+  color: var(--accent);
+}
+
+.landing__step-n {
+  color: var(--text-subtle);
+}
+
+/* --- the argument ------------------------------------------------------ */
+.landing__proof {
+  padding-block: var(--space-9);
+  background: var(--bg-sunken);
+}
+
+.landing__proof-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  max-width: 760px;
+}
+
+.landing__quote {
+  margin: 0;
+}
+
+.landing__quote p {
+  font-family: var(--font-serif);
+  font-size: clamp(1.4rem, 3vw, 2.1rem);
+  line-height: 1.35;
+  letter-spacing: var(--tracking-tight);
+}
+
+.landing__quote strong {
+  color: var(--accent);
+  font-weight: inherit;
+}
+
+.landing__quote-note {
+  font-size: var(--text-base);
+  max-width: 52ch;
+  margin-bottom: var(--space-3);
+}
+
+@media (max-width: 900px) {
+  .landing__hero-inner {
+    grid-template-columns: 1fr;
+    gap: var(--space-6);
+  }
+  .landing__steps {
+    grid-template-columns: 1fr;
+    gap: var(--space-5);
+  }
+  .landing__hero {
+    padding-block: var(--space-7) var(--space-6);
+  }
+}

@@ -17,29 +17,29 @@ from datetime import date, datetime
 
 import pytest
 
-from travel_planner.algorithms.accommodation_value import (
+from detoura.algorithms.accommodation_value import (
     CANCELLATION_BONUS,
     SCARCITY_CANCELLATION_BONUS,
     AccommodationScorer,
 )
-from travel_planner.config import PlannerConfig
-from travel_planner.data.synthetic_accommodation import (
+from detoura.config import PlannerConfig
+from detoura.data.synthetic_accommodation import (
     INVENTORY_PER_TIER,
     build_options,
     rooms_left,
 )
-from travel_planner.data.synthetic_transport import CONNECTIONS, seats_left
-from travel_planner.models.accommodation import (
+from detoura.data.synthetic_transport import CONNECTIONS, seats_left
+from detoura.models.accommodation import (
     SCARCITY_HORIZON_ROOMS,
     AccommodationOption,
 )
-from travel_planner.models.debug import RejectionReason
-from travel_planner.models.itinerary import ExplanationFactor
-from travel_planner.models.transport import TransportOption, TransportType
-from travel_planner.models.trip import AccommodationPreference
-from travel_planner.providers.accommodation import SyntheticAccommodationDataProvider
-from travel_planner.providers.transport import SyntheticTransportDataProvider
-from travel_planner.services.planner import TravelPlanner
+from detoura.models.debug import RejectionReason
+from detoura.models.itinerary import ExplanationFactor
+from detoura.models.transport import TransportOption, TransportType
+from detoura.models.trip import AccommodationPreference
+from detoura.providers.accommodation import SyntheticAccommodationDataProvider
+from detoura.providers.transport import SyntheticTransportDataProvider
+from detoura.services.planner import TravelPlanner
 
 from .conftest import trip_request
 
@@ -297,7 +297,7 @@ class _DusOnly:
     """One departure airport, so the fixture's economics stay exact."""
 
     def resolve(self, origin: str, config: PlannerConfig):
-        from travel_planner.services.origin_resolver import OriginCandidate
+        from detoura.services.origin_resolver import OriginCandidate
 
         return [OriginCandidate(code="DUS", name="Düsseldorf", city="Düsseldorf", distance_km=0.0)]
 
@@ -463,8 +463,8 @@ def api_client(planner: TravelPlanner):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
-    from travel_planner.api.app import create_app
-    from travel_planner.api.routes import get_planner
+    from detoura.api.app import create_app
+    from detoura.api.routes import get_planner
 
     app = create_app()
     app.dependency_overrides[get_planner] = lambda: planner

@@ -6,10 +6,10 @@ from datetime import datetime
 
 import pytest
 
-from travel_planner.algorithms.scoring import ScoringEngine
-from travel_planner.config import PlannerConfig, ScoreWeights
-from travel_planner.models.transport import TransportType
-from travel_planner.models.trip import TravelPreferences
+from detoura.algorithms.scoring import ScoringEngine
+from detoura.config import PlannerConfig, ScoreWeights
+from detoura.models.transport import TransportType
+from detoura.models.trip import TravelPreferences
 
 from .conftest import leg, make_state, trip_request
 

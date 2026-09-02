@@ -1,0 +1,146 @@
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  position: relative;
+}
+
+.timeline__item {
+  position: relative;
+}
+
+.timeline__day {
+  margin-block: var(--space-4) var(--space-2);
+  color: var(--text);
+}
+
+.timeline__item:first-child .timeline__day {
+  margin-top: 0;
+}
+
+/* Travel is quiet: a rule, an icon, small type. It is not the trip. */
+.timeline__travel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-left: 2px dashed var(--border-strong);
+  margin-left: var(--space-3);
+  color: var(--text-muted);
+}
+
+.timeline__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+  flex: none;
+}
+
+.timeline__travel-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.timeline__travel-route {
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+
+.timeline__travel-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: var(--text-xs);
+  margin-top: 0.1rem;
+}
+
+.timeline__price {
+  font-size: var(--text-xs);
+  flex: none;
+}
+
+/* A stay is a solid block: this is where the trip actually happens. */
+.timeline__stay {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.timeline__stay-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.timeline__city {
+  font-size: 1.2rem;
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+}
+
+.timeline__nights {
+  font-size: var(--text-sm);
+}
+
+.timeline__usable {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.timeline__usable-bar {
+  width: 4px;
+  align-self: stretch;
+  min-height: 20px;
+  border-radius: var(--radius-pill);
+  background: var(--sage);
+  flex: none;
+}
+
+.timeline__hotel {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.timeline__hotel-name {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+}
+
+.timeline__hotel-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: var(--text-xs);
+  margin-top: 0.1rem;
+}
+
+.timeline__hotel-price {
+  font-weight: var(--weight-bold);
+  flex: none;
+}
+
+.timeline__scarce {
+  color: var(--warning);
+  font-weight: var(--weight-semibold);
+}
+
+.timeline__value-note {
+  font-size: var(--text-xs);
+  font-style: italic;
+}

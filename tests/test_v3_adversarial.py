@@ -12,17 +12,17 @@ from datetime import date, datetime
 
 import pytest
 
-from travel_planner.config import PlannerConfig
-from travel_planner.data.destinations import DESTINATIONS
-from travel_planner.data.synthetic_transport import Connection
-from travel_planner.models.transport import TransportType
-from travel_planner.models.trip import TravelPreferences, TripRequest
-from travel_planner.profiles import ProfileName
-from travel_planner.providers.accommodation import SyntheticAccommodationDataProvider
-from travel_planner.providers.destinations import StaticDestinationProvider
-from travel_planner.providers.ground_transfer import FreeGroundTransferProvider
-from travel_planner.providers.transport import SyntheticTransportDataProvider
-from travel_planner.services.planner import TravelPlanner
+from detoura.config import PlannerConfig
+from detoura.data.destinations import DESTINATIONS
+from detoura.data.synthetic_transport import Connection
+from detoura.models.transport import TransportType
+from detoura.models.trip import TravelPreferences, TripRequest
+from detoura.profiles import ProfileName
+from detoura.providers.accommodation import SyntheticAccommodationDataProvider
+from detoura.providers.destinations import StaticDestinationProvider
+from detoura.providers.ground_transfer import FreeGroundTransferProvider
+from detoura.providers.transport import SyntheticTransportDataProvider
+from detoura.services.planner import TravelPlanner
 
 from .conftest import WINDOW_FROM, WINDOW_TO, completed_states, trip_request
 
@@ -133,7 +133,7 @@ def test_experience_and_hotel_together_beat_the_cheap_flight(experience_trap):
 
 def test_the_win_is_experience_not_only_price(experience_trap):
     """Even judged purely on the traveler, Prague is the better city here."""
-    from travel_planner.algorithms.experience import ExperienceEngine
+    from detoura.algorithms.experience import ExperienceEngine
 
     engine = ExperienceEngine(
         experience_trap.planner.config, experience_trap.planner.destinations
@@ -239,15 +239,15 @@ def test_pruning_never_removes_a_reachable_itinerary():
     the unpruned search finds and can afford must also be found by the pruned
     one. A bound that overestimates would silently delete good trips.
     """
-    from travel_planner.algorithms.beam_search import BeamSearchOptimizer
-    from travel_planner.algorithms.scoring import ScoringEngine
-    from travel_planner.constraints.validator import ConstraintValidator
-    from travel_planner.profiles import get_profile
-    from travel_planner.services.accommodation_estimator import (
+    from detoura.algorithms.beam_search import BeamSearchOptimizer
+    from detoura.algorithms.scoring import ScoringEngine
+    from detoura.constraints.validator import ConstraintValidator
+    from detoura.profiles import get_profile
+    from detoura.services.accommodation_estimator import (
         CachedAccommodationEstimator,
         ZeroAccommodationEstimator,
     )
-    from travel_planner.services.return_estimator import CachedReturnEstimator
+    from detoura.services.return_estimator import CachedReturnEstimator
 
     planner = TravelPlanner(config=PlannerConfig(beam_width=60, max_cities=2))
     request = trip_request(budget=420, travelers=2)
@@ -306,7 +306,7 @@ def test_pruning_never_removes_a_reachable_itinerary():
 
 def test_the_accommodation_bound_is_never_an_overestimate(accommodation):
     """The pruning bound must not exceed any bookable stay."""
-    from travel_planner.services.accommodation_estimator import (
+    from detoura.services.accommodation_estimator import (
         CachedAccommodationEstimator,
     )
 
@@ -326,7 +326,7 @@ def test_the_return_bound_is_never_an_overestimate(transport):
     """No real way home may be cheaper or faster than the bound."""
     from datetime import timedelta
 
-    from travel_planner.services.return_estimator import CachedReturnEstimator
+    from detoura.services.return_estimator import CachedReturnEstimator
 
     window = [WINDOW_FROM + timedelta(days=n) for n in range(6)]
     airports = ["CGN", "DUS"]

@@ -12,10 +12,10 @@ from datetime import date, datetime
 
 import pytest
 
-from travel_planner.config import PlannerConfig
-from travel_planner.models.trip import TravelPreferences
-from travel_planner.profiles import COMPONENTS, ProfileName
-from travel_planner.services.planner import TravelPlanner
+from detoura.config import PlannerConfig
+from detoura.models.trip import TravelPreferences
+from detoura.profiles import COMPONENTS, ProfileName
+from detoura.services.planner import TravelPlanner
 
 from .conftest import WINDOW_FROM, WINDOW_TO, trip_request
 

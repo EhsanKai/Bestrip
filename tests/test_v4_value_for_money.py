@@ -13,16 +13,16 @@ from datetime import date, datetime
 
 import pytest
 
-from travel_planner.algorithms.accommodation_value import (
+from detoura.algorithms.accommodation_value import (
     NEUTRAL_VALUE_FOR_MONEY,
     VALUE_REFERENCE_RATE,
     AccommodationScorer,
 )
-from travel_planner.data.synthetic_accommodation import TIERS
-from travel_planner.models.accommodation import AccommodationOption
-from travel_planner.models.itinerary import ExplanationFactor
-from travel_planner.models.trip import AccommodationPreference
-from travel_planner.profiles import ProfileName
+from detoura.data.synthetic_accommodation import TIERS
+from detoura.models.accommodation import AccommodationOption
+from detoura.models.itinerary import ExplanationFactor
+from detoura.models.trip import AccommodationPreference
+from detoura.profiles import ProfileName
 
 from .conftest import WINDOW_FROM, leg, make_state
 
@@ -244,7 +244,7 @@ def test_the_assessment_carries_the_diagnostic(scorer):
 # ---------------------------------------------------------------------------
 def test_value_for_money_is_not_a_travel_value_component():
     """Price must not be scored twice. This is the rule the diagnostic obeys."""
-    from travel_planner.profiles import COMPONENTS
+    from detoura.profiles import COMPONENTS
 
     assert "value_for_money" not in COMPONENTS
     assert len(COMPONENTS) == 9
@@ -270,7 +270,7 @@ def test_the_accommodation_component_ignores_the_premium(planner, koln_request):
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def planned():
-    from travel_planner.services.planner import TravelPlanner
+    from detoura.services.planner import TravelPlanner
 
     from .conftest import trip_request
 
@@ -333,8 +333,8 @@ def test_no_premium_means_the_cheapest_rooms_were_taken(planned):
 
 def test_a_single_tier_search_never_pays_a_premium():
     """With one option per stay there is no trade to make, by construction."""
-    from travel_planner.config import PlannerConfig
-    from travel_planner.services.planner import TravelPlanner
+    from detoura.config import PlannerConfig
+    from detoura.services.planner import TravelPlanner
 
     from .conftest import trip_request
 
@@ -352,7 +352,7 @@ def test_it_reaches_the_api():
     fastapi = pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
-    from travel_planner.api.app import create_app
+    from detoura.api.app import create_app
 
     body = TestClient(create_app()).post(
         "/plan-trip",
@@ -377,7 +377,7 @@ def test_it_reaches_the_api():
 
 def test_the_profile_still_decides_what_wins():
     """CHEAPEST must not start buying upgrades because they score well."""
-    from travel_planner.services.planner import TravelPlanner
+    from detoura.services.planner import TravelPlanner
 
     from .conftest import trip_request
 

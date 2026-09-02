@@ -6,8 +6,8 @@ from datetime import date, datetime
 
 import pytest
 
-from travel_planner.models.transfer import GroundTransferMode, GroundTransferOption
-from travel_planner.providers.ground_transfer import (
+from detoura.models.transfer import GroundTransferMode, GroundTransferOption
+from detoura.providers.ground_transfer import (
     FreeGroundTransferProvider,
     GroundTransferProvider,
     RealGroundTransferProvider,
@@ -188,8 +188,8 @@ def test_a_one_way_mix_of_airports_is_allowed(transfer_trap):
 
 def test_without_transfers_the_naive_airport_wins(transfer_trap):
     """Turn the feature off and the cheaper flight wins again - the V1 answer."""
-    from travel_planner.providers.accommodation import NoAccommodationProvider
-    from travel_planner.services.planner import TravelPlanner
+    from detoura.providers.accommodation import NoAccommodationProvider
+    from detoura.services.planner import TravelPlanner
 
     planner = TravelPlanner(
         transfer_trap.transport,

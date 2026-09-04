@@ -1,28 +1,50 @@
 import type { TripRecommendation } from "../api/types";
-import type { SavedTrip } from "../state/useSaved";
+import type { RecheckState, SavedTrip } from "../state/useSaved";
 import { RouteLine } from "../components/trip/RouteLine";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { Icon } from "../components/ui/Icon";
-import { dayMonth, hours, joinCities, money, signedMoney } from "../lib/format";
+import {
+  RECHECK_LABELS,
+  RECHECK_TONE,
+  dayMonth,
+  hours,
+  joinCities,
+  money,
+  signedMoney,
+} from "../lib/format";
 import "./SavedTrips.css";
 
 interface Props {
   trips: SavedTrip[];
+  rechecks: Record<string, RecheckState>;
   onOpen: (trip: TripRecommendation) => void;
   onRemove: (trip: TripRecommendation) => void;
+  onRecheck: (trip: SavedTrip) => void;
   onDiscover: () => void;
 }
 
 /**
- * Saved trips (Part 17).
+ * Saved trips (Part 17), with re-checking (V6.1).
  *
- * The price-change line is deliberately absent until there is a re-check to
- * report. Comparing a saved price against itself and announcing "no change"
- * would imply we have been watching, and we have not — a saved trip is a
- * snapshot until something re-prices it.
+ * The price-change line stays absent until a re-check has actually run.
+ * Comparing a saved price against itself and announcing "no change" would
+ * imply we have been watching, and we have not — a saved trip is a snapshot
+ * until something re-prices it, and the button is that something.
+ *
+ * The status this screen is most careful with is `UNVERIFIABLE`. It renders
+ * neutral, never as a warning: it means our check failed, not that the trip
+ * did, and dressing it up as bad news would cost someone a trip that is still
+ * there.
  */
-export function SavedTrips({ trips, onOpen, onRemove, onDiscover }: Props) {
+export function SavedTrips({
+  trips,
+  rechecks,
+  onOpen,
+  onRemove,
+  onRecheck,
+  onDiscover,
+}: Props) {
   if (trips.length === 0) {
     return (
       <div className="container saved__empty">
@@ -45,7 +67,9 @@ export function SavedTrips({ trips, onOpen, onRemove, onDiscover }: Props) {
         <h1 className="h1 saved__title">Saved trips</h1>
         <ul className="saved__list">
           {trips.map((trip) => {
-            const change = trip.total_price - trip.saved_price;
+            const check = rechecks[trip.id];
+            const result = check?.status === "done" ? check.result : undefined;
+            const change = result?.price_change ?? null;
             return (
               <li key={trip.id}>
                 <Card interactive className="saved__card" onClick={() => onOpen(trip)}>
@@ -66,15 +90,43 @@ export function SavedTrips({ trips, onOpen, onRemove, onDiscover }: Props) {
 
                   <div className="saved__price-block">
                     <div className="saved__price numeric">
-                      {money(trip.total_price, trip.currency)}
+                      {money(trip.saved_price, trip.currency)}
                     </div>
-                    {change !== 0 && (
+
+                    {result && (
+                      <div
+                        className={`saved__status is-${RECHECK_TONE[result.status]}`}
+                      >
+                        {RECHECK_LABELS[result.status]}
+                      </div>
+                    )}
+                    {change !== null && change !== 0 && (
                       <div
                         className={`saved__change ${change < 0 ? "is-down" : "is-up"}`}
                       >
                         {signedMoney(change, trip.currency)}
                       </div>
                     )}
+                    {check?.status === "failed" && (
+                      <div className="saved__status is-neutral">
+                        {check.error}
+                      </div>
+                    )}
+
+                    <button
+                      className="saved__recheck"
+                      disabled={check?.status === "checking"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onRecheck(trip);
+                      }}
+                    >
+                      {check?.status === "checking"
+                        ? "Checking…"
+                        : result
+                          ? "Check again"
+                          : "Re-check price"}
+                    </button>
                     <button
                       className="saved__remove"
                       onClick={(event) => {

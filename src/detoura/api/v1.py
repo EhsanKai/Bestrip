@@ -25,8 +25,17 @@ from ..providers.failures import FailureLog
 from ..search_modes import MODE_SETTINGS, SearchMode, apply_mode
 from ..services.budget_sensitivity import analyze_budget_sensitivity
 from ..services.planner import TravelPlanner
+from ..services.recheck import recheck_trip
 from .assembler import build_response
-from .contracts import TripSearchRequest, TripSearchResponse
+from .contracts import (
+    RECHECK_MESSAGES,
+    ProviderIssueDTO,
+    RecheckComponentDTO,
+    TripRecheckRequest,
+    TripRecheckResponse,
+    TripSearchRequest,
+    TripSearchResponse,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["detoura"])
 
@@ -144,6 +153,92 @@ def search(
         mode=mode,
         failures=failures,
         closest_price=closest,
+    )
+
+
+def _component_dto(result) -> RecheckComponentDTO:
+    return RecheckComponentDTO(
+        label=result.label,
+        state=result.state,
+        saved_price=result.saved_price,
+        current_price=result.current_price,
+        change=result.change,
+        detail=result.detail,
+    )
+
+
+@router.post("/trips/recheck", response_model=TripRecheckResponse)
+def recheck(
+    body: TripRecheckRequest,
+    planner: TravelPlanner = Depends(get_planner),
+) -> TripRecheckResponse:
+    """Re-price a saved trip against the providers.
+
+    Stateless: the trip arrives in the request because saved trips live in the
+    traveler's browser, so this works with no account, no database and no
+    session. It also means the endpoint re-checks exactly the trip the client
+    is showing, rather than one it looked up and hoped was the same.
+
+    The status distinction that matters is ``UNVERIFIABLE`` versus
+    ``UNAVAILABLE``: the first is a failure of ours, the second is a fact about
+    the trip, and reporting the first as the second would talk someone out of a
+    trip that is still bookable.
+    """
+    failures = FailureLog()
+    result = recheck_trip(
+        planner,
+        legs=[
+            {
+                "origin": leg.origin,
+                "destination": leg.destination,
+                "departure": leg.departure,
+                "operator": leg.operator,
+                "price_per_person": leg.price_per_person,
+            }
+            for leg in body.legs
+        ],
+        stays=[
+            {
+                "city": stay.city,
+                "arrival": stay.arrival,
+                "departure": stay.departure,
+                "name": stay.name,
+                "cost": stay.cost,
+            }
+            for stay in body.stays
+        ],
+        transfers=[
+            {"label": transfer.label, "cost": transfer.cost}
+            for transfer in body.transfers
+        ],
+        travelers=body.travelers,
+        saved_price=body.saved_price,
+        failures=failures,
+    )
+
+    return TripRecheckResponse(
+        trip_id=body.trip_id,
+        status=result.status,
+        message=RECHECK_MESSAGES[result.status],
+        checked_at=result.checked_at,
+        saved_price=result.saved_price,
+        current_price=result.current_price,
+        price_change=result.change,
+        price_change_pct=result.change_pct,
+        price_freshness=result.freshness,
+        legs=[_component_dto(c) for c in result.legs],
+        stays=[_component_dto(c) for c in result.stays],
+        transfers=[_component_dto(c) for c in result.transfers],
+        issues=[
+            ProviderIssueDTO(
+                kind=str(entry["kind"]),
+                provider=str(entry["provider"]),
+                message=str(entry["message"]),
+                retryable=bool(entry["retryable"]),
+                occurrences=int(entry["occurrences"]),
+            )
+            for entry in failures.summary()
+        ],
     )
 
 

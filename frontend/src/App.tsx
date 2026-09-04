@@ -72,6 +72,14 @@ export default function App() {
     [search],
   );
 
+  // Saving records the party size the trip was found for, because the
+  // re-check needs it to ask about seats and rooms later.
+  const toggleSaved = useCallback(
+    (trip: TripRecommendation) =>
+      saved.toggle(trip, search.request?.travelers ?? 2),
+    [saved, search.request],
+  );
+
   const toggleCompare = useCallback((trip: TripRecommendation) => {
     setComparing((current) =>
       current.includes(trip.id)
@@ -135,7 +143,7 @@ export default function App() {
             comparing={comparing}
             deeperPending={search.deeperPending}
             onOpen={openTrip}
-            onSave={saved.toggle}
+            onSave={toggleSaved}
             onCompare={toggleCompare}
             onOpenCompare={() => setScreen("compare")}
             onSearchDeeper={() => void search.searchDeeper().catch(() => undefined)}
@@ -151,7 +159,7 @@ export default function App() {
             saved={saved.ids.includes(selected.id)}
             origin={search.response?.origin ?? search.request?.origin}
             onBack={() => setScreen("results")}
-            onSave={saved.toggle}
+            onSave={toggleSaved}
           />
         )}
 
@@ -167,6 +175,8 @@ export default function App() {
         {screen === "saved" && (
           <SavedTrips
             trips={saved.trips}
+            rechecks={saved.rechecks}
+            onRecheck={saved.recheck}
             onOpen={openTrip}
             onRemove={saved.toggle}
             onDiscover={() => setScreen("discover")}

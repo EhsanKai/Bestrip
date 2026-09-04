@@ -281,3 +281,84 @@ export class DetouraApiError extends Error {
     this.issue = issue;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Re-checking a saved trip (V6.1)                                     */
+/* ------------------------------------------------------------------ */
+
+export type RecheckStatus =
+  | "UNCHANGED"
+  | "PRICE_CHANGED"
+  | "PARTIALLY_UNAVAILABLE"
+  | "UNAVAILABLE"
+  /** A failure of ours, not news about the trip. Must never be drawn as bad
+   *  news: the trip may be perfectly bookable and we simply could not look. */
+  | "UNVERIFIABLE";
+
+export type RecheckComponentState =
+  | "FOUND"
+  | "SOLD_OUT"
+  | "GONE"
+  | "UNVERIFIABLE"
+  /** Included at its saved price and deliberately not re-checked. */
+  | "CARRIED";
+
+export interface RecheckLeg {
+  from: string;
+  to: string;
+  departure: string;
+  operator: string;
+  price_per_person: number;
+}
+
+export interface RecheckStay {
+  city: string;
+  arrival: string;
+  departure: string;
+  cost: number;
+  name: string | null;
+}
+
+/** The trip's transfers at their saved price. Sent so the totals reconcile —
+ *  leaving it out makes the re-checked total low by exactly this amount, and
+ *  an unchanged trip is then announced as a saving. */
+export interface RecheckTransfer {
+  cost: number;
+  label?: string;
+}
+
+export interface TripRecheckRequest {
+  trip_id: string;
+  travelers: number;
+  saved_price: number;
+  saved_at?: string;
+  legs: RecheckLeg[];
+  stays: RecheckStay[];
+  transfers: RecheckTransfer[];
+}
+
+export interface RecheckComponent {
+  label: string;
+  state: RecheckComponentState;
+  saved_price: number;
+  current_price: number | null;
+  change: number | null;
+  detail: string;
+}
+
+export interface TripRecheckResponse {
+  trip_id: string;
+  status: RecheckStatus;
+  message: string;
+  checked_at: string;
+  saved_price: number;
+  /** Null whenever any part could not be priced. Never a partial sum. */
+  current_price: number | null;
+  price_change: number | null;
+  price_change_pct: number | null;
+  price_freshness: PriceFreshness;
+  legs: RecheckComponent[];
+  stays: RecheckComponent[];
+  transfers: RecheckComponent[];
+  issues: ProviderIssue[];
+}

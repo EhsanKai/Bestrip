@@ -16,6 +16,8 @@ import {
   type DestinationSummary,
   type OriginResponse,
   type ProfileName,
+  type TripRecheckRequest,
+  type TripRecheckResponse,
   type TripSearchRequest,
   type TripSearchResponse,
 } from "./types";
@@ -90,6 +92,16 @@ export const api = {
     return request<TripSearchResponse>("/search", {
       method: "POST",
       body: JSON.stringify({ ...body, search_mode: "DEEP" }),
+      signal,
+    });
+  },
+
+  /** Re-price a saved trip. The trip travels with the request because saved
+   *  trips live in this browser and the server stores nothing. */
+  recheck(body: TripRecheckRequest, signal?: AbortSignal) {
+    return request<TripRecheckResponse>("/trips/recheck", {
+      method: "POST",
+      body: JSON.stringify(body),
       signal,
     });
   },

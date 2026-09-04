@@ -12,6 +12,7 @@ import type {
   Interest,
   PriceFreshness,
   ProfileName,
+  RecheckStatus,
 } from "../api/types";
 
 export function money(amount: number, currency = "EUR"): string {
@@ -114,6 +115,29 @@ export const FRESHNESS_LABELS: Record<PriceFreshness, string> = {
   RECENT: "Price checked recently",
   STALE: "Price may have changed",
   UNKNOWN: "Estimated price",
+};
+
+/** How a re-check reads to a traveler.
+ *
+ * `UNVERIFIABLE` is phrased as our failure on purpose. It is the one status
+ * that is not news about the trip, and wording it like the others ("no longer
+ * available") would talk someone out of a trip that is still bookable. */
+export const RECHECK_LABELS: Record<RecheckStatus, string> = {
+  UNCHANGED: "Still at your price",
+  PRICE_CHANGED: "Price has moved",
+  PARTIALLY_UNAVAILABLE: "Part of this trip has gone",
+  UNAVAILABLE: "No longer available",
+  UNVERIFIABLE: "Couldn't check",
+};
+
+/** Which of the three ways the row is allowed to look. `UNVERIFIABLE` is
+ *  deliberately neutral rather than negative. */
+export const RECHECK_TONE: Record<RecheckStatus, "good" | "warn" | "neutral"> = {
+  UNCHANGED: "good",
+  PRICE_CHANGED: "warn",
+  PARTIALLY_UNAVAILABLE: "warn",
+  UNAVAILABLE: "warn",
+  UNVERIFIABLE: "neutral",
 };
 
 export const AVAILABILITY_LABELS: Record<AvailabilityStatus, string> = {

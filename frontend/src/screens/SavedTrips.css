@@ -67,6 +67,58 @@
   background: color-mix(in srgb, var(--error) 12%, transparent);
 }
 
+/* The re-check verdict.
+ *
+ * Three tones, and only two of them are opinions about the trip. `is-neutral`
+ * carries UNVERIFIABLE — our failure, not the trip's — and is deliberately the
+ * same muted treatment as ordinary metadata so it never reads as a warning. */
+.saved__status {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+
+.saved__status.is-good {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.saved__status.is-warn {
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+}
+
+.saved__status.is-neutral {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+}
+
+.saved__recheck {
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  color: var(--accent);
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--radius-pill);
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--motion-fast);
+}
+
+.saved__recheck:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.saved__recheck:disabled {
+  color: var(--text-muted);
+  border-color: var(--border);
+  cursor: default;
+}
+
 .saved__remove {
   width: 36px;
   height: 36px;

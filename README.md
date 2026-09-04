@@ -36,7 +36,7 @@ Two things, in one repository:
 
 | | |
 | --- | --- |
-| **The engine** (`src/detoura/`) | A deterministic, multi-objective trip optimizer. Beam search over *whole trips* — the ride to the airport, the flights and trains, the hotel and how good it is, the days you actually get on the ground, and how well the cities match the traveller. 728 tests. |
+| **The engine** (`src/detoura/`) | A deterministic, multi-objective trip optimizer. Beam search over *whole trips* — the ride to the airport, the flights and trains, the hotel and how good it is, the days you actually get on the ground, and how well the cities match the traveller. 752 tests. |
 | **The product** (`frontend/`) | A React/TypeScript application that makes that engine feel simple. Landing, discovery, search, results, comparison and trip detail, wired to the real API. |
 
 Between them sits `/api/v1` — a product contract that deliberately exposes
@@ -104,7 +104,7 @@ The dev server proxies `/api` to the backend, so the frontend uses the same
 paths in development and production.
 
 ```bash
-pytest                                       # 728 tests
+pytest                                       # 752 tests
 python examples/v4_capabilities.py           # the engine, on the terminal
 ```
 
@@ -133,6 +133,7 @@ at the root for development and for anyone who wants the full search trace.
 
 ```
 POST /api/v1/search                 find trips
+POST /api/v1/trips/recheck          is a saved trip still there, at that price?
 POST /api/v1/budget-sensitivity     what would EUR 50 more unlock?
 GET  /api/v1/origins/{place}        departure airports + what they cost to reach
 GET  /api/v1/destinations           the catalog, described in interests
@@ -152,6 +153,58 @@ hours, transit hours, experience and preference scores, intensity band,
 confidence with reasons, price freshness, availability, the baseline
 comparison, stays, legs, and per-city match data — and nothing that only
 explains *how* it was found.
+
+---
+
+## Re-checking a saved trip
+
+A saved trip is a snapshot. `POST /api/v1/trips/recheck` is the only thing
+entitled to say whether it still holds, and it re-quotes **the trip that was
+saved** rather than searching again — "is this still there?" and "what is best
+today?" are different questions, and answering the second while appearing to
+answer the first would invite comparing two different trips as though one had
+changed.
+
+It is **stateless**: the trip travels in the request, because saved trips live
+in the browser. No accounts, no database, no session — none of which the
+product has decided on yet, and none of which this feature needs.
+
+| Status | Means |
+| --- | --- |
+| `UNCHANGED` | Every part re-quoted at the price it was saved at. |
+| `PRICE_CHANGED` | Everything is still there; the total moved. |
+| `PARTIALLY_UNAVAILABLE` | Some part is gone or sold out; the rest is fine. |
+| `UNAVAILABLE` | Nothing is left to book. |
+| `UNVERIFIABLE` | **We could not check.** Not news about the trip. |
+
+The last row is the one the endpoint exists to get right. A provider outage
+must never surface as `UNAVAILABLE`: telling someone their trip is gone because
+a timeout fired would talk them out of a trip that is still perfectly bookable.
+`UNVERIFIABLE` therefore dominates every other status — with one part unchecked
+we will not claim the trip is intact, and will certainly not claim it is gone —
+and the frontend renders it in neutral grey rather than as a warning.
+
+Two things the implementation refuses to do:
+
+* **Substitute.** A leg whose departure is no longer offered is reported gone,
+  not quietly replaced with the next flight out. Two flights at different times
+  are not the same trip.
+* **Report a partial total.** If any component could not be priced, the new
+  total is `null`. A sum of the parts we could reach is *lower*, so it would
+  read as a bargain rather than as an incomplete answer.
+
+The same reasoning drives a reconciliation check. Ground transfer is part of a
+trip's price but is reported as one figure rather than as individual options,
+so it is sent back at its saved price and marked `CARRIED` — included so the
+totals compare, explicitly not re-checked. If the parts in a request do not add
+up to the saved total, the endpoint refuses to compare at all rather than
+returning a difference that is really just a missing component. That failure
+was caught by a test, not by review: without it, every re-check quietly
+reported a €20 saving on a trip where nothing had changed.
+
+Re-checks bypass the provider cache. The caching decorators exist so one search
+does not issue fifteen thousand upstream calls; serving a *re-check* from that
+same memo table would return the very number it is supposed to be testing.
 
 ---
 
@@ -1836,7 +1889,7 @@ those are the application's business, and a model asked to guess them will.
 ## Running the tests
 
 ```bash
-pytest                                       # 728 tests
+pytest                                       # 752 tests
 pytest tests/test_beam_search.py -v          # the non-greedy proof
 pytest tests/test_adversarial.py -v          # the 20 V2 spec scenarios
 pytest tests/test_v3_adversarial.py -v       # the 13 V3 scenarios
@@ -1893,7 +1946,8 @@ pre-existing test runs as written.
 | `test_v4_llm.py` | the grounding guard, schema, retry, fallback, isolation | 45 |
 | `test_v5_product.py` | search modes, failure semantics, freshness, confidence, the product contract | 55 |
 | `test_deployment.py` | serving the built client, the API's precedence over it, cache policy, CORS | 17 |
-| | **total** | **728** |
+| `test_v6_recheck.py` | re-checking a saved trip: outage vs. gone, no substitution, no partial totals, reconciliation | 24 |
+| | **total** | **752** |
 
 Determinism is asserted, not assumed: several tests plan the same request twice
 and compare the full result object, the budget sweep is compared for exact

@@ -29,6 +29,7 @@ from ..models.trip import AccommodationPreference, TransportType
 from ..profiles import ProfileName
 from ..search_modes import SearchMode
 from ..services.confidence import ConfidenceLevel
+from ..services.recheck import ComponentState, RecheckStatus
 
 
 class IntensityBand(str, Enum):
@@ -366,3 +367,127 @@ class TripSearchResponse(BaseModel):
     diagnostics: SearchDiagnostics
     issues: list[ProviderIssueDTO] = Field(default_factory=list)
     no_results: NoResultsGuidance | None = None
+
+
+# ---------------------------------------------------------------------------
+# Re-checking a saved trip (V6.1)
+# ---------------------------------------------------------------------------
+class RecheckLeg(BaseModel):
+    """One saved leg, in the terms needed to find it again.
+
+    Narrower than :class:`LegDTO` on purpose. The client sends back what
+    identifies the leg and what it paid, not the whole rendered object, so the
+    request does not break every time the display shape gains a field.
+    """
+
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
+
+    origin: str = Field(alias="from")
+    destination: str = Field(alias="to")
+    departure: datetime
+    operator: str = ""
+    price_per_person: float = Field(ge=0.0)
+
+
+class RecheckStay(BaseModel):
+    """One saved stay, in the terms needed to find it again."""
+
+    model_config = ConfigDict(frozen=True)
+
+    city: str
+    arrival: datetime
+    departure: datetime
+    cost: float = Field(ge=0.0)
+    name: str | None = None
+
+
+class RecheckTransfer(BaseModel):
+    """The trip's ground transfers, at the price that was saved.
+
+    Sent so the totals reconcile, not so they can be re-quoted: a trip's
+    transfers are reported as one figure, which is not enough to name the
+    individual options. Omitting it would be the dangerous choice - the
+    re-checked total would come out low by exactly this amount and an unchanged
+    trip would be announced as a saving.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cost: float = Field(ge=0.0)
+    label: str = "Airport transfers"
+
+
+class TripRecheckRequest(BaseModel):
+    """Re-price a trip the traveler saved.
+
+    The trip travels with the request because Detoura stores nothing: saved
+    trips live in the browser. That keeps this endpoint free of accounts, a
+    database and a session model, none of which the product has decided on yet.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    trip_id: str
+    travelers: int = Field(ge=1, le=12)
+    saved_price: float = Field(gt=0.0)
+    saved_at: datetime | None = None
+    legs: list[RecheckLeg] = Field(min_length=1)
+    stays: list[RecheckStay] = Field(default_factory=list)
+    transfers: list[RecheckTransfer] = Field(default_factory=list)
+
+
+class RecheckComponentDTO(BaseModel):
+    """What became of one leg or one stay."""
+
+    model_config = ConfigDict(frozen=True)
+
+    label: str
+    state: ComponentState
+    saved_price: float
+    current_price: float | None = None
+    change: float | None = None
+    detail: str = ""
+
+
+class TripRecheckResponse(BaseModel):
+    """The answer to "is this trip still there, at that price?".
+
+    ``status`` is the field to render on. In particular ``UNVERIFIABLE`` must
+    not be drawn as bad news about the trip - it is the absence of news, and
+    the copy in :data:`RECHECK_MESSAGES` says so.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    trip_id: str
+    status: RecheckStatus
+    message: str
+    checked_at: datetime
+
+    saved_price: float
+    current_price: float | None = None
+    price_change: float | None = None
+    price_change_pct: float | None = None
+
+    price_freshness: PriceFreshness
+    legs: list[RecheckComponentDTO] = Field(default_factory=list)
+    stays: list[RecheckComponentDTO] = Field(default_factory=list)
+    transfers: list[RecheckComponentDTO] = Field(default_factory=list)
+    issues: list[ProviderIssueDTO] = Field(default_factory=list)
+
+
+#: What each outcome is called in front of a traveler. Here rather than in the
+#: client for the same reason the failure copy is: the backend is the only
+#: party that knows which of these is true.
+RECHECK_MESSAGES: dict[RecheckStatus, str] = {
+    RecheckStatus.UNCHANGED: "Still available at the price you saved.",
+    RecheckStatus.PRICE_CHANGED: "Still available, but the price has moved.",
+    RecheckStatus.PARTIALLY_UNAVAILABLE: (
+        "Part of this trip is no longer available."
+    ),
+    RecheckStatus.UNAVAILABLE: "This trip is no longer available.",
+    RecheckStatus.UNVERIFIABLE: (
+        "We couldn't check this trip just now — that's a problem on our side, "
+        "not a sign the trip has gone."
+    ),
+}

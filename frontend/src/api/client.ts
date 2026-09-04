@@ -20,7 +20,13 @@ import {
   type TripSearchResponse,
 } from "./types";
 
-const BASE = import.meta.env.VITE_API_BASE ?? "/api/v1";
+/* `||`, not `??`: an unset variable and one set to the empty string both have
+ * to mean "same origin". Docker's `ARG VITE_API_BASE=""` and every hosting
+ * dashboard that lets you save a blank value produce the empty string, and `??`
+ * would accept it as a real base - compiling every request down to `/search`
+ * instead of `/api/v1/search`. That failure is invisible to a health check: the
+ * server is up, the page renders, and only the searches 405. */
+const BASE = import.meta.env.VITE_API_BASE || "/api/v1";
 
 interface ApiErrorBody {
   detail?: string | { message?: string; issue?: unknown };

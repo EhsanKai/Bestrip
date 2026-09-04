@@ -57,6 +57,12 @@ setting one without the other produces a client that fails every request.
 VITE_API_BASE=https://api.detoura.app/api/v1
 ```
 
+Include the `/api/v1` suffix: this value is the base the client appends paths
+to, not just the API's hostname. Setting it to a blank value is treated as
+same-origin rather than as a real base — a saved-but-empty field in a hosting
+dashboard would otherwise compile every request down to `/search` and fail only
+at search time, long after the health check has gone green.
+
 **API** (runtime):
 
 ```
@@ -77,7 +83,7 @@ environment.
 
 | Variable | Where | Default | Meaning |
 | --- | --- | --- | --- |
-| `VITE_API_BASE` | client, build time | `/api/v1` | Where the client sends requests. Leave unset for same-origin. |
+| `VITE_API_BASE` | client, build time | `/api/v1` | Where the client sends requests. Unset *or empty* means same-origin. |
 | `DETOURA_CORS_ORIGINS` | API, runtime | the two localhost dev origins | Comma-separated origins allowed to call the API. |
 | `DETOURA_FRONTEND_DIST` | API, runtime | `frontend/dist` | Where the built client is. The image sets it to `/app/web`. |
 | `PORT` | API, runtime | `8000` | Injected by most hosts. |

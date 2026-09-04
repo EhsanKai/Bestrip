@@ -95,4 +95,20 @@ jobs:
           status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/v1/nope)
           test "$status" = "404"
 
+          # The client's API base is inlined at build time, so a mis-set
+          # VITE_API_BASE is baked into the bundle rather than raised at
+          # startup. An empty value compiles every request down to `/search`,
+          # which health checks and a rendering page both sail straight past -
+          # only the searches fail. Assert the base is actually in there.
+          echo "--- the served bundle must carry the API base ---"
+          asset=$(curl -fsS http://localhost:8000/ | grep -o '/assets/[^"]*\.js' | head -1)
+          test -n "$asset"
+          curl -fsS "http://localhost:8000$asset" | grep -q '/api/v1'
+
+          echo "--- and a real search must round-trip through it ---"
+          curl -fsS -X POST http://localhost:8000/api/v1/search \
+            -H 'Content-Type: application/json' \
+            -d '{"origin":"Koln","budget":450,"travelers":2,"duration_days":5,"date_from":"2026-09-10","date_to":"2026-09-15","search_mode":"QUICK"}' \
+            | grep -q recommendations
+
           docker rm -f detoura

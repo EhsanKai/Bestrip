@@ -15,6 +15,7 @@ decided which one is true.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -24,6 +25,7 @@ from ..profiles import PROFILES, ProfileName
 from ..providers.failures import FailureLog
 from ..search_modes import MODE_SETTINGS, SearchMode, apply_mode
 from ..services.budget_sensitivity import analyze_budget_sensitivity
+from ..services.feedback import record_feedback
 from ..services.planner import TravelPlanner
 from ..services.recheck import recheck_trip
 from .assembler import build_response
@@ -31,6 +33,9 @@ from .contracts import (
     RECHECK_MESSAGES,
     ProviderIssueDTO,
     RecheckComponentDTO,
+    SessionProfileDTO,
+    TripFeedbackRequest,
+    TripFeedbackResponse,
     TripRecheckRequest,
     TripRecheckResponse,
     TripSearchRequest,
@@ -239,6 +244,49 @@ def recheck(
             )
             for entry in failures.summary()
         ],
+    )
+
+
+def _session_profile_dto(weights) -> SessionProfileDTO:
+    return SessionProfileDTO(**weights.as_dict())
+
+
+@router.post("/feedback/{trip_id}", response_model=TripFeedbackResponse)
+def feedback(trip_id: str, body: TripFeedbackRequest) -> TripFeedbackResponse:
+    """React, in real time, to one explicit signal about one trip (V6).
+
+    Stateless like ``/trips/recheck``: nothing about ``trip_id`` is looked up
+    or stored, it is only echoed back, because Detoura keeps no trip database.
+    What actually changes is session state - see
+    :mod:`detoura.services.feedback` for the declared/observed split this
+    endpoint exists to maintain, and why the heuristic here is a fast,
+    session-scoped complement to :mod:`detoura.learning`'s batch fit rather
+    than a replacement for it.
+
+    A missing or empty ``session_id`` is not an error: it gets a fresh,
+    randomly-identified session, because refusing a first-time visitor would
+    defeat the point of a personalization endpoint.
+    """
+    session_id = body.session_id or f"anon-{uuid.uuid4().hex}"
+    try:
+        session = record_feedback(
+            session_id,
+            body.action,
+            body.value_breakdown.as_dict(),
+            declared_profile=body.declared_profile,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return TripFeedbackResponse(
+        session_id=session.session_id,
+        trip_id=trip_id,
+        declared_profile=session.declared_profile,
+        declared=_session_profile_dto(session.declared),
+        observed=_session_profile_dto(session.observed),
+        confidence=session.confidence,
+        signal_count=session.signal_count,
+        explanation=session.explanation(),
     )
 
 

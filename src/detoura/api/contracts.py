@@ -29,6 +29,7 @@ from ..models.trip import AccommodationPreference, TransportType
 from ..profiles import ProfileName
 from ..search_modes import SearchMode
 from ..services.confidence import ConfidenceLevel
+from ..services.feedback import FeedbackAction
 from ..services.recheck import ComponentState, RecheckStatus
 
 
@@ -474,6 +475,99 @@ class TripRecheckResponse(BaseModel):
     stays: list[RecheckComponentDTO] = Field(default_factory=list)
     transfers: list[RecheckComponentDTO] = Field(default_factory=list)
     issues: list[ProviderIssueDTO] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Real-time personalization from explicit feedback (V6)
+# ---------------------------------------------------------------------------
+class TripValueBreakdownDTO(BaseModel):
+    """The nine Travel Value components for one trip.
+
+    Field-for-field the same shape as
+    :class:`~detoura.profiles.TravelValueWeights` and the ``value_breakdown``
+    :mod:`detoura.learning`'s ``Observation`` is built from - what kind of
+    trip this was, not a rating of it. All nine are required: a heuristic that
+    nudges a weight vector needs to know where every component of the trip
+    stood, not just the ones the client happened to keep around.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cost: float = Field(ge=0.0)
+    experience: float = Field(ge=0.0)
+    preferences: float = Field(ge=0.0)
+    time: float = Field(ge=0.0)
+    diversity: float = Field(ge=0.0)
+    city_count: float = Field(ge=0.0)
+    accommodation: float = Field(ge=0.0)
+    convenience: float = Field(ge=0.0)
+    intensity: float = Field(ge=0.0)
+
+    def as_dict(self) -> dict[str, float]:
+        return self.model_dump()
+
+
+class TripFeedbackRequest(BaseModel):
+    """One explicit signal about one trip.
+
+    Stateless like :class:`TripRecheckRequest`: there is no trip database, so
+    the client sends back the components of the trip it is reacting to rather
+    than an id this endpoint would have to look up. ``session_id`` is
+    client-generated - there is no account system in this repo - and may be
+    omitted; an unknown or empty value still gets a session rather than an
+    error, because a personalization endpoint that fails a first-time visitor
+    would defeat its own purpose.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    session_id: str = ""
+    action: FeedbackAction
+    declared_profile: ProfileName | None = None
+    """Set only when the traveler's search explicitly named a profile.
+
+    Omitted (the default) leaves an existing session's declared profile
+    untouched; a value here is the *only* way ``declared`` ever changes -
+    never as a side effect of ``action``.
+    """
+    value_breakdown: TripValueBreakdownDTO
+
+
+class SessionProfileDTO(BaseModel):
+    """The nine weights of one profile, as the client renders them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    cost: float
+    experience: float
+    preferences: float
+    time: float
+    diversity: float
+    city_count: float
+    accommodation: float
+    convenience: float
+    intensity: float
+
+
+class TripFeedbackResponse(BaseModel):
+    """The current personalization state for one session, after one signal.
+
+    ``declared`` and ``observed`` are reported separately and are never
+    merged into one number here - see :mod:`detoura.services.feedback` for
+    why, and :func:`detoura.services.feedback.blend` for the one place a
+    caller that genuinely needs a single blended profile should go.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    session_id: str
+    trip_id: str
+    declared_profile: ProfileName
+    declared: SessionProfileDTO
+    observed: SessionProfileDTO
+    confidence: float
+    signal_count: int
+    explanation: str
 
 
 #: What each outcome is called in front of a traveler. Here rather than in the

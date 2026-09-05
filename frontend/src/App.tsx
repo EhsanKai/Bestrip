@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ProfileName, TripRecommendation, TripSearchRequest } from "./api/types";
+import type {
+  ProfileName,
+  SearchMode,
+  TripRecommendation,
+  TripSearchRequest,
+} from "./api/types";
 import { SearchProgress } from "./components/search/SearchProgress";
+import { SlowSearchNotice } from "./components/search/SlowSearchNotice";
 import { ErrorState } from "./components/search/ErrorState";
 import { Header } from "./components/shell/Header";
 import { MobileNav } from "./components/shell/MobileNav";
+import { track } from "./lib/analytics";
 import { Compare } from "./screens/Compare";
 import { Discover } from "./screens/Discover";
 import { Landing } from "./screens/Landing";
@@ -96,6 +103,7 @@ export default function App() {
     setSelected(trip);
     setScreen("detail");
     window.scrollTo({ top: 0 });
+    track("result_viewed", { trip_id: trip.id, rank: trip.rank });
   }, []);
 
   const comparedTrips = (search.response?.recommendations ?? []).filter((trip) =>
@@ -123,6 +131,20 @@ export default function App() {
         {screen === "searching" && (
           <div className="container">
             <SearchProgress mode={search.request?.search_mode ?? "SMART"} />
+            {search.slow && (
+              <SlowSearchNotice
+                mode={search.request?.search_mode ?? "SMART"}
+                request={search.request}
+                onKeepWaiting={search.dismissSlow}
+                onTryFaster={(mode: SearchMode) =>
+                  search.request && runSearch({ ...search.request, search_mode: mode })
+                }
+                onCancel={() => {
+                  search.reset();
+                  setScreen("discover");
+                }}
+              />
+            )}
           </div>
         )}
 
@@ -130,6 +152,7 @@ export default function App() {
           <div className="container app__state">
             <ErrorState
               error={search.failure}
+              request={search.request}
               onRetry={() => search.request && runSearch(search.request)}
             />
           </div>

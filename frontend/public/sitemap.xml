@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Detoura is a single-page app with no router (see App.tsx): landing, discover,
+  results, trip detail, compare and saved are all in-memory screen state, not
+  distinct URLs. There is exactly one crawlable path, so this lists exactly
+  one. Replace the host below if the app is served from somewhere other than
+  https://detoura.app (see DEPLOY.md for the two supported arrangements).
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://detoura.app/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>

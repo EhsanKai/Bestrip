@@ -1,0 +1,80 @@
+/* A bare-text variant for use inside already-busy states (the slow-search
+ * notice): unobtrusive by design, not a competing call to action. */
+.report-issue-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.report-issue-link:hover {
+  color: var(--text);
+}
+
+.report-issue-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--navy) 55%, transparent);
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  z-index: 100;
+  animation: fade-in var(--duration) var(--ease) both;
+}
+
+.report-issue-modal {
+  width: 100%;
+  max-width: 480px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.report-issue-modal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.report-issue-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: var(--space-1);
+  margin: -0.25rem;
+  border-radius: var(--radius-sm);
+}
+
+.report-issue-close:hover {
+  color: var(--text);
+}
+
+.report-issue-modal__lead {
+  font-size: var(--text-sm);
+  margin-top: var(--space-2);
+}
+
+.report-issue-body {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+
+.report-issue-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}

@@ -26,6 +26,8 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from ..services.feedback import configure_sessions
+from ..services.session_store import store_from_env
 from .routes import router as engine_router
 from .static import mount_frontend
 from .v1 import router as product_router
@@ -67,6 +69,16 @@ def cors_origins() -> list[str]:
 
 
 def create_app() -> FastAPI:
+    # Install the session store this deployment is configured for, before any
+    # request can touch it.
+    #
+    # Every worker process runs this, which is the point: with more than one
+    # worker the default process-local store is not merely slower, it is
+    # wrong - four workers held four disagreeing copies of one traveller's
+    # profile. Configuring it here rather than at import time keeps the choice
+    # observable in tests, which build the app explicitly.
+    configure_sessions(store_from_env())
+
     app = FastAPI(
         title="Detoura",
         version="5.0.0",

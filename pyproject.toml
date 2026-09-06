@@ -20,6 +20,12 @@ api = [
     "fastapi>=0.110",
     "uvicorn>=0.27",
 ]
+# Shared session state across worker processes. Optional because the default
+# single-worker deployment needs no external service, and demanding one would
+# break the product's "one image, no configuration" promise.
+session = [
+    "redis>=5",
+]
 dev = [
     "pytest>=7.4",
     "httpx>=0.26",

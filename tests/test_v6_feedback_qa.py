@@ -97,7 +97,7 @@ def test_drift_cap_holds_under_200_repeated_signals_with_zero_floor_components(c
 def test_two_distinct_explicit_sessions_never_cross_contaminate_when_interleaved(client):
     """Not the same thing as the existing "two blank ids" test: this checks
     that *interleaved* calls under two different, caller-supplied session ids
-    never leak signal_count or observed drift across the `_SESSIONS` dict."""
+    never leak signal_count or observed drift across the session store."""
     cost_heavy = {
         "cost": 1.0, "experience": 0.1, "preferences": 0.1, "time": 0.1,
         "diversity": 0.1, "city_count": 0.1, "accommodation": 0.1,
@@ -175,6 +175,9 @@ def test_all_zero_value_breakdown_is_a_422_not_a_500(client):
         },
     )
     assert response.status_code == 422
-    assert "qa-all-zero" not in __import__(
-        "detoura.services.feedback", fromlist=["_SESSIONS"]
-    )._SESSIONS
+    # Same guarantee, asked through the store interface: the session state
+    # moved behind SessionStore in V6.5 so that worker processes can share it,
+    # and reaching into a module-level dict no longer describes where it lives.
+    from detoura.services.feedback import session_store
+
+    assert session_store().get("qa-all-zero") is None

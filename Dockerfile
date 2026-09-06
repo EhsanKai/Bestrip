@@ -48,7 +48,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
-RUN pip install --no-cache-dir ".[api]"
+RUN pip install --no-cache-dir ".[api,session]"
 
 COPY --from=web /build/dist /app/web
 
@@ -63,4 +63,10 @@ EXPOSE 8000
 # Most hosts (Railway, Render, Fly, Cloud Run) inject $PORT and expect the
 # process to honour it; 8000 is the local default.
 ENV PORT=8000
-CMD ["sh", "-c", "exec uvicorn detoura.api.app:app --host 0.0.0.0 --port ${PORT}"]
+
+# WEB_CONCURRENCY is exported alongside --workers, not merely read by uvicorn:
+# the session store uses it to refuse to start when more than one worker is
+# configured without a shared store. Left at 1, this is the zero-configuration
+# single-worker deployment and needs no Redis.
+ENV WEB_CONCURRENCY=1
+CMD ["sh", "-c", "exec uvicorn detoura.api.app:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY}"]

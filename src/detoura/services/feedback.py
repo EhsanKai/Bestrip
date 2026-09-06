@@ -66,6 +66,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..profiles import COMPONENTS, ProfileName, TravelValueWeights, get_profile
+from .session_store import InMemorySessionStore, SessionStore
 
 #: Fraction of the remaining distance to a trip's profile that one signal
 #: closes. Small on purpose: :mod:`learning.py`'s DEFAULT_LEARNING_RATE (0.35)
@@ -167,12 +168,43 @@ class SessionProfile:
 #: Session state, keyed by ``session_id``. See the module docstring's
 #: "Storage" section: in-memory and single-process is a deliberate V6
 #: simplification, not an oversight.
-_SESSIONS: dict[str, SessionProfile] = {}
+# ---------------------------------------------------------------------------
+# Where sessions live
+# ---------------------------------------------------------------------------
+# Behind an interface rather than in a module-level dict, because the dict was
+# per-process and beam search only parallelizes across processes. Four workers
+# meant four disagreeing copies of one traveller's profile; a twelve-signal
+# session reported [1,1,1,2,3,4,5,2,6,3,7,8]. See services/session_store.py.
+
+_store: SessionStore = InMemorySessionStore()
+
+
+def configure_sessions(store: SessionStore) -> SessionStore:
+    """Install the store this process should use. Returns the previous one."""
+    global _store
+    previous, _store = _store, store
+    return previous
+
+
+def session_store() -> SessionStore:
+    """The store currently in use."""
+    return _store
 
 
 def reset_sessions() -> None:
-    """Clear all in-memory session state. Test-only escape hatch."""
-    _SESSIONS.clear()
+    """Clear all session state. Test-only escape hatch."""
+    global _store
+    _store = InMemorySessionStore()
+
+
+def session_count() -> int:
+    """How many sessions are held, where the store can say.
+
+    Redis is not asked to count keys: on a shared store that number belongs to
+    operations, not to a request path, and ``SCAN`` across a production
+    keyspace to satisfy a helper would be a poor trade.
+    """
+    return len(_store) if isinstance(_store, InMemorySessionStore) else -1
 
 
 def _cap_cumulative_drift(
@@ -223,16 +255,23 @@ def get_session(session_id: str | None) -> SessionProfile:
     An empty or missing ``session_id`` still gets a session - one keyed on a
     generated id - rather than an error: the spec is explicit that the
     absence of a client-generated identifier must never fail the request.
+
+    Creation goes through ``update`` rather than get-then-put so that two
+    first-touches of the same session cannot both create one and discard the
+    other's work.
     """
     key = session_id or "__anonymous__"
-    existing = _SESSIONS.get(key)
-    if existing is not None:
-        return existing
-    session = _new_session(
-        key, declared_profile=ProfileName.BEST_VALUE, baseline=get_profile(ProfileName.BEST_VALUE).weights
-    )
-    _SESSIONS[key] = session
-    return session
+
+    def mutate(current: SessionProfile | None) -> SessionProfile:
+        if current is not None:
+            return current
+        return _new_session(
+            key,
+            declared_profile=ProfileName.BEST_VALUE,
+            baseline=get_profile(ProfileName.BEST_VALUE).weights,
+        )
+
+    return _store.update(key, mutate)
 
 
 def record_feedback(
@@ -250,58 +289,72 @@ def record_feedback(
     this was, not a rating of it. ``found_under_profile``, when the caller
     knows it, seeds a brand-new session's baseline/anchor with the profile the
     trip actually came from rather than always assuming BEST_VALUE.
+
+    The nudge is expressed as a pure function of the current state and handed
+    to the store, which decides how to apply it atomically. That is what makes
+    the update safe across worker processes as well as across threads: the
+    caller never reads-then-writes, so it cannot lose a signal.
     """
     key = session_id or "__anonymous__"
-    session = _SESSIONS.get(key)
-    if session is None:
-        baseline_name = found_under_profile or declared_profile or ProfileName.BEST_VALUE
-        session = _new_session(
-            key,
-            declared_profile=declared_profile or ProfileName.BEST_VALUE,
-            baseline=get_profile(baseline_name).weights,
-        )
-    elif declared_profile is not None and declared_profile != session.declared_profile:
-        # The traveler explicitly changed their search profile: `declared`
-        # is allowed to move here, and only here - never from a click.
-        session = SessionProfile(
+
+    def mutate(current: SessionProfile | None) -> SessionProfile:
+        session = current
+        if session is None:
+            baseline_name = (
+                found_under_profile or declared_profile or ProfileName.BEST_VALUE
+            )
+            session = _new_session(
+                key,
+                declared_profile=declared_profile or ProfileName.BEST_VALUE,
+                baseline=get_profile(baseline_name).weights,
+            )
+        elif (
+            declared_profile is not None
+            and declared_profile != session.declared_profile
+        ):
+            # The traveler explicitly changed their search profile: `declared`
+            # is allowed to move here, and only here - never from a click.
+            session = SessionProfile(
+                session_id=session.session_id,
+                declared_profile=declared_profile,
+                declared=get_profile(declared_profile).weights,
+                observed=session.observed,
+                baseline=session.baseline,
+                signal_count=session.signal_count,
+                last_action=session.last_action,
+            )
+
+        current_weights = session.observed.normalized()
+        target = TravelValueWeights(**trip_weights).normalized()
+        sign = 1.0 if action in POSITIVE_ACTIONS else -1.0
+        strength = STEP_FRACTION * ACTION_STRENGTH[action.value]
+
+        nudged = {}
+        for name in COMPONENTS:
+            # Move `strength` of the remaining distance towards the trip's
+            # profile (positive actions) or away from it (negative actions,
+            # which is the same update with the sign flipped - reinforcement
+            # in the opposite direction, not a different mechanism).
+            delta = sign * strength * (target[name] - current_weights[name])
+            nudged[name] = max(current_weights[name] + delta, MIN_WEIGHT)
+
+        total = sum(nudged.values())
+        nudged = {name: value / total for name, value in nudged.items()}
+        bounded = _cap_cumulative_drift(nudged, session.baseline.normalized())
+
+        return SessionProfile(
             session_id=session.session_id,
-            declared_profile=declared_profile,
-            declared=get_profile(declared_profile).weights,
-            observed=session.observed,
+            declared_profile=session.declared_profile,
+            declared=session.declared,
+            observed=TravelValueWeights(
+                **{name: round(bounded[name], 6) for name in COMPONENTS}
+            ),
             baseline=session.baseline,
-            signal_count=session.signal_count,
-            last_action=session.last_action,
+            signal_count=session.signal_count + 1,
+            last_action=action,
         )
 
-    current = session.observed.normalized()
-    target = TravelValueWeights(**trip_weights).normalized()
-    sign = 1.0 if action in POSITIVE_ACTIONS else -1.0
-    strength = STEP_FRACTION * ACTION_STRENGTH[action.value]
-
-    nudged = {}
-    for name in COMPONENTS:
-        # Move `strength` of the remaining distance towards the trip's
-        # profile (positive actions) or away from it (negative actions, which
-        # is the same update with the sign flipped - reinforcement in the
-        # opposite direction, not a different mechanism).
-        delta = sign * strength * (target[name] - current[name])
-        nudged[name] = max(current[name] + delta, MIN_WEIGHT)
-
-    total = sum(nudged.values())
-    nudged = {name: value / total for name, value in nudged.items()}
-    bounded = _cap_cumulative_drift(nudged, session.baseline.normalized())
-
-    updated = SessionProfile(
-        session_id=session.session_id,
-        declared_profile=session.declared_profile,
-        declared=session.declared,
-        observed=TravelValueWeights(**{name: round(bounded[name], 6) for name in COMPONENTS}),
-        baseline=session.baseline,
-        signal_count=session.signal_count + 1,
-        last_action=action,
-    )
-    _SESSIONS[key] = updated
-    return updated
+    return _store.update(key, mutate)
 
 
 def blend(session: SessionProfile, *, observed_weight: float = 0.3) -> TravelValueWeights:

@@ -343,6 +343,51 @@ def _join(items: list[str]) -> str:
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
+def values_of_itinerary(itinerary: Itinerary) -> dict[str, float]:
+    """The seven comparable quantities, read off a finished itinerary.
+
+    Extracted so re-optimization's change diff (V7 Phase 2) measures a trip the
+    same way this module measures one. Two extraction sites would be two
+    chances to read transit off `total_travel_minutes` on one side and
+    `total_transport_minutes` on the other, which is exactly the defect Phase 1
+    shipped and had to fix.
+    """
+    return {
+        "price": itinerary.total_cost,
+        "city_count": float(len(itinerary.cities)),
+        "usable_hours": itinerary.usable_destination_minutes / 60.0,
+        "transit_hours": itinerary.total_transport_minutes / 60.0,
+        "experience": itinerary.experience_score,
+        "preference_match": itinerary.preference_score,
+        "accommodation": itinerary.accommodation_score,
+    }
+
+
+def values_of_baseline(baseline: BaselineResult) -> dict[str, float]:
+    """The same seven quantities, read off the traveler's own idea."""
+    return {
+        "price": baseline.total_cost,
+        "city_count": float(baseline.city_count),
+        "usable_hours": baseline.usable_destination_minutes / 60.0,
+        "transit_hours": baseline.total_transport_minutes / 60.0,
+        "experience": baseline.experience_score,
+        "preference_match": baseline.preference_match,
+        "accommodation": baseline.accommodation_score,
+    }
+
+
+def build_metrics(
+    before: dict[str, float], after: dict[str, float]
+) -> list[MetricComparison]:
+    """Compare every axis in :data:`DIRECTIONS`, in a fixed order.
+
+    Iterating the direction table rather than a hand-written list is what makes
+    adding a metric that flatters Detoura exactly as much work as adding one
+    that does not.
+    """
+    return [_compare_metric(name, before[name], after[name]) for name in DIRECTIONS]
+
+
 def compare_trips(
     itinerary: Itinerary, baseline: BaselineResult | None
 ) -> TripComparison | None:
@@ -368,31 +413,12 @@ def compare_trips(
         # way. Refusing on either side is the only consistent rule.
         return None
 
-    metrics = [
-        _compare_metric("price", baseline.total_cost, itinerary.total_cost),
-        _compare_metric("city_count", baseline.city_count, len(itinerary.cities)),
-        _compare_metric(
-            "usable_hours",
-            baseline.usable_destination_minutes / 60.0,
-            itinerary.usable_destination_minutes / 60.0,
-        ),
-        _compare_metric(
-            # Door to door on both sides. `baseline.total_travel_minutes` is
-            # intercity legs only, so reading it against the itinerary's
-            # transfer-inclusive figure compared two different quantities and
-            # reported an identical route as a transit difference.
-            "transit_hours",
-            baseline.total_transport_minutes / 60.0,
-            itinerary.total_transport_minutes / 60.0,
-        ),
-        _compare_metric("experience", baseline.experience_score, itinerary.experience_score),
-        _compare_metric(
-            "preference_match", baseline.preference_match, itinerary.preference_score
-        ),
-        _compare_metric(
-            "accommodation", baseline.accommodation_score, itinerary.accommodation_score
-        ),
-    ]
+    # Door to door on both sides. `total_travel_minutes` is intercity legs
+    # only, so reading it against a transfer-inclusive figure compared two
+    # different quantities and reported an identical route as a transit gap.
+    metrics = build_metrics(
+        values_of_baseline(baseline), values_of_itinerary(itinerary)
+    )
     by_name = {m.metric: m for m in metrics}
 
     wins = [m for m in metrics if m.favours is Favours.DETOURA]

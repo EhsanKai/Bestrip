@@ -11,6 +11,7 @@ The API package is only an adapter around this class.
 from __future__ import annotations
 
 import time as _time
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Sequence
 
@@ -23,6 +24,7 @@ from ..config import PlannerConfig
 from ..constraints.validator import ConstraintValidator
 from ..models.debug import FilteredItinerary, FilterStage, SearchDebug
 from ..models.itinerary import (
+    BaselineResult,
     CostBreakdown,
     DestinationInsightSummary,
     Itinerary,
@@ -70,6 +72,30 @@ from .return_estimator import CachedReturnEstimator
 
 #: Cap on how many filtered-out itineraries the trace records per stage.
 MAX_FILTER_RECORDS = 50
+
+
+@dataclass(frozen=True, slots=True)
+class Exploration:
+    """One search's complete output, before any selection narrows it.
+
+    Selection is a product decision - five diverse trips for discovery, the
+    best-preserving trip for an edit - so it does not belong inside the search.
+    Keeping the two apart is what lets V7 re-optimization reuse the optimizer
+    without reusing discovery's answer to a different question.
+    """
+
+    completed: list[SearchState]
+    """Every itinerary that finished and validated, ranked but unfiltered."""
+    baseline: BaselineResult | None
+    request: TripRequest
+    profile: RecommendationProfile
+    origin_airports: list[str]
+    start_dates: list[date]
+    trace: SearchDebug
+    warnings: list[str]
+    started: float
+    """``perf_counter`` reading from before the search, for elapsed timing."""
+    before: ProviderMetrics
 
 
 def replace_stats(provider) -> CacheStats:
@@ -136,25 +162,27 @@ class TravelPlanner:
         )
 
     # ------------------------------------------------------------------
-    def plan(
+    def explore(
         self,
         request: TripRequest,
         *,
-        debug: bool = False,
         profile: ProfileName | str | None = None,
         failures: FailureLog | None = None,
-    ) -> PlanResult:
-        """Plan a trip and return ranked, diverse itineraries.
+    ) -> "Exploration":
+        """Run one search and return everything it produced, unselected.
 
-        ``profile`` overrides ``request.profile``, which itself overrides
-        ``config.profile`` (BEST_VALUE by default).
+        Split out of :meth:`plan` so re-optimization can apply its own
+        selection (V7 Phase 2). An edit and a discovery search want different
+        things from the same candidate set: discovery wants five diverse trips,
+        an edit wants the one that best preserves what the traveler kept. The
+        diversity filter in particular is actively wrong for an edit - after a
+        lock every valid candidate shares the locked cities, so a filter tuned
+        to collapse near-duplicates would discard exactly the alternatives the
+        edit is choosing between.
 
-        ``failures`` turns provider exceptions into recorded, typed
-        degradation instead of an aborted search. Pass one per request: the
-        planner is shared across concurrent requests, so a log stored on the
-        instance would mix one caller's outages into another's answer. When it
-        is omitted the providers are used bare and an exception propagates,
-        which is what every existing caller already expects.
+        :meth:`plan` is this method plus the discovery selection, and must stay
+        byte-identical to its pre-split self; the golden signatures are the
+        proof, not the intention.
         """
         started = _time.perf_counter()
         before = self._provider_metrics()
@@ -254,6 +282,51 @@ class TravelPlanner:
                 "no baseline round trip to "
                 f"{request.preferred_destinations[0]!r} fits the budget, window and duration"
             )
+
+
+        return Exploration(
+            completed=completed,
+            baseline=baseline,
+            request=request,
+            profile=active,
+            origin_airports=origin_airports,
+            start_dates=start_dates,
+            trace=trace,
+            warnings=warnings,
+            started=started,
+            before=before,
+        )
+
+    def plan(
+        self,
+        request: TripRequest,
+        *,
+        debug: bool = False,
+        profile: ProfileName | str | None = None,
+        failures: FailureLog | None = None,
+    ) -> PlanResult:
+        """Plan a trip and return ranked, diverse itineraries.
+
+        ``profile`` overrides ``request.profile``, which itself overrides
+        ``config.profile`` (BEST_VALUE by default).
+
+        ``failures`` turns provider exceptions into recorded, typed
+        degradation instead of an aborted search. Pass one per request: the
+        planner is shared across concurrent requests, so a log stored on the
+        instance would mix one caller's outages into another's answer. When it
+        is omitted the providers are used bare and an exception propagates,
+        which is what every existing caller already expects.
+        """
+        exploration = self.explore(request, profile=profile, failures=failures)
+        completed = exploration.completed
+        baseline = exploration.baseline
+        active = exploration.profile
+        origin_airports = exploration.origin_airports
+        start_dates = exploration.start_dates
+        trace = exploration.trace
+        warnings = exploration.warnings
+        started = exploration.started
+        before = exploration.before
 
         selected, pareto_kept = self._post_process(completed, request, trace, active)
 
@@ -430,6 +503,21 @@ class TravelPlanner:
         if not state.route:
             return [state.origin_airport]
         return [state.route[0].origin] + [leg.destination for leg in state.route]
+
+    def materialize(
+        self,
+        state: SearchState,
+        request: TripRequest,
+        rank: int,
+        profile: RecommendationProfile,
+    ) -> Itinerary:
+        """Turn one search state into a finished, scored itinerary.
+
+        The public face of :meth:`_to_itinerary`, so re-optimization can
+        materialise the candidate its own selection chose without reaching into
+        a private method or growing a second conversion.
+        """
+        return self._to_itinerary(state, request, rank, profile)
 
     def _to_itinerary(
         self,

@@ -15,11 +15,20 @@ decided which one is true.
 
 from __future__ import annotations
 
+import copy
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from ..models.itinerary import (
+    Itinerary,
+    PlannerMetadata,
+    PlanResult,
+    StaySummary,
+    TravelValueBreakdown,
+)
+from ..models.transport import TransportOption, TransportType
 from ..models.trip import TravelPreferences, TripRequest
 from ..profiles import PROFILES, ProfileName
 from ..providers.failures import FailureLog, ProviderFailureKind
@@ -27,9 +36,16 @@ from ..search_modes import MODE_SETTINGS, SearchMode, apply_mode
 from ..services.budget_sensitivity import analyze_budget_sensitivity
 from ..services.feedback import record_feedback
 from ..services.planner import TravelPlanner
+from ..services.confidence import SearchQuality
 from ..services.recheck import recheck_trip
-from .assembler import build_response
+from ..services.reoptimizer import EditConflict, reoptimize
+from .assembler import build_response, recommendation_dto
 from .contracts import (
+    ChangeDiffDTO,
+    SimilarityDTO,
+    TripRecommendation,
+    TripReoptimizeRequest,
+    TripReoptimizeResponse,
     RECHECK_MESSAGES,
     ProviderIssueDTO,
     RecheckComponentDTO,
@@ -447,6 +463,188 @@ def search_modes() -> list[dict]:
         }
         for mode in MODE_SETTINGS
     ]
+
+
+
+
+def _selected_itinerary(trip, currency: str) -> Itinerary:
+    """Rebuild the client's trip as an :class:`Itinerary`.
+
+    Only what preservation and the change diff measure is reconstructed. The
+    legs carry no provider id - ids are internal and never reach a client - so
+    similarity matches them on (origin, destination, departure), the same
+    natural key `recheck` uses to re-find a saved leg.
+    """
+    legs = [
+        TransportOption(
+            id=f"saved-{index}",
+            origin=leg.origin,
+            destination=leg.destination,
+            departure=leg.departure,
+            # Placeholder: the wire format carries no per-leg duration, so a
+            # saved leg has no honest arrival time. Nothing downstream reads
+            # it - transit comes from the DTO's own intercity/transfer minutes,
+            # never from these timestamps - but anything that later computes
+            # from `leg.arrival` must not trust this value.
+            arrival=leg.departure,
+            price_per_person=leg.price_per_person,
+            transport_type=TransportType.FLIGHT,
+            duration_minutes=0,
+            operator=leg.operator or "saved",
+        )
+        for index, leg in enumerate(trip.legs)
+    ]
+    return Itinerary(
+        rank=0,
+        score=0.0,
+        total_cost=trip.total_price,
+        currency=currency,
+        duration_days=trip.duration_days,
+        origin_airport=trip.origin_airport,
+        return_airport=trip.return_airport,
+        cities=list(trip.cities),
+        legs=legs,
+        total_travel_minutes=trip.intercity_minutes,
+        ground_transfer_minutes=trip.transfer_minutes,
+        usable_destination_minutes=trip.usable_minutes,
+        departure=trip.departure,
+        arrival=trip.arrival,
+        stays=[
+            StaySummary(
+                city=stay.city,
+                arrival=stay.arrival,
+                departure=stay.departure,
+                nights=max((stay.departure.date() - stay.arrival.date()).days, 0),
+                accommodation_cost=stay.cost,
+                accommodation_name=stay.name,
+            )
+            for stay in trip.stays
+        ],
+        value_breakdown=TravelValueBreakdown(
+            profile=ProfileName.BEST_VALUE,
+            cost=0.0,
+            experience=trip.experience_score,
+            preferences=trip.preference_match,
+            time=0.0,
+            diversity=0.0,
+            accommodation=trip.accommodation_score,
+            total=0.0,
+        ),
+    )
+
+
+def _moded_planner(planner: TravelPlanner, mode: SearchMode) -> TravelPlanner:
+    """A view of the shared planner configured for one search mode.
+
+    A shallow copy, so the providers - and therefore the warm caches - stay the
+    shared instance's and only the config differs. Constructing a fresh
+    TravelPlanner here would discard exactly the cache an edit benefits from
+    most, since it is re-searching a space the original search just paid to
+    fetch.
+    """
+    scoped = copy.copy(planner)
+    scoped.config = apply_mode(planner.config, mode)
+    return scoped
+
+
+@router.post("/trips/reoptimize", response_model=TripReoptimizeResponse)
+def reoptimize_trip(
+    body: TripReoptimizeRequest, planner: TravelPlanner = Depends(get_planner)
+) -> TripReoptimizeResponse:
+    """Edit a chosen trip: keep what the traveler liked, re-optimize the rest.
+
+    Stateless like every other endpoint here - the trip travels with the
+    request, because Detoura stores nothing server-side.
+
+    Three outcomes, deliberately distinguishable. A contradictory edit, or one
+    that cannot be expressed as a valid trip, is a **422**: the traveler asked
+    for something that cannot exist. A coherent edit that nothing satisfied
+    returns **200 with a null trip** and a warning: the question was fair, the
+    answer is empty. Conflating the two would tell somebody their request was
+    malformed when it was merely unlucky.
+    """
+    request = to_trip_request(body.search)
+    mode = body.search.search_mode
+    original = _selected_itinerary(body.trip, request.currency)
+    failures = FailureLog()
+
+    try:
+        result = reoptimize(
+            _moded_planner(planner, mode),
+            request,
+            original,
+            body.patch,
+            failures=failures,
+            profile=body.search.profile,
+        )
+    except EditConflict as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    trip_dto = None
+    alternatives: list[TripRecommendation] = []
+    if result.trip is not None:
+        # `recommendation_dto` reads `result.baseline` for the your-idea
+        # comparison. An edit has no such baseline - the thing being compared
+        # against is the previous trip, and that comparison is the diff - so it
+        # is passed as None and the recommendation simply carries no
+        # `comparison`, rather than one built against the wrong reference.
+        plan_like = PlanResult(
+            profile=result.trip.profile or body.search.profile,
+            baseline=None,
+            recommendations=[result.trip, *result.alternatives],
+            metadata=PlannerMetadata(origin=request.origin),
+        )
+        quality = SearchQuality(
+            rounds=1,
+            winner_stable=True,
+            frontier_size=result.considered,
+            completed=result.considered,
+            alternatives_returned=1 + len(result.alternatives),
+            degraded=failures.degraded,
+            deep=mode is SearchMode.DEEP,
+        )
+        moment = datetime.now()
+        trip_dto = recommendation_dto(
+            result.trip, plan_like, quality, travelers=request.travelers, now=moment
+        )
+        alternatives = [
+            recommendation_dto(
+                alternative, plan_like, quality,
+                travelers=request.travelers, now=moment,
+            )
+            for alternative in result.alternatives
+        ]
+
+    return TripReoptimizeResponse(
+        trip_id=body.trip_id,
+        trip=trip_dto,
+        alternatives=alternatives,
+        similarity=(
+            SimilarityDTO(**result.similarity.as_dict())
+            if result.similarity is not None
+            else None
+        ),
+        diff=(
+            ChangeDiffDTO.model_validate(result.diff.model_dump())
+            if result.diff is not None
+            else None
+        ),
+        locked=list(result.derived.locked),
+        excluded=list(result.derived.excluded),
+        unsupported_operations=list(result.derived.unsupported),
+        considered=result.considered,
+        issues=[
+            ProviderIssueDTO(
+                kind=str(entry["kind"]),
+                provider=str(entry["provider"]),
+                message=str(entry["message"]),
+                retryable=bool(entry["retryable"]),
+                occurrences=int(entry["occurrences"]),
+            )
+            for entry in failures.summary()
+        ],
+        warnings=list(result.warnings),
+    )
 
 
 @router.get("/health")

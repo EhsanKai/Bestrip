@@ -31,6 +31,7 @@ from ..search_modes import SearchMode
 from ..services.confidence import ConfidenceLevel
 from ..services.feedback import FeedbackAction
 from ..services.recheck import ComponentState, RecheckStatus
+from ..models.patch import TripPatch
 from ..services.trip_comparison import ComparisonVerdict, Favours
 
 
@@ -293,6 +294,16 @@ class BaselineComparisonDTO(BaseModel):
     extra_cities: int
     extra_usable_hours: float
     extra_travel_minutes: int
+    """Difference in **intercity** transit only - ground transfers excluded.
+
+    Documented rather than renamed: the shipped frontend reads this field, so
+    changing its name or its meaning would be a breaking change for a naming
+    improvement. Note that it is deliberately *not* the same quantity as
+    :attr:`TripComparisonDTO.transit_time_delta`, which is door-to-door and
+    therefore usually larger. Two fields that look like they measure the same
+    thing and do not is how V7 shipped its first comparison defect, so the
+    difference is stated here rather than left for a reader to discover.
+    """
 
 
 class ComparisonMetricDTO(BaseModel):
@@ -393,6 +404,25 @@ class TripRecommendation(BaseModel):
     usable_hours: float
     travel_hours: float
     transfer_minutes: int
+    intercity_minutes: int = 0
+    """Time on intercity legs only, in whole minutes (V7).
+
+    Named for what it measures rather than "travel", because ``travel_hours``
+    above is the *door-to-door* figure - transfers included - and two fields
+    called travel-something meaning different things is precisely the confusion
+    that let Phase 1 compare a gate-to-gate journey against a door-to-door one.
+    ``intercity_minutes + transfer_minutes == total_transit_minutes``.
+    """
+    total_transit_minutes: int = 0
+    """Door-to-door transit in whole minutes: the exact form of ``travel_hours``.
+
+    Exposed because ``travel_hours`` is rounded to a tenth for display, so a
+    client sending a trip back to be edited could only return an approximation
+    - and the change diff would then report a transit difference of half an
+    hour that nobody had caused.
+    """
+    usable_minutes: int = 0
+    """Usable destination time in whole minutes, for the same reason."""
 
     travel_intensity: float
     intensity_band: IntensityBand
@@ -702,6 +732,135 @@ class TripFeedbackResponse(BaseModel):
     confidence: float
     signal_count: int
     explanation: str
+
+
+# ---------------------------------------------------------------------------
+# Editing a selected trip (V7 Phase 2)
+# ---------------------------------------------------------------------------
+class SelectedTripDTO(BaseModel):
+    """The trip being edited, sent back by the client.
+
+    Stateless like :class:`TripRecheckRequest`, and for the same reason:
+    Detoura stores nothing, so the trip travels with the request. It carries
+    what preservation is measured against - cities, airports, legs, stays and
+    the three scores - rather than the whole rendered object, so the request
+    does not break every time the display shape gains a field.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cities: list[str] = Field(min_length=1, max_length=MAX_DESTINATION_NAMES)
+    origin_airport: str = Field(min_length=1, max_length=16)
+    return_airport: str = Field(min_length=1, max_length=16)
+    departure: datetime
+    arrival: datetime
+    duration_days: float = Field(ge=0.0)
+    total_price: float = Field(ge=0.0)
+
+    intercity_minutes: int = Field(default=0, ge=0)
+    """Legs only. With ``transfer_minutes`` this reconstructs door-to-door
+    transit exactly, which is what the change diff compares."""
+    transfer_minutes: int = Field(default=0, ge=0)
+    usable_minutes: int = Field(default=0, ge=0)
+
+    experience_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    preference_match: float = Field(default=0.0, ge=0.0, le=1.0)
+    accommodation_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    legs: list[RecheckLeg] = Field(default_factory=list, max_length=MAX_RECHECK_LEGS)
+    stays: list[RecheckStay] = Field(
+        default_factory=list, max_length=MAX_RECHECK_STAYS
+    )
+
+
+class TripReoptimizeRequest(BaseModel):
+    """Edit one selected trip and re-optimize what was left mutable."""
+
+    model_config = ConfigDict(frozen=True)
+
+    trip_id: str = Field(min_length=1, max_length=200)
+    search: TripSearchRequest
+    """The search the trip came from. Re-optimization is a constrained version
+    of that search, not an unrelated new one."""
+    trip: SelectedTripDTO
+    patch: TripPatch
+
+
+class SimilarityDTO(BaseModel):
+    """How much of the original trip survived the edit."""
+
+    model_config = ConfigDict(frozen=True)
+
+    city_preservation: float
+    city_order: float
+    stay_duration: float
+    transport: float
+    accommodation: float
+    airports: float
+    dates: float
+    price: float
+    duration: float
+    total: float
+
+
+class ChangeDiffDTO(BaseModel):
+    """What was asked, what changed, and what it cost.
+
+    ``improvements`` and ``costs`` are separate lists rather than one signed
+    set, so a client cannot render the gains and omit the losses without
+    deciding to.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    requested: list[str] = Field(default_factory=list)
+    cities_kept: list[str] = Field(default_factory=list)
+    cities_removed: list[str] = Field(default_factory=list)
+    cities_added: list[str] = Field(default_factory=list)
+    order_preserved: bool = True
+    departure_airport_changed: bool = False
+    return_airport_changed: bool = False
+    previous_departure_airport: str = ""
+    departure_airport: str = ""
+    previous_return_airport: str = ""
+    return_airport: str = ""
+    metrics: list[ComparisonMetricDTO] = Field(default_factory=list)
+    price_delta: float = 0.0
+    transit_delta_hours: float = 0.0
+    usable_delta_hours: float = 0.0
+    experience_delta: float = 0.0
+    preference_delta: float = 0.0
+    accommodation_delta: float = 0.0
+    improvements: list[str] = Field(default_factory=list)
+    costs: list[str] = Field(default_factory=list)
+    summary: str = ""
+
+
+class TripReoptimizeResponse(BaseModel):
+    """The edited trip, or an honest account of why there isn't one."""
+
+    model_config = ConfigDict(frozen=True)
+
+    trip_id: str
+    trip: TripRecommendation | None = None
+    """``None`` means the edit was coherent but nothing satisfied it. That is
+    a different answer from a contradictory edit, which is a 422, and the
+    client needs to tell them apart."""
+    alternatives: list[TripRecommendation] = Field(default_factory=list)
+    similarity: SimilarityDTO | None = None
+    diff: ChangeDiffDTO | None = None
+
+    locked: list[str] = Field(default_factory=list)
+    excluded: list[str] = Field(default_factory=list)
+    unsupported_operations: list[str] = Field(default_factory=list)
+    """Operations the patch declared that this release does not carry out.
+
+    Named rather than dropped: an instruction that is silently ignored looks,
+    from the traveler's side, exactly like one that was obeyed and did nothing.
+    """
+    considered: int = 0
+    issues: list[ProviderIssueDTO] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 #: What each outcome is called in front of a traveler. Here rather than in the

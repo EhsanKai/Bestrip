@@ -47,6 +47,12 @@ from ..providers.cache import (
     ProviderMetrics,
 )
 from ..providers.destinations import DestinationProvider, StaticDestinationProvider
+from ..providers.failures import FailureLog
+from ..providers.resilient import (
+    ResilientAccommodationProvider,
+    ResilientGroundTransferProvider,
+    ResilientTransportProvider,
+)
 from ..providers.ground_transfer import (
     FreeGroundTransferProvider,
     GroundTransferProvider,
@@ -136,11 +142,19 @@ class TravelPlanner:
         *,
         debug: bool = False,
         profile: ProfileName | str | None = None,
+        failures: FailureLog | None = None,
     ) -> PlanResult:
         """Plan a trip and return ranked, diverse itineraries.
 
         ``profile`` overrides ``request.profile``, which itself overrides
         ``config.profile`` (BEST_VALUE by default).
+
+        ``failures`` turns provider exceptions into recorded, typed
+        degradation instead of an aborted search. Pass one per request: the
+        planner is shared across concurrent requests, so a log stored on the
+        instance would mix one caller's outages into another's answer. When it
+        is omitted the providers are used bare and an exception propagates,
+        which is what every existing caller already expects.
         """
         started = _time.perf_counter()
         before = self._provider_metrics()
@@ -161,14 +175,37 @@ class TravelPlanner:
                 f"{request.date_from}..{request.date_to}"
             )
 
-        transfers = self._ground_transfers(request.origin, origin_airports)
+        # Resilience wraps the *outside* of the cache, deliberately.
+        #
+        # Caching(Resilient(inner)) would store the empty list a degraded
+        # provider returns, turning one timeout into a permanent "nothing
+        # here" for the rest of the run. Resilient(Caching(inner)) lets the
+        # exception travel up through the cache - which stores nothing when
+        # compute() raises - so only real answers are ever memoised.
+        transport = self.transport
+        accommodation = self.accommodation
+        ground_transfer = self.ground_transfer
+        if failures is not None:
+            transport = ResilientTransportProvider(
+                transport, failures, name="transport"
+            )
+            accommodation = ResilientAccommodationProvider(
+                accommodation, failures, name="accommodation"
+            )
+            ground_transfer = ResilientGroundTransferProvider(
+                ground_transfer, failures, name="ground_transfer"
+            )
+
+        transfers = self._ground_transfers(
+            request.origin, origin_airports, provider=ground_transfer
+        )
         cheapest_transfer = min(
             (t.price_per_person for t in transfers.values()), default=0.0
         )
 
         window_dates = self._window_dates(request)
         return_estimator = CachedReturnEstimator(
-            self.transport,
+            transport,
             origin_airports=origin_airports,
             dates=window_dates,
             allowed_transport_types=[t.value for t in request.transport_preferences],
@@ -183,14 +220,14 @@ class TravelPlanner:
         )
         optimizer = BeamSearchOptimizer(
             self.config,
-            transport_provider=self.transport,
+            transport_provider=transport,
             destination_provider=self.destinations,
             validator=validator,
             scoring=self.scoring,
             return_estimator=return_estimator,
             travel_value=self.travel_value,
             profile=active,
-            accommodation_provider=self.accommodation,
+            accommodation_provider=accommodation,
             accommodation_estimator=self.accommodation_estimator,
             ground_transfers=transfers,
         )
@@ -487,12 +524,20 @@ class TravelPlanner:
         )
 
     def _ground_transfers(
-        self, origin: str, airports: Sequence[str]
+        self,
+        origin: str,
+        airports: Sequence[str],
+        *,
+        provider: GroundTransferProvider | None = None,
     ) -> dict[str, GroundTransferOption]:
-        """Cheapest way to reach each candidate departure airport from home."""
+        """Cheapest way to reach each candidate departure airport from home.
+
+        ``provider`` lets one request use a resilience-wrapped view of the
+        shared provider without the wrapper leaking onto the instance.
+        """
         transfers: dict[str, GroundTransferOption] = {}
         for airport in airports:
-            options = self.ground_transfer.search(origin, airport)
+            options = (provider or self.ground_transfer).search(origin, airport)
             if options:
                 transfers[airport] = options[0]
         return transfers

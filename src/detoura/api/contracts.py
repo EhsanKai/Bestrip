@@ -21,7 +21,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..models.destination import EXPERIENCE_ATTRIBUTES
 from ..models.freshness import PriceFreshness
@@ -70,6 +70,39 @@ class AvailabilityStatus(str, Enum):
 # ---------------------------------------------------------------------------
 # Request
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Request bounds (V6.5)
+# ---------------------------------------------------------------------------
+# Every limit below is deliberately far above any real traveller's request and
+# far below what makes one request expensive. They exist because three of them
+# were demonstrated, against a running server, to turn a single well-formed
+# POST into tens of seconds of CPU or tens of thousands of uncached upstream
+# calls. Bounding is the whole fix: none of these caps changes the result of a
+# request a person would actually make.
+
+#: The catalog defines ~12 interest attributes and 16 destinations. These caps
+#: leave room for the catalog to grow several times over.
+MAX_INTERESTS = 32
+MAX_DESTINATION_NAMES = 64
+MAX_TRANSPORT_MODES = 8
+MAX_ORIGIN_LENGTH = 120
+
+#: A trip is capped at 6 cities, so a real itinerary has well under a dozen
+#: legs. These are per-request structural caps, not product limits.
+MAX_RECHECK_LEGS = 64
+MAX_RECHECK_STAYS = 32
+MAX_RECHECK_TRANSFERS = 8
+
+#: The search window a flexible request may span.
+#:
+#: Measured, not guessed: search cost plateaus with window size (a 180-day
+#: window costs about the same as a 30-day one, because the beam is bounded by
+#: mode, not by window). The cost that does not plateau is enumerating one
+#: candidate start date per day - a 200-year window built ~73,000 of them and
+#: took 75 seconds. A year is longer than anyone plans a city break and keeps
+#: that enumeration trivially small.
+MAX_SEARCH_WINDOW_DAYS = 366
+
 class TripSearchRequest(BaseModel):
     """What the traveler asked for, in product terms.
 
@@ -80,7 +113,10 @@ class TripSearchRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    origin: str = Field(min_length=1, description="City or airport to start from.")
+    origin: str = Field(
+        min_length=1, max_length=MAX_ORIGIN_LENGTH,
+        description="City or airport to start from.",
+    )
     date_from: str
     date_to: str
     duration_days: int = Field(ge=1, le=30)
@@ -92,17 +128,51 @@ class TripSearchRequest(BaseModel):
     profile: ProfileName = ProfileName.BEST_VALUE
     search_mode: SearchMode = SearchMode.SMART
 
-    interests: list[str] = Field(default_factory=list)
-    disliked: list[str] = Field(default_factory=list)
-    preferred_destinations: list[str] = Field(default_factory=list)
-    avoided_destinations: list[str] = Field(default_factory=list)
-    previously_visited: list[str] = Field(default_factory=list)
+    interests: list[str] = Field(default_factory=list, max_length=MAX_INTERESTS)
+    disliked: list[str] = Field(default_factory=list, max_length=MAX_INTERESTS)
+    preferred_destinations: list[str] = Field(
+        default_factory=list, max_length=MAX_DESTINATION_NAMES
+    )
+    avoided_destinations: list[str] = Field(
+        default_factory=list, max_length=MAX_DESTINATION_NAMES
+    )
+    previously_visited: list[str] = Field(
+        default_factory=list, max_length=MAX_DESTINATION_NAMES
+    )
 
     accommodation_preference: AccommodationPreference = AccommodationPreference.BALANCED
     preferred_city_count: int | None = Field(default=None, ge=1, le=6)
     transport: list[TransportType] = Field(
-        default_factory=lambda: [TransportType.FLIGHT, TransportType.TRAIN]
+        default_factory=lambda: [TransportType.FLIGHT, TransportType.TRAIN],
+        max_length=MAX_TRANSPORT_MODES,
     )
+
+    @model_validator(mode="after")
+    def _bounded_window(self) -> "TripSearchRequest":
+        """Reject a search window wider than a year.
+
+        Rejected here at the contract rather than clamped deeper in: silently
+        narrowing someone's window would answer a question they did not ask.
+        A 422 tells them what to change.
+
+        Dates that do not parse are left alone - the domain model already
+        reports those, and duplicating the message would mean maintaining two
+        of them.
+        """
+        from datetime import date as _date
+
+        try:
+            start = _date.fromisoformat(self.date_from)
+            end = _date.fromisoformat(self.date_to)
+        except ValueError:
+            return self
+        span = (end - start).days + 1
+        if span > MAX_SEARCH_WINDOW_DAYS:
+            raise ValueError(
+                f"search window of {span} days exceeds the maximum of "
+                f"{MAX_SEARCH_WINDOW_DAYS}; narrow date_from..date_to"
+            )
+        return self
 
     def validated_interests(self) -> list[str]:
         """Drop anything the catalog has never heard of.
@@ -432,9 +502,13 @@ class TripRecheckRequest(BaseModel):
     travelers: int = Field(ge=1, le=12)
     saved_price: float = Field(gt=0.0)
     saved_at: datetime | None = None
-    legs: list[RecheckLeg] = Field(min_length=1)
-    stays: list[RecheckStay] = Field(default_factory=list)
-    transfers: list[RecheckTransfer] = Field(default_factory=list)
+    legs: list[RecheckLeg] = Field(min_length=1, max_length=MAX_RECHECK_LEGS)
+    stays: list[RecheckStay] = Field(
+        default_factory=list, max_length=MAX_RECHECK_STAYS
+    )
+    transfers: list[RecheckTransfer] = Field(
+        default_factory=list, max_length=MAX_RECHECK_TRANSFERS
+    )
 
 
 class RecheckComponentDTO(BaseModel):

@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..models.trip import TravelPreferences, TripRequest
 from ..profiles import PROFILES, ProfileName
-from ..providers.failures import FailureLog
+from ..providers.failures import FailureLog, ProviderFailureKind
 from ..search_modes import MODE_SETTINGS, SearchMode, apply_mode
 from ..services.budget_sensitivity import analyze_budget_sensitivity
 from ..services.feedback import record_feedback
@@ -143,9 +143,42 @@ def search(
         )
 
     try:
-        result = active.plan(request, profile=body.profile)
+        # The log travels with the request, not with the planner: the planner
+        # is shared across concurrent requests and a log on the instance would
+        # report one caller's outage inside another caller's answer.
+        result = active.plan(request, profile=body.profile, failures=failures)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:  # noqa: BLE001 - see below
+        # Defence in depth, and deliberately broad.
+        #
+        # With the resilience wrappers in place a provider fault is caught at
+        # the provider and recorded, so this should not fire. It exists for
+        # the fault that is not a provider's - a bug in scoring, an unexpected
+        # shape from a new integration - because the alternative is a bare 500
+        # that tells the client nothing it can act on. A 503 with a retryable
+        # issue is honest: something upstream of the answer broke, and trying
+        # again is reasonable advice.
+        failures.record(
+            ProviderFailureKind.UNAVAILABLE,
+            "search",
+            detail=str(error),
+            context="planning",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": (
+                    "We could not complete this search. That is a problem on "
+                    "our side, not a sign that no trips exist."
+                ),
+                "issue": {
+                    "kind": ProviderFailureKind.UNAVAILABLE.value,
+                    "provider": "search",
+                    "retryable": True,
+                },
+            },
+        ) from error
 
     closest = None
     if not result.recommendations and not failures.degraded:

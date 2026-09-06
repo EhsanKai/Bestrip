@@ -11,3 +11,26 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+
+# Ruflo local secrets and runtime data
+.env
+.env.local
+.env.*.local
+.claude-flow/data/
+.claude-flow/logs/
+.claude-flow/sessions/
+
+# Agent/orchestration runtime state. Never belongs in the repository.
+#
+# Scoped deliberately wide: an audit of this tree found 371 of 383 untracked
+# paths were agent runtime state, including live SQLite databases, and the
+# previous rules covered none of them. A partial ignore list is worse than
+# none, because it reads as protection.
+.agents/
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+ruvector.db
+*.db-shm
+*.db-wal

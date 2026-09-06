@@ -79,6 +79,38 @@ environment.
 
 ---
 
+## Running more than one worker
+
+Search is CPU-bound pure Python, so concurrent searches serialize on the GIL
+and only separate worker *processes* run them in parallel. Measured, 20-way
+concurrent SMART:
+
+| workers | p50 | p95 | throughput | memory |
+| --- | --- | --- | --- | --- |
+| 1 | 10.32s | 10.45s | 1.9 req/s | 74 MB |
+| 2 | 6.24s | 6.85s | 2.9 req/s | 151 MB |
+| 4 | **3.83s** | **4.38s** | **4.6 req/s** | 243 MB |
+
+**More than one worker requires a shared session store.** Personalization
+state is per-process, so multiple workers without one hold disagreeing copies
+of the same traveller's profile - twelve signals to one session returned
+`[1,2,3,4,5,1,2,6,3,4,7,8]`. This is silent: nothing errors, the numbers are
+just wrong.
+
+```bash
+DETOURA_SESSION_STORE=redis
+DETOURA_REDIS_URL=redis://your-redis:6379/0
+```
+
+Install the extra in the image (`pip install ".[api,session]"` - already in the
+Dockerfile) and run with `--workers N`. With the shared store configured, the
+same twelve signals return `[1..12]` at 1, 2 and 4 workers.
+
+A single worker needs none of this and remains the default: the store falls
+back to an in-memory implementation, which is correct for one process.
+
+---
+
 ## Configuration
 
 | Variable | Where | Default | Meaning |
@@ -86,6 +118,9 @@ environment.
 | `VITE_API_BASE` | client, build time | `/api/v1` | Where the client sends requests. Unset *or empty* means same-origin. |
 | `DETOURA_CORS_ORIGINS` | API, runtime | the two localhost dev origins | Comma-separated origins allowed to call the API. |
 | `DETOURA_FRONTEND_DIST` | API, runtime | `frontend/dist` | Where the built client is. The image sets it to `/app/web`. |
+| `DETOURA_SESSION_STORE` | API, runtime | `memory` | `memory` or `redis`. **Required to be `redis` when running more than one worker.** |
+| `DETOURA_REDIS_URL` | API, runtime | `redis://localhost:6379/0` | Used only when the store is `redis`. |
+| `DETOURA_SESSION_TTL_SECONDS` | API, runtime | 14 days | How long an idle session survives. |
 | `PORT` | API, runtime | `8000` | Injected by most hosts. |
 
 When there is no build at `DETOURA_FRONTEND_DIST`, the API simply does not

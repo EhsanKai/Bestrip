@@ -241,6 +241,57 @@ class BaselineResult(BaseModel):
     """
 
 
+    # --- V7: scored through the same scorer as every recommendation ----
+    # These exist so "is the Detoura alternative actually better?" can be
+    # answered on the same axes the optimizer ranks by. They are filled by
+    # scoring a real SearchState built from the baseline's own legs and room,
+    # never by a parallel calculation - a second scoring path would drift, and
+    # it would drift in Detoura's favour.
+    city_count: int = 1
+    """Always 1: the baseline is a single-destination round trip by definition."""
+    ground_transfer_minutes: int = 0
+    """Time spent getting to the departure airport and home again.
+
+    The baseline has always *paid* for these - the money is in
+    ``cost_breakdown.ground_transfer`` - but until V7 there was nowhere to put
+    the minutes, so they were discarded. Comparing our door-to-door journey
+    against the traveler's gate-to-gate one made an identical route look like a
+    transit difference, and in at least one real case that phantom gap was the
+    entire verdict.
+    """
+    experience_score: float = 0.0
+    preference_match: float = 0.0
+    accommodation_score: float = 0.0
+    convenience_score: float = 0.0
+    travel_value: float = 0.0
+    """The full weighted objective, comparable to :attr:`Itinerary.score`."""
+    scored: bool = False
+    """Whether the four scores above were actually computed.
+
+    ``False`` means no scorer was supplied and they are placeholder zeros, not
+    measurements. Comparison refuses to report deltas against unscored
+    baselines rather than publishing zeros as if they were findings.
+    """
+
+    @property
+    def total_transport_minutes(self) -> int:
+        """All time in transit, ground transfers included.
+
+        Deliberately the same name and the same meaning as
+        :attr:`Itinerary.total_transport_minutes`, so the two sides of a
+        comparison cannot be read off different quantities by accident.
+        """
+        return self.total_travel_minutes + self.ground_transfer_minutes
+
+    baggage_cost: float | None = None
+    """Party total for baggage on this trip, or ``None`` when unknown (V7).
+
+    ``None`` is *unknown*, never *free*. No baggage model exists yet; this is
+    the seam Phase 3 fills, and until then every comparison reports the
+    baggage difference as unknown rather than as zero.
+    """
+
+
 class BaselineComparison(BaseModel):
     """How a candidate itinerary compares against the baseline."""
 

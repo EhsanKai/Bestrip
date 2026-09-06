@@ -25,7 +25,9 @@ from ..models.trip import TripRequest
 from ..providers.failures import FailureLog
 from ..search_modes import SearchMode, deeper_than
 from ..services.confidence import RecommendationConfidence, SearchQuality, assess
+from ..services.trip_comparison import compare_trips
 from .contracts import (
+    TripComparisonDTO,
     AvailabilityStatus,
     BaselineComparisonDTO,
     ConfidenceDTO,
@@ -245,8 +247,15 @@ def recommendation_dto(
         if factor in FACTOR_PHRASES
     ][:MAX_HIGHLIGHTS]
 
+    comparison = compare_trips(itinerary, result.baseline)
+
     return TripRecommendation(
         id=f"{itinerary.rank}-" + "-".join(itinerary.route_nodes).lower().replace(" ", ""),
+        comparison=(
+            TripComparisonDTO.model_validate(comparison.model_dump())
+            if comparison is not None
+            else None
+        ),
         rank=itinerary.rank,
         route=itinerary.route_label(),
         route_nodes=itinerary.route_nodes,

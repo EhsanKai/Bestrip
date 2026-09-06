@@ -240,7 +240,14 @@ class TravelPlanner:
         )
 
         baseline = self.baseline_planner.compute(
-            request, origin_airports=origin_airports, start_dates=start_dates
+            request,
+            origin_airports=origin_airports,
+            start_dates=start_dates,
+            # Scored by the planner's own scorer and the run's own profile, so
+            # the traveler's original idea and our alternatives are measured by
+            # identical code under identical weights (V7).
+            scorer=self.travel_value,
+            profile=active,
         )
         if request.preferred_destinations and baseline is None:
             warnings.append(

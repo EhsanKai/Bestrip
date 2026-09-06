@@ -31,6 +31,7 @@ from ..search_modes import SearchMode
 from ..services.confidence import ConfidenceLevel
 from ..services.feedback import FeedbackAction
 from ..services.recheck import ComponentState, RecheckStatus
+from ..services.trip_comparison import ComparisonVerdict, Favours
 
 
 class IntensityBand(str, Enum):
@@ -294,6 +295,59 @@ class BaselineComparisonDTO(BaseModel):
     extra_travel_minutes: int
 
 
+class ComparisonMetricDTO(BaseModel):
+    """One axis of the your-idea-versus-ours comparison (V7)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    metric: str
+    label: str
+    original: float
+    detoura: float
+    delta: float
+    """Always ``detoura - original``, whichever direction is better."""
+    favours: Favours
+    material: bool
+
+
+class TripComparisonDTO(BaseModel):
+    """The traveler's own idea against this recommendation (V7).
+
+    Distinct from :class:`BaselineComparisonDTO`, which reports three raw
+    deltas. This one carries the full per-metric breakdown, a verdict that can
+    come out ``ORIGINAL_BETTER``, and an explicit list of what it could not
+    establish. The UI is expected to render ``tradeoffs`` whenever it renders
+    ``advantages``; showing only one side would misrepresent a MIXED verdict as
+    a recommendation.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    original_destination: str
+    original_price: float
+    detoura_price: float
+    currency: str
+
+    price_delta: float
+    city_count_delta: int
+    usable_time_delta: float
+    transit_time_delta: float
+    experience_delta: float
+    preference_match_delta: float
+    accommodation_delta: float
+    baggage_delta: float | None = None
+    """``None`` means unknown, never "the same". No baggage model exists yet."""
+
+    verdict: ComparisonVerdict
+    metrics: list[ComparisonMetricDTO] = Field(default_factory=list)
+    advantages: list[str] = Field(default_factory=list)
+    tradeoffs: list[str] = Field(default_factory=list)
+    added_cities: list[str] = Field(default_factory=list)
+    dropped_original_destination: bool = False
+    summary: str = ""
+    unknowns: list[str] = Field(default_factory=list)
+
+
 class ConfidenceReasonDTO(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -353,6 +407,12 @@ class TripRecommendation(BaseModel):
     availability: AvailabilityStatus
 
     baseline_comparison: BaselineComparisonDTO | None = None
+    comparison: TripComparisonDTO | None = None
+    """Your idea versus this one, in full (V7).
+
+    Additive: ``baseline_comparison`` is unchanged and still populated, because
+    the shipped frontend reads it.
+    """
     highlights: list[str] = Field(default_factory=list)
     """Typed explanation factors, already turned into readable phrases."""
     tradeoff: str | None = None

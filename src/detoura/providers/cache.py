@@ -14,8 +14,9 @@ needs, and anything more is infrastructure the project has not earned yet.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Generic, TypeVar
 
 from ..models.accommodation import AccommodationOption
@@ -184,3 +185,139 @@ class CachingGroundTransferProvider:
 
     def __getattr__(self, name: str):
         return getattr(self.inner, name)
+
+
+# ---------------------------------------------------------------------------
+# Expiry-aware caching for real providers (V7.5)
+# ---------------------------------------------------------------------------
+#: How long a real provider's answer may be reused when the offers themselves
+#: carry no stated expiry. Short, because a fare nobody timestamped is not a
+#: fare anyone promised to honour.
+DEFAULT_OFFER_TTL_SECONDS = 300
+
+#: Ceiling on cached route/date keys. `ProviderCache` is an unbounded dict,
+#: which is harmless for synthetic fares generated on demand and a slow leak for
+#: a long-lived process holding real offers.
+DEFAULT_MAX_ENTRIES = 2048
+
+#: Discarded this many seconds *before* the provider's own expiry. An offer that
+#: dies while the user is reading the page was never usable, and handing one out
+#: at T-1s is a booking failure dressed up as a result.
+EXPIRY_SAFETY_MARGIN_SECONDS = 30
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpiringEntry(Generic[V]):
+    value: V
+    cached_at: datetime
+    expires_at: datetime
+    """Effective death: the earlier of our TTL and the provider's own expiry."""
+
+
+class ExpiringProviderCache(Generic[K, V]):
+    """A memo table that knows offers die (V7.5).
+
+    Three differences from :class:`ProviderCache`, each answering a way real
+    provider data breaks the synthetic assumptions.
+
+    **Offers expire.** A synthetic fare is generated on demand and is true
+    whenever it is read. A real offer carries a provider-stated deadline, and
+    serving it afterwards means quoting a price that cannot be booked. Entries
+    therefore die at the *earlier* of our TTL and the provider's own expiry,
+    minus a safety margin.
+
+    **Memory is bounded.** The V7 cache is a plain dict on a module-level
+    singleton planner, so every route/date any request ever asked about is held
+    for the life of the process. That is invisible with generated fares and a
+    slow leak with real ones.
+
+    **Failure is still never cached.** The V6.5 invariant is preserved
+    exactly: ``compute()`` raising stores nothing, so one timeout cannot become
+    a permanent "no flights on this route".
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = DEFAULT_OFFER_TTL_SECONDS,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
+        clock=None,
+    ) -> None:
+        self._entries: "OrderedDict[K, _ExpiringEntry[V]]" = OrderedDict()
+        self._ttl = ttl_seconds
+        self._max_entries = max_entries
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self.stats = CacheStats()
+        self.expired_evictions = 0
+        self.size_evictions = 0
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def get_or_compute(self, key: K, compute, *, expires_at: datetime | None = None) -> V:
+        """Return the cached value, or compute and store one.
+
+        ``expires_at`` lets the caller declare the provider's own deadline for
+        whatever ``compute`` is about to return. It is *not* read from the value
+        here, because this cache must stay generic over what it stores.
+        """
+        now = self._clock()
+        entry = self._entries.get(key)
+        if entry is not None:
+            if entry.expires_at > now:
+                self._entries.move_to_end(key)
+                self.stats.hits += 1
+                return entry.value
+            # Dead. Drop it and fall through to a real lookup rather than
+            # serving a fare that can no longer be bought.
+            del self._entries[key]
+            self.expired_evictions += 1
+
+        self.stats.misses += 1
+        # Deliberately outside any try/except: an exception must propagate with
+        # nothing stored. Caching a failure is how one timeout becomes a
+        # permanent absence of flights.
+        value = compute()
+        self._store(key, value, now, expires_at)
+        return value
+
+    def _store(
+        self, key: K, value: V, now: datetime, provider_expiry: datetime | None
+    ) -> None:
+        deadline = now + timedelta(seconds=self._ttl)
+        if provider_expiry is not None:
+            safe = _as_aware(provider_expiry) - timedelta(
+                seconds=EXPIRY_SAFETY_MARGIN_SECONDS
+            )
+            deadline = min(deadline, safe)
+        if deadline <= now:
+            # Already dead on arrival - store nothing rather than a fresh-looking
+            # entry that the very next read has to throw away.
+            return
+        self._entries[key] = _ExpiringEntry(
+            value=value, cached_at=now, expires_at=deadline
+        )
+        self._entries.move_to_end(key)
+        while len(self._entries) > self._max_entries:
+            self._entries.popitem(last=False)
+            self.size_evictions += 1
+
+    def purge_expired(self) -> int:
+        now = self._clock()
+        dead = [k for k, e in self._entries.items() if e.expires_at <= now]
+        for key in dead:
+            del self._entries[key]
+        self.expired_evictions += len(dead)
+        return len(dead)
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+    @property
+    def entries(self) -> int:
+        return len(self._entries)
+
+
+def _as_aware(moment: datetime) -> datetime:
+    """UTC-aware, so comparing a provider timestamp to our clock cannot raise."""
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)

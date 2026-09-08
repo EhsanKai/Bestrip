@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .baggage import BaggagePolicy
 from .freshness import PriceProvenance
+from .provider_reference import ProviderOfferReference
 
 
 class TransportType(str, Enum):
@@ -54,6 +55,14 @@ class TransportOption(BaseModel):
     unknown rather than unlimited. :attr:`price_per_person` stays the **bare
     fare**: baggage is never folded into it, because this field is what the
     provider quoted and what ``recheck`` re-finds later.
+    """
+
+    provider_ref: "ProviderOfferReference | None" = None
+    """Where this fare came from, and when it dies (V7.5).
+
+    ``None`` for synthetic fares, which are fabricated and therefore neither
+    expire nor can be booked. A real provider fills this so the engine can ask
+    "is this still quotable?" without learning what a Duffel offer is.
     """
 
     provenance: "PriceProvenance | None" = None

@@ -51,6 +51,13 @@ class ProviderFailureKind(str, Enum):
     """A quote arrived in a currency nothing can convert. A misconfiguration."""
 
     STALE_OFFER = "STALE_OFFER"
+    CALL_BUDGET_EXHAUSTED = "CALL_BUDGET_EXHAUSTED"
+    """The search stopped asking before it stopped needing answers (V7.5).
+
+    A bounded-coverage result, not an empty market. Reporting it as NO_RESULTS
+    would tell a traveller no such trip exists when the truth is that we chose
+    not to look any further.
+    """
     AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
     RATE_LIMITED = "RATE_LIMITED"
 
@@ -95,6 +102,12 @@ FAILURE_MESSAGES: dict[ProviderFailureKind, str] = {
         "We could not authenticate with the provider."
     ),
     ProviderFailureKind.RATE_LIMITED: "We are being rate limited by the provider.",
+    ProviderFailureKind.CALL_BUDGET_EXHAUSTED: (
+        # Says what we did, not what exists. "We looked at part of the market"
+        # and "the market is empty" are different sentences, and only one of
+        # them is true here.
+        "We searched part of the market for this trip, not all of it."
+    ),
 }
 
 

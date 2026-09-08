@@ -8,6 +8,7 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..profiles import ProfileName
+from .baggage import BaggageRequirement
 from .destination import ATTRIBUTES, EXPERIENCE_ATTRIBUTES
 from .transport import TransportType
 
@@ -126,6 +127,15 @@ class TripRequest(BaseModel):
 
     accommodation_preference: AccommodationPreference = AccommodationPreference.BALANCED
     travel_style: TravelStyle = TravelStyle.BALANCED
+
+    baggage: BaggageRequirement = BaggageRequirement.NONE
+    """What the traveller needs to bring (V7 Phase 3).
+
+    ``NONE`` is the default and means "they did not say", which must leave
+    every pre-Phase-3 result byte-identical. Naming a requirement does not
+    change which trips are found - it changes what Detoura is willing to claim
+    about their price.
+    """
 
     profile: ProfileName | None = None
     """Which recommendation profile to optimize for.

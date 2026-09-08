@@ -388,6 +388,42 @@ def build_metrics(
     return [_compare_metric(name, before[name], after[name]) for name in DIRECTIONS]
 
 
+def _compare_baggage(before, after) -> tuple[float | None, list[str]]:
+    """The baggage difference, or an honest account of why there isn't one.
+
+    A delta is produced only when **both** sides were actually quoted. The
+    tempting failure is to treat one known side and one unknown side as a
+    difference - "we're 30 cheaper" when our own baggage cost is unquoted is
+    exactly the all-in saving the brief forbids claiming.
+
+    Returns ``(delta, unknowns)``. ``unknowns`` names which side is missing, so
+    the reader learns *whose* baggage is unpriced rather than being told
+    something vague is absent.
+    """
+    if before is None and after is None:
+        # No requirement was given - but silence is not the same as "no bags
+        # needed". Every fare in this catalog has an unstated allowance, so the
+        # honest report is still that baggage is unpriced on both sides. This
+        # is the brief's Example A: a EUR 39 fare with an unknown cabin bag
+        # must say so, not let the reader assume the fare covers travelling.
+        return None, ["baggage"]
+
+    unknowns: list[str] = []
+    # `is_priceable`, not `is_complete`: a requirement that cannot be met on
+    # one side is not a known zero on that side, and differencing against it
+    # would manufacture a saving out of an impossibility.
+    before_known = before is not None and before.is_priceable
+    after_known = after is not None and after.is_priceable
+    if not before_known:
+        unknowns.append("your trip's baggage")
+    if not after_known:
+        unknowns.append("this trip's baggage")
+
+    if before_known and after_known:
+        return round(after.known_total - before.known_total, 2), []
+    return None, unknowns
+
+
 def compare_trips(
     itinerary: Itinerary, baseline: BaselineResult | None
 ) -> TripComparison | None:
@@ -451,9 +487,7 @@ def compare_trips(
 
     duration_delta = round(itinerary.duration_days - baseline.duration_days, 2)
 
-    # Stated on every comparison until Phase 3 gives baggage a real number.
-    # Silence here would let a reader assume baggage was already priced in.
-    unknowns = ["baggage"]
+    baggage_delta, unknowns = _compare_baggage(baseline.baggage, itinerary.baggage)
 
     return TripComparison(
         original_destination=baseline.destination,
@@ -467,7 +501,7 @@ def compare_trips(
         experience_delta=by_name["experience"].delta,
         preference_match_delta=by_name["preference_match"].delta,
         accommodation_delta=by_name["accommodation"].delta,
-        baggage_delta=None,
+        baggage_delta=baggage_delta,
         original_duration_days=baseline.duration_days,
         detoura_duration_days=itinerary.duration_days,
         duration_days_delta=duration_delta,

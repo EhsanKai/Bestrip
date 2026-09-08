@@ -11,6 +11,7 @@ from collections import defaultdict
 from datetime import date
 from typing import Iterable, Protocol, runtime_checkable
 
+from ..data.synthetic_baggage import BaggageScenario
 from ..data.synthetic_transport import (
     CONNECTIONS,
     NETWORK_END,
@@ -56,6 +57,7 @@ class SyntheticTransportDataProvider:
         end_date: date = NETWORK_END,
         price_variation: bool = True,
         simulate_scarcity: bool = False,
+        baggage: "BaggageScenario | None" = None,
     ) -> None:
         self._connections: dict[tuple[str, str], list[Connection]] = defaultdict(list)
         for connection in connections if connections is not None else CONNECTIONS:
@@ -67,6 +69,10 @@ class SyntheticTransportDataProvider:
         #: reporting availability as *unknown*, which is what a feed without
         #: inventory data looks like and what every published number assumed.
         self._simulate_scarcity = simulate_scarcity
+        #: Baggage scenario for this provider's fares. ``None`` - the default -
+        #: leaves every fare reporting baggage as unknown, which is what the
+        #: real feeds behind this protocol actually do today.
+        self._baggage = baggage
         self._cache: dict[tuple[str, str, date], list[TransportOption]] = {}
         self.search_calls = 0
 
@@ -93,6 +99,7 @@ class SyntheticTransportDataProvider:
                     departure_date,
                     price_variation=self._price_variation,
                     simulate_scarcity=self._simulate_scarcity,
+                    baggage=self._baggage,
                 )
             )
         # Deterministic ordering: cheapest first, then earliest, then by id.

@@ -22,6 +22,7 @@ from ..algorithms.scoring import ScoringEngine
 from ..algorithms.travel_value import TravelValueScorer
 from ..config import PlannerConfig
 from ..constraints.validator import ConstraintValidator
+from ..models.baggage import BaggageRequirement
 from ..models.debug import FilteredItinerary, FilterStage, SearchDebug
 from ..models.itinerary import (
     BaselineResult,
@@ -65,6 +66,7 @@ from .accommodation_estimator import (
     CachedAccommodationEstimator,
     ZeroAccommodationEstimator,
 )
+from .baggage_pricing import quote_trip
 from .baseline import BaselinePlanner, compare_to_baseline
 from .explanation import explanation_factors
 from .origin_resolver import OriginResolver, StaticOriginResolver
@@ -528,6 +530,15 @@ class TravelPlanner:
     ) -> Itinerary:
         value = self.travel_value.score(state, request, profile)
         breakdown = self.scoring.score(state, request)
+        # Priced after the search, not inside it. A baggage requirement does
+        # not change which itineraries exist; it changes what we are willing to
+        # claim about their price, and keeping it out of the ranked total is
+        # what preserves every pre-Phase-3 signature exactly.
+        baggage = (
+            quote_trip(state.route, request.baggage, travelers=request.travelers)
+            if request.baggage is not BaggageRequirement.NONE
+            else None
+        )
         departure = state.route[0].departure
         arrival = state.route[-1].arrival
         elapsed_minutes = int((arrival - departure).total_seconds() // 60)
@@ -549,7 +560,9 @@ class TravelPlanner:
                 transport=state.transport_cost,
                 accommodation=state.accommodation_cost,
                 ground_transfer=state.ground_transfer_cost,
+                baggage=baggage.known_total if baggage is not None else 0.0,
             ),
+            baggage=baggage,
             stays=[
                 StaySummary(
                     city=stay.city,

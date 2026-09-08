@@ -23,6 +23,12 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..models.baggage import (
+    BaggageKind,
+    BaggageRequirement,
+    BaggageStatus,
+    PriceCompleteness,
+)
 from ..models.destination import EXPERIENCE_ATTRIBUTES
 from ..models.freshness import PriceFreshness
 from ..models.trip import AccommodationPreference, TransportType
@@ -143,6 +149,13 @@ class TripSearchRequest(BaseModel):
     )
 
     accommodation_preference: AccommodationPreference = AccommodationPreference.BALANCED
+    baggage: BaggageRequirement = BaggageRequirement.NONE
+    """What the traveller needs to bring (V7 Phase 3).
+
+    Omitted means "they did not say", which leaves results identical to every
+    earlier release. Naming a bag does not change which trips are found - it
+    changes what Detoura is willing to claim their price covers.
+    """
     preferred_city_count: int | None = Field(default=None, ge=1, le=6)
     transport: list[TransportType] = Field(
         default_factory=lambda: [TransportType.FLIGHT, TransportType.TRAIN],
@@ -208,6 +221,18 @@ class CostBreakdownDTO(BaseModel):
     accommodation: float
     ground_transfer: float
     total: float
+    """Transport + accommodation + ground transfer. Equals ``total_price``.
+
+    Deliberately **excludes** ``baggage``: the three named components above sum
+    to exactly this figure, and it is the number the optimizer ranked on. A
+    breakdown whose parts do not add up to its own total is worse than none.
+    """
+    baggage: float = 0.0
+    """Baggage fees actually quoted, reported outside :attr:`total` (V7).
+
+    Zero means "nothing quoted" *or* "nothing requested" - see
+    ``TripRecommendation.baggage.completeness`` before showing it as a price.
+    """
 
 
 class LegDTO(BaseModel):
@@ -226,7 +251,10 @@ class LegDTO(BaseModel):
     mode: str
     operator: str
     price_per_person: float
+    """The bare fare. Baggage is never folded in here (V7 Phase 3)."""
     seats_available: int | None = None
+    baggage: list[BaggageAllowanceDTO] = Field(default_factory=list)
+    """What this fare says about each kind of bag. Empty when it said nothing."""
 
 
 class StayDTO(BaseModel):
@@ -255,6 +283,46 @@ class StayDTO(BaseModel):
     ``None`` means say nothing. A note is worse than silence when it is
     manufactured from a premium of zero.
     """
+
+
+class BaggageAllowanceDTO(BaseModel):
+    """What one fare says about one kind of bag (V7 Phase 3)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: BaggageKind
+    status: BaggageStatus
+    price_per_person: float | None = None
+    """``null`` means *not quoted*. It never means free.
+
+    A client that renders this as 0 has reintroduced the exact bug this phase
+    exists to remove; ``status`` is the field to branch on.
+    """
+
+
+class BaggageDTO(BaseModel):
+    """What the requested baggage costs across the whole trip.
+
+    ``known_total`` and ``total_for_display`` are deliberately different
+    fields. The first is a real sum of real quotes and may be shown as such;
+    the second is ``null`` whenever anything is unquoted, so a partial figure
+    cannot be rendered as a final price by a client that simply reached for the
+    total.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    requirement: BaggageRequirement
+    known_total: float
+    currency: str
+    completeness: PriceCompleteness
+    unknown_legs: int
+    unavailable_legs: int
+    satisfiable: bool
+    total_for_display: float | None
+    """``null`` when any required bag is unpriced. Not a total in that case."""
+    note: str
+    """One line about the bags, assembled from the numbers above."""
 
 
 class DestinationMatchDTO(BaseModel):
@@ -397,6 +465,20 @@ class TripRecommendation(BaseModel):
     nights: list[int]
 
     total_price: float
+    """The fare-based total: transport, rooms and transfers. Excludes baggage.
+
+    Equals ``costs.total``. The all-in figure, when one honestly exists, is
+    :attr:`total_with_known_baggage`.
+    """
+    total_with_known_baggage: float | None = None
+    """Fare plus every quoted baggage fee, or ``null`` when no honest total
+    exists (V7 Phase 3).
+
+    ``null`` whenever a required bag is unpriced or unbuyable on any leg -
+    which is a different statement from "baggage is free", and the reason this
+    is a separate nullable field rather than a silently larger
+    :attr:`total_price`.
+    """
     price_per_person: float
     currency: str
     costs: CostBreakdownDTO
@@ -436,6 +518,8 @@ class TripRecommendation(BaseModel):
     price_freshness: PriceFreshness
     availability: AvailabilityStatus
 
+    baggage: BaggageDTO | None = None
+    """``null`` when no baggage requirement was given (V7 Phase 3)."""
     baseline_comparison: BaselineComparisonDTO | None = None
     comparison: TripComparisonDTO | None = None
     """Your idea versus this one, in full (V7).

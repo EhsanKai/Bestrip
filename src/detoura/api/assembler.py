@@ -25,8 +25,11 @@ from ..models.trip import TripRequest
 from ..providers.failures import FailureLog
 from ..search_modes import SearchMode, deeper_than
 from ..services.confidence import RecommendationConfidence, SearchQuality, assess
+from ..services.baggage_pricing import describe as describe_baggage, policy_of
 from ..services.trip_comparison import compare_trips
 from .contracts import (
+    BaggageAllowanceDTO,
+    BaggageDTO,
     TripComparisonDTO,
     AvailabilityStatus,
     BaselineComparisonDTO,
@@ -50,6 +53,9 @@ from .contracts import (
 #: tests and tuning, and a UI that printed all of them would be noise.
 FACTOR_PHRASES: dict[ExplanationFactor, str] = {
     ExplanationFactor.GOOD_BUDGET_USAGE: "Uses your budget well",
+    ExplanationFactor.BAGGAGE_COST_UNKNOWN: "Baggage cost unknown - total not confirmed",
+    ExplanationFactor.BAGGAGE_EXCEEDS_BUDGET: "Over budget once baggage is added",
+    ExplanationFactor.BAGGAGE_NOT_AVAILABLE: "This trip cannot carry the bag you asked for",
     ExplanationFactor.LEAVES_BUDGET_UNUSED: "Comes in well under budget",
     ExplanationFactor.CHEAPER_THAN_BASELINE: "Cheaper than your original idea",
     ExplanationFactor.STRONG_PREFERENCE_MATCH: "Strong match for your interests",
@@ -248,9 +254,30 @@ def recommendation_dto(
     ][:MAX_HIGHLIGHTS]
 
     comparison = compare_trips(itinerary, result.baseline)
+    baggage = (
+        BaggageDTO(
+            requirement=itinerary.baggage.requirement,
+            known_total=itinerary.baggage.known_total,
+            currency=itinerary.baggage.currency,
+            completeness=itinerary.baggage.completeness,
+            unknown_legs=itinerary.baggage.unknown_legs,
+            unavailable_legs=itinerary.baggage.unavailable_legs,
+            satisfiable=itinerary.baggage.satisfiable,
+            total_for_display=itinerary.baggage.total_for_display,
+            note=describe_baggage(itinerary.baggage),
+        )
+        if itinerary.baggage is not None
+        else None
+    )
 
     return TripRecommendation(
         id=f"{itinerary.rank}-" + "-".join(itinerary.route_nodes).lower().replace(" ", ""),
+        baggage=baggage,
+        total_with_known_baggage=(
+            itinerary.total_with_known_baggage
+            if itinerary.baggage is not None and itinerary.baggage.is_priceable
+            else None
+        ),
         comparison=(
             TripComparisonDTO.model_validate(comparison.model_dump())
             if comparison is not None
@@ -274,6 +301,7 @@ def recommendation_dto(
             accommodation=itinerary.cost_breakdown.accommodation,
             ground_transfer=itinerary.cost_breakdown.ground_transfer,
             total=itinerary.cost_breakdown.total,
+            baggage=itinerary.cost_breakdown.baggage,
         ),
         usable_hours=round(itinerary.usable_destination_minutes / 60, 1),
         travel_hours=round(itinerary.total_transport_minutes / 60, 1),
@@ -326,6 +354,30 @@ def recommendation_dto(
                 operator=leg.operator,
                 price_per_person=leg.price_per_person,
                 seats_available=leg.seats_available,
+                # Empty when the fare said nothing. Deliberately not filled
+                # with three UNKNOWN rows: an empty list reads as "no baggage
+                # information", which is the truth, while three rows of
+                # "unknown" would imply the provider was asked and answered.
+                baggage=(
+                    [
+                        BaggageAllowanceDTO(
+                            kind=allowance.kind,
+                            status=allowance.status,
+                            price_per_person=(
+                                allowance.price.amount
+                                if allowance.price is not None
+                                else None
+                            ),
+                        )
+                        for allowance in (
+                            policy_of(leg).personal_item,
+                            policy_of(leg).cabin_bag,
+                            policy_of(leg).checked_bag,
+                        )
+                    ]
+                    if leg.baggage is not None
+                    else []
+                ),
             )
             for leg in itinerary.legs
         ],

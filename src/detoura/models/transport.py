@@ -7,6 +7,7 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .baggage import BaggagePolicy
 from .freshness import PriceProvenance
 
 
@@ -43,6 +44,16 @@ class TransportOption(BaseModel):
     ``None`` is *unknown*, not *unlimited*. A real feed that quotes a fare
     without an inventory count must still be bookable, so unknown means the
     search proceeds; ``0`` is a genuine sell-out and the leg is not offered.
+    """
+
+    baggage: "BaggagePolicy | None" = None
+    """What this fare says about baggage, or ``None`` if it said nothing (V7).
+
+    ``None`` reads as three UNKNOWN allowances, never as "no restrictions" -
+    the same rule ``seats_available`` already follows, where ``None`` means
+    unknown rather than unlimited. :attr:`price_per_person` stays the **bare
+    fare**: baggage is never folded into it, because this field is what the
+    provider quoted and what ``recheck`` re-finds later.
     """
 
     provenance: "PriceProvenance | None" = None

@@ -309,9 +309,12 @@ def test_unsupported_operations_are_named(planned):
     derived = derive_request(
         request, original,
         patch_of(lock(original.cities[0]),
-                 {"op": "change_baggage_requirement", "baggage": "cabin_bag"}),
+                 {"op": "lock_stay_duration", "city": original.cities[0]}),
     )
-    assert "change_baggage_requirement" in derived.unsupported
+    # `change_baggage_requirement` used to be the example here; Phase 3
+    # promoted it to a supported operation, so the guarantee is now
+    # demonstrated with one that is still declared-but-not-carried-out.
+    assert "lock_stay_duration" in derived.unsupported
 
 
 # ---------------------------------------------------------------------------
@@ -479,11 +482,11 @@ def test_api_unsupported_operation_is_named_not_swallowed(searched):
     body = {
         "trip_id": trip["id"], "search": SEARCH, "trip": _selected(trip),
         "patch": {"operations": [{"op": "lock_city", "city": trip["cities"][0]},
-                                 {"op": "change_baggage_requirement",
-                                  "baggage": "cabin_bag"}]},
+                                 {"op": "lock_stay_duration",
+                                  "city": trip["cities"][0]}]},
     }
     payload = client.post("/api/v1/trips/reoptimize", json=body).json()
-    assert "change_baggage_requirement" in payload["unsupported_operations"]
+    assert "lock_stay_duration" in payload["unsupported_operations"]
 
 
 # ---------------------------------------------------------------------------

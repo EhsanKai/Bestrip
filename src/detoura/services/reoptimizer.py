@@ -31,6 +31,7 @@ from ..data.destinations import canonical_key
 from ..models.itinerary import Itinerary
 from ..models.patch import (
     AddCity,
+    ChangeBaggageRequirement,
     ChangeBudget,
     ChangeTripDuration,
     ExcludeCity,
@@ -122,6 +123,7 @@ def derive_request(
     avoid = {_fold(c): c for c in request.avoid_destinations}
     budget = request.budget
     duration_days = request.duration_days
+    baggage = request.baggage
     city_count = request.preferred_city_count
 
     locked_here: set[str] = set()
@@ -169,6 +171,8 @@ def derive_request(
             budget = operation.budget
         elif isinstance(operation, ChangeTripDuration):
             duration_days = operation.duration_days
+        elif isinstance(operation, ChangeBaggageRequirement):
+            baggage = operation.baggage
 
     if bare_replacements:
         # "Replace this city" must not become "remove it", so a target count is
@@ -204,6 +208,7 @@ def derive_request(
                 "budget": budget,
                 "duration_days": duration_days,
                 "preferred_city_count": city_count,
+                "baggage": baggage,
             }
         )
         # `model_copy` skips validation, so the derived request is re-validated
@@ -343,6 +348,8 @@ def _describe(patch: TripPatch) -> list[str]:
             described.append(f"budget {operation.budget:.0f}")
         elif isinstance(operation, ChangeTripDuration):
             described.append(f"{operation.duration_days} days")
+        elif isinstance(operation, ChangeBaggageRequirement):
+            described.append(f"bring a {operation.baggage.value.replace('_', ' ')}")
         else:
             described.append(operation.op.replace("_", " "))
     return described

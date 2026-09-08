@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
 from ..models.transport import TransportOption, TransportType
+from .synthetic_baggage import BaggageScenario, policy_for
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +228,7 @@ def build_options(
     *,
     price_variation: bool = True,
     simulate_scarcity: bool = False,
+    baggage: "BaggageScenario | None" = None,
 ) -> list[TransportOption]:
     """Materialize the timetable of ``connection`` on ``departure_date``.
 
@@ -266,6 +268,14 @@ def build_options(
                     seats_left(connection, departure_date, slot)
                     if simulate_scarcity
                     else None
+                ),
+                # ``None`` unless a scenario was asked for, so every fare keeps
+                # reporting baggage as unknown by default - which is both what
+                # a feed with no baggage data looks like and what every
+                # published golden signature assumed.
+                baggage=policy_for(
+                    baggage,
+                    f"{connection.origin}-{connection.destination}-{slot}",
                 ),
             )
         )

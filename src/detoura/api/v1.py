@@ -107,6 +107,7 @@ def to_trip_request(body: TripSearchRequest) -> TripRequest:
         disliked_experiences=dislikes,
         preferred_city_count=body.preferred_city_count,
         accommodation_preference=body.accommodation_preference,
+        baggage=body.baggage,
         preferences=TravelPreferences(**weights) if weights else TravelPreferences(),
         profile=body.profile,
     )

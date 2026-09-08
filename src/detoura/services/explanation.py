@@ -51,15 +51,41 @@ def explanation_factors(
     baseline: BaselineResult | None = None,
 ) -> list[ExplanationFactor]:
     """Derive the reasons this itinerary is worth showing, in a stable order."""
-    factors: list[ExplanationFactor] = [ExplanationFactor.FITS_BUDGET]
     value = itinerary.value_breakdown
 
     # --- money -------------------------------------------------------
-    utilization = itinerary.total_cost / request.budget if request.budget else 0.0
-    if utilization < UNDERSPEND:
-        factors.append(ExplanationFactor.LEAVES_BUDGET_UNUSED)
-    elif utilization <= 1.0:
-        factors.append(ExplanationFactor.GOOD_BUDGET_USAGE)
+    # The search guarantees the *fare* fits the budget, which is why
+    # FITS_BUDGET used to be unconditional. Once a required bag carries a fee,
+    # that guarantee no longer covers what the traveller actually pays: a fully
+    # known EUR 120 of baggage can put a EUR 385 trip EUR 55 over a EUR 450
+    # budget while every number involved is certain. Claiming "fits your
+    # budget" there is not an omission, it is a false statement made from
+    # complete information.
+    chargeable = itinerary.total_with_known_baggage
+    baggage_provable = itinerary.baggage is None or itinerary.baggage.is_priceable
+
+    factors: list[ExplanationFactor] = []
+    unbuyable = itinerary.baggage is not None and not itinerary.baggage.satisfiable
+    if unbuyable:
+        # Not a pricing gap. The traveller asked to bring something this
+        # itinerary will not carry, which is a fact about the trip rather than
+        # about our knowledge of it.
+        factors.append(ExplanationFactor.BAGGAGE_NOT_AVAILABLE)
+    elif not baggage_provable:
+        # Neither confirmed nor denied. The honest report is that we cannot
+        # tell, which is a different fact from "this is too expensive".
+        factors.append(ExplanationFactor.BAGGAGE_COST_UNKNOWN)
+    elif chargeable > request.budget:
+        factors.append(ExplanationFactor.BAGGAGE_EXCEEDS_BUDGET)
+    else:
+        factors.append(ExplanationFactor.FITS_BUDGET)
+
+    utilization = chargeable / request.budget if request.budget else 0.0
+    if baggage_provable and utilization <= 1.0:
+        if utilization < UNDERSPEND:
+            factors.append(ExplanationFactor.LEAVES_BUDGET_UNUSED)
+        else:
+            factors.append(ExplanationFactor.GOOD_BUDGET_USAGE)
     if baseline is not None and itinerary.total_cost < baseline.total_cost:
         factors.append(ExplanationFactor.CHEAPER_THAN_BASELINE)
     if itinerary.total_cost > 0:

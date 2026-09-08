@@ -22,6 +22,7 @@ from ..models.itinerary import (
     Itinerary,
 )
 from ..models.accommodation import AccommodationOption
+from ..models.baggage import BaggageRequirement
 from ..models.search import SearchState
 from ..models.transfer import GroundTransferOption
 from ..models.transport import TransportOption
@@ -32,6 +33,7 @@ from ..providers.destinations import DestinationProvider
 from ..providers.ground_transfer import FreeGroundTransferProvider, GroundTransferProvider
 from ..providers.transport import TransportDataProvider
 from ..usable_time import usable_minutes
+from .baggage_pricing import quote_trip
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +202,15 @@ class BaselinePlanner:
         outbound, inbound = best.outbound, best.inbound
         elapsed_minutes = int((inbound.arrival - outbound.departure).total_seconds() // 60)
         scores = self._scores(best, request, scorer, profile)
+        baggage = (
+            quote_trip(
+                [best.outbound, best.inbound],
+                request.baggage,
+                travelers=request.travelers,
+            )
+            if request.baggage is not BaggageRequirement.NONE
+            else None
+        )
         # Recorded whether or not a scorer was supplied: the time spent on the
         # airport run is a fact about the trip, not a score of it.
         transfer_minutes = (
@@ -227,6 +238,7 @@ class BaselinePlanner:
                 day_start=self.config.usable_day_start,
                 day_end=self.config.usable_day_end,
             ),
+            baggage=baggage,
             **scores,
         )
 

@@ -27,6 +27,7 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .baggage import BaggageRequirement
 from .trip import AccommodationPreference, TransportType
 
 
@@ -48,12 +49,14 @@ class PatchOp(str, Enum):
     CHANGE_BUDGET = "change_budget"
     CHANGE_TRIP_DURATION = "change_trip_duration"
 
+    CHANGE_BAGGAGE_REQUIREMENT = "change_baggage_requirement"
+
     # --- declared, refused explicitly until a later phase ---------------
     CHANGE_STAY_DURATION = "change_stay_duration"
     LOCK_STAY_DURATION = "lock_stay_duration"
     CHANGE_TRANSPORT_PREFERENCE = "change_transport_preference"
     CHANGE_ACCOMMODATION_PREFERENCE = "change_accommodation_preference"
-    CHANGE_BAGGAGE_REQUIREMENT = "change_baggage_requirement"
+
     CHANGE_DEPARTURE_LOCATION = "change_departure_location"
     CHANGE_RETURN_LOCATION = "change_return_location"
 
@@ -69,6 +72,7 @@ SUPPORTED_OPS: frozenset[PatchOp] = frozenset(
         PatchOp.EXCLUDE_CITY,
         PatchOp.CHANGE_BUDGET,
         PatchOp.CHANGE_TRIP_DURATION,
+        PatchOp.CHANGE_BAGGAGE_REQUIREMENT,
     }
 )
 
@@ -170,15 +174,15 @@ class ChangeAccommodationPreference(_Operation):
 
 
 class ChangeBaggageRequirement(_Operation):
-    """Accepted and recorded now; priced in Phase 3.
+    """Change what the traveller needs to bring (honoured since Phase 3).
 
-    Refusing it outright would force a client change the day baggage lands.
-    Accepting it silently would be worse - so it is echoed back in the
-    unsupported list until there is a baggage model to honour it.
+    Typed as the enum rather than a free string so an unrecognised bag is a
+    validation error at the boundary instead of a requirement that silently
+    matches nothing.
     """
 
     op: Literal["change_baggage_requirement"] = "change_baggage_requirement"
-    baggage: str = Field(min_length=1, max_length=40)
+    baggage: BaggageRequirement
 
 
 class ChangeDepartureLocation(_Operation):

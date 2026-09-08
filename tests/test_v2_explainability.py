@@ -165,11 +165,20 @@ def test_response_carries_the_v2_fields(client):
     body = client.post("/plan-trip", json=PAYLOAD).json()
     assert body["profile"] == "BEST_VALUE"
     itinerary = body["recommendations"][0]
+    # V7 Phase 3 added `baggage` as a fourth component. Additive for real
+    # clients - JSON consumers ignore keys they do not know - but this
+    # assertion pins the exact shape on purpose, so the new component is named
+    # here rather than the check being loosened to `>=`. A silently growing
+    # cost breakdown is how a component gets double-counted unnoticed.
     assert set(itinerary["cost_breakdown"]) == {
         "transport",
         "accommodation",
         "ground_transfer",
+        "baggage",
     }
+    assert itinerary["cost_breakdown"]["baggage"] == 0.0, (
+        "no baggage was requested, so nothing should be charged for it"
+    )
     assert itinerary["usable_destination_minutes"] > 0
     assert itinerary["total_travel_minutes"] > 0
     assert itinerary["explanation_factors"]

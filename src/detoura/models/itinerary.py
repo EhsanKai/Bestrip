@@ -8,6 +8,7 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..profiles import ProfileName
+from .baggage import BaggageQuote
 from .debug import SearchDebug
 from .freshness import PriceProvenance
 from .transport import TransportOption
@@ -104,9 +105,32 @@ class CostBreakdown(BaseModel):
     transport: float = 0.0
     accommodation: float = 0.0
     ground_transfer: float = 0.0
+    baggage: float = 0.0
+    """Baggage fees that were actually quoted (V7 Phase 3).
+
+    Reported **alongside** the other three, never inside :attr:`total`.
+
+    An earlier cut folded it in, which gave one trip two different totals: the
+    figure the optimizer ranked on and a larger one the breakdown reported,
+    with the three named components summing to neither. A cost breakdown whose
+    parts do not add up to its own total is worse than no breakdown.
+
+    Zero here means one of two very different things, and this number alone
+    cannot tell them apart: no baggage was requested, or none was quoted. The
+    distinction lives in
+    :class:`~detoura.models.baggage.BaggageQuote.completeness`, and any surface
+    that prints this figure must consult it.
+    """
 
     @property
     def total(self) -> float:
+        """The fare-based total: exactly what the optimizer ranked on.
+
+        Deliberately excludes :attr:`baggage`, so this always equals
+        :attr:`Itinerary.total_cost`. The all-in figure is
+        :attr:`Itinerary.total_with_known_baggage`, and it is only honest when
+        the baggage quote is priceable.
+        """
         return round(self.transport + self.accommodation + self.ground_transfer, 2)
 
 
@@ -215,6 +239,27 @@ class ExplanationFactor(str, Enum):
     CONTAINS_DISLIKED_EXPERIENCE = "contains_disliked_experience"
     REVISITS_KNOWN_CITY = "revisits_known_city"
 
+    # --- V7 Phase 3 ---------------------------------------------------
+    BAGGAGE_COST_UNKNOWN = "baggage_cost_unknown"
+    """A required bag has no quoted fee, so the all-in price is unproven.
+
+    Emitted *instead of* FITS_BUDGET rather than alongside it. The search
+    guarantees the fare fits the budget; it cannot guarantee the fare plus an
+    unquoted mandatory fee does, and saying "fits your budget" on that basis
+    would be a claim nobody has established.
+    """
+    BAGGAGE_EXCEEDS_BUDGET = "baggage_exceeds_budget"
+    """Every fee is known, and together with the fare they exceed the budget."""
+    BAGGAGE_NOT_AVAILABLE = "baggage_not_available"
+    """The requested bag cannot be carried on at least one leg, at any price.
+
+    Distinct from :attr:`BAGGAGE_COST_UNKNOWN`. "We do not know what this
+    costs" and "you cannot bring this" are different facts, and reporting the
+    second as the first invites the traveller to assume a price exists. Phase 3
+    exists to stop exactly that kind of conflation, so it must not commit one
+    in its own explanation copy.
+    """
+
 
 class BaselineResult(BaseModel):
     """The naive single-destination round trip used as a reference point.
@@ -283,12 +328,13 @@ class BaselineResult(BaseModel):
         """
         return self.total_travel_minutes + self.ground_transfer_minutes
 
-    baggage_cost: float | None = None
-    """Party total for baggage on this trip, or ``None`` when unknown (V7).
+    baggage: "BaggageQuote | None" = None
+    """What the requested baggage costs on the traveller's own idea (V7).
 
-    ``None`` is *unknown*, never *free*. No baggage model exists yet; this is
-    the seam Phase 3 fills, and until then every comparison reports the
-    baggage difference as unknown rather than as zero.
+    ``None`` when no requirement was given. Filled by the same
+    :func:`~detoura.services.baggage_pricing.quote_trip` the recommendations
+    use, so the two sides of a comparison are measured by identical code -
+    the rule Phase 1 established after measuring transit two different ways.
     """
 
 
@@ -343,6 +389,29 @@ class Itinerary(BaseModel):
     """Per-city "why this destination?" data (V3)."""
 
     baseline_comparison: BaselineComparison | None = None
+
+    baggage: BaggageQuote | None = None
+    """What the requested baggage costs, and what is still unquoted (V7).
+
+    ``None`` when the traveller named no requirement. Deliberately *not* folded
+    into :attr:`total_cost`: that figure is what the optimizer ranked on, and
+    silently adding a post-search cost to it would mean the number shown was
+    never the number compared. Baggage is reported alongside it, with its own
+    completeness, so a partial answer cannot masquerade as a total.
+    """
+
+    @property
+    def total_with_known_baggage(self) -> float:
+        """Fare-based total plus every baggage fee that was actually quoted.
+
+        Honest only when :attr:`baggage` is complete. When it is not, this is a
+        floor and the caller must say so - which is why
+        :attr:`BaggageQuote.total_for_display` returns ``None`` in that state
+        rather than letting this number stand alone.
+        """
+        if self.baggage is None:
+            return self.total_cost
+        return round(self.total_cost + self.baggage.known_total, 2)
 
     @property
     def total_transport_minutes(self) -> int:

@@ -41,7 +41,8 @@ FROM python:3.11-slim AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    DETOURA_FRONTEND_DIST=/app/web
+    DETOURA_FRONTEND_DIST=/app/web \
+    DETOURA_DB_PATH=/app/data/detoura.db
 
 WORKDIR /app
 
@@ -52,9 +53,15 @@ RUN pip install --no-cache-dir ".[api,session]"
 
 COPY --from=web /build/dist /app/web
 
+# The commercial + ops SQLite database (V8.5). Mount a volume here to keep
+# promo codes, markup policy versions, the economics ledger and the audit
+# trail across restarts:  docker run -v detoura-data:/app/data ...
+VOLUME /app/data
+
 # Nothing here needs root, and an unprivileged runtime is one less thing to
 # reason about if the process is ever compromised.
 RUN useradd --create-home --uid 10001 detoura \
+    && mkdir -p /app/data \
     && chown -R detoura:detoura /app
 USER detoura
 

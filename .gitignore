@@ -32,5 +32,6 @@ htmlcov/
 .swarm/
 .mcp.json
 ruvector.db
+detoura.db
 *.db-shm
 *.db-wal

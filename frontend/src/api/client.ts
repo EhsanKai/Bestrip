@@ -18,6 +18,7 @@ import {
   type DestinationSummary,
   type OriginResponse,
   type ProfileName,
+  type SetCommercialOptionsRequest,
   type TravelerInput,
   type TravelPass,
   type TripRecheckRequest,
@@ -156,6 +157,13 @@ export const api = {
     return request<BookingIntent>(
       `/booking-intents/${encodeURIComponent(bookingId)}/confirm`,
       { method: "POST", body: JSON.stringify(tolerance) },
+    );
+  },
+
+  setCommercialOptions(bookingId: string, body: SetCommercialOptionsRequest) {
+    return request<BookingIntent>(
+      `/booking-intents/${encodeURIComponent(bookingId)}/commercial`,
+      { method: "POST", body: JSON.stringify(body) },
     );
   },
 

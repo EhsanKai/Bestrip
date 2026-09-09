@@ -35,6 +35,7 @@ from ..models.booking import (
     JourneyBookingIntent,
     PriceTolerance,
 )
+from ..models.commercial import CommercialQuote, ServiceTier
 from ..models.travel_pass import PassMode
 from ..models.traveler import TravelerParty
 from ..providers.duffel import (
@@ -122,6 +123,14 @@ class BookingRun:
     phase: BookingPhase = BookingPhase.AWAITING_TRAVELERS
     reconfirm_note: str = ""
     created_at: float = field(default_factory=time.monotonic)
+    # V8.5 commercial layer: the chosen Detoura service tier, the priced quote
+    # the customer sees and confirms, and a stable key for per-user promo
+    # limits. ``economics_written`` guards the one-time ledger write.
+    service_tier: ServiceTier = ServiceTier.BASIC
+    requested_promo: str | None = None
+    quote: CommercialQuote | None = None
+    user_key: str = "anonymous"
+    economics_written: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property

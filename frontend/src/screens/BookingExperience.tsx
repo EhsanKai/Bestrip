@@ -3,6 +3,9 @@ import { api } from "../api/client";
 import { DetouraApiError } from "../api/types";
 import type {
   BookingIntent,
+  CommercialSummary,
+  ServiceTier,
+  SetCommercialOptionsRequest,
   TravelPass as TravelPassData,
   TravelerInput,
   TripRecommendation,
@@ -82,6 +85,10 @@ export function BookingExperience({
   const [pass, setPass] = useState<TravelPassData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Commercial choice. Basic is the default and never a pre-selected paid
+  // upgrade; All-in-One is explicitly opt-in on the review screen.
+  const [tier, setTier] = useState<ServiceTier>("BASIC");
+  const [promoInput, setPromoInput] = useState("");
   const pollRef = useRef<number | null>(null);
 
   const legs = trip.legs;
@@ -106,11 +113,33 @@ export function BookingExperience({
           price_per_person: l.price_per_person,
         };
       }),
+      service_tier: tier,
     });
     setBookingId(created.booking_id);
     setIntent(created);
     return created.booking_id;
-  }, [bookingId, legs, trip, partySize]);
+  }, [bookingId, legs, trip, partySize, tier]);
+
+  // --- change the service tier / promo before confirming ------------------
+  const changeCommercial = useCallback(
+    async (body: SetCommercialOptionsRequest) => {
+      if (!bookingId) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const next = await api.setCommercialOptions(bookingId, body);
+        setIntent(next);
+        if (next.commercial) setTier(next.commercial.service_tier);
+      } catch (e) {
+        setError(
+          e instanceof DetouraApiError ? e.message : "Could not update the price.",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [bookingId],
+  );
 
   // --- polling while the run is in flight --------------------------------
   useEffect(() => {
@@ -234,6 +263,9 @@ export function BookingExperience({
               intent={intent}
               legs={legs}
               busy={busy}
+              promoInput={promoInput}
+              setPromoInput={setPromoInput}
+              onCommercialChange={changeCommercial}
               onBack={() => setPhase("traveler")}
               onConfirm={() => confirm(25)}
             />
@@ -369,16 +401,23 @@ function ReviewStep({
   intent,
   legs,
   busy,
+  promoInput,
+  setPromoInput,
+  onCommercialChange,
   onBack,
   onConfirm,
 }: {
   intent: BookingIntent;
   legs: TripRecommendation["legs"];
   busy: boolean;
+  promoInput: string;
+  setPromoInput: (v: string) => void;
+  onCommercialChange: (body: SetCommercialOptionsRequest) => Promise<void>;
   onBack: () => void;
   onConfirm: () => void;
 }) {
   const unknowns = intent.items.filter((i) => i.checked_baggage === "unknown");
+  const c = intent.commercial;
   return (
     <>
       <span className="eyebrow">Review your journey</span>
@@ -442,22 +481,35 @@ function ReviewStep({
         })}
       </div>
 
-      <div className="booking__summary">
-        <div>
-          <span>Trip total</span>
-          <strong>{money(intent.discovered_total, intent.currency)}</strong>
-        </div>
-        <div>
-          <span>Travellers</span>
-          <strong>{intent.party_size}</strong>
-        </div>
-        {unknowns.length > 0 && (
-          <div className="booking__summary-note">
-            {unknowns.length} leg{unknowns.length === 1 ? "" : "s"} with unknown
-            checked-baggage terms — Detoura will not claim a price it cannot stand behind.
+      {c ? (
+        <CommercialReview
+          commercial={c}
+          currency={intent.currency}
+          travellers={intent.party_size}
+          busy={busy}
+          promoInput={promoInput}
+          setPromoInput={setPromoInput}
+          onCommercialChange={onCommercialChange}
+        />
+      ) : (
+        <div className="booking__summary">
+          <div>
+            <span>Trip total</span>
+            <strong>{money(intent.discovered_total, intent.currency)}</strong>
           </div>
-        )}
-      </div>
+          <div>
+            <span>Travellers</span>
+            <strong>{intent.party_size}</strong>
+          </div>
+        </div>
+      )}
+
+      {unknowns.length > 0 && (
+        <div className="booking__summary-note">
+          {unknowns.length} leg{unknowns.length === 1 ? "" : "s"} with unknown
+          checked-baggage terms — Detoura will not claim a price it cannot stand behind.
+        </div>
+      )}
 
       <div className="booking__pay">
         <b>Payment</b>
@@ -473,6 +525,134 @@ function ReviewStep({
         </Button>
       </div>
     </>
+  );
+}
+
+function CommercialReview({
+  commercial,
+  currency,
+  travellers,
+  busy,
+  promoInput,
+  setPromoInput,
+  onCommercialChange,
+}: {
+  commercial: CommercialSummary;
+  currency: string;
+  travellers: number;
+  busy: boolean;
+  promoInput: string;
+  setPromoInput: (v: string) => void;
+  onCommercialChange: (body: SetCommercialOptionsRequest) => Promise<void>;
+}) {
+  const b = commercial.breakdown;
+  const applied = commercial.promo_accepted;
+  return (
+    <div className="booking__commercial">
+      <div className="booking__tiers" role="radiogroup" aria-label="Detoura service">
+        {commercial.tier_options.map((opt) => (
+          <button
+            type="button"
+            key={opt.tier}
+            role="radio"
+            aria-checked={opt.selected}
+            className={`booking__tier${opt.selected ? " is-on" : ""}`}
+            disabled={busy}
+            onClick={() =>
+              !opt.selected && onCommercialChange({ service_tier: opt.tier })
+            }
+          >
+            <span className="booking__tier-head">
+              <b>{opt.label}</b>
+              <span className="numeric">{money(opt.customer_total, currency)}</span>
+            </span>
+            <span className="booking__tier-sub">{opt.summary}</span>
+            <span className="booking__tier-fee">
+              Detoura service {money(opt.detoura_fee, currency)}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      <div className="booking__promo">
+        <label htmlFor="promo">Promo code</label>
+        <div className="booking__promo-row">
+          <input
+            id="promo"
+            value={promoInput}
+            disabled={busy || applied}
+            placeholder="e.g. WELCOME5"
+            onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
+          />
+          {applied ? (
+            <Button
+              variant="secondary"
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setPromoInput("");
+                void onCommercialChange({ clear_promo: true });
+              }}
+            >
+              Remove
+            </Button>
+          ) : (
+            <Button
+              variant="secondary"
+              type="button"
+              disabled={busy || promoInput.trim().length < 3}
+              onClick={() =>
+                onCommercialChange({ promo_code: promoInput.trim() })
+              }
+            >
+              Apply
+            </Button>
+          )}
+        </div>
+        {commercial.promo_message && (
+          <p
+            className={`booking__promo-msg${applied ? " is-ok" : " is-bad"}`}
+          >
+            {commercial.promo_message}
+          </p>
+        )}
+      </div>
+
+      <dl className="booking__breakdown">
+        <div>
+          <dt>Flights (supplier fare)</dt>
+          <dd className="numeric">{money(b.supplier_total, currency)}</dd>
+        </div>
+        <div>
+          <dt>
+            Detoura service · {commercial.service_tier_label}
+          </dt>
+          <dd className="numeric">{money(b.detoura_revenue_gross, currency)}</dd>
+        </div>
+        {b.tax > 0 && (
+          <div>
+            <dt>Tax</dt>
+            <dd className="numeric">{money(b.tax, currency)}</dd>
+          </div>
+        )}
+        {b.discount > 0 && (
+          <div className="booking__breakdown-discount">
+            <dt>Promo {commercial.promo_code}</dt>
+            <dd className="numeric">−{money(b.discount, currency)}</dd>
+          </div>
+        )}
+        <div className="booking__breakdown-total">
+          <dt>You pay{travellers > 1 ? ` (${travellers} travellers)` : ""}</dt>
+          <dd className="numeric">{money(b.customer_total, currency)}</dd>
+        </div>
+      </dl>
+
+      <p className="booking__breakdown-note">
+        The supplier fare is shown exactly as the airline quoted it. Detoura's
+        fee is separate and never hidden inside it.
+        {commercial.test_mode ? " Sandbox / test mode — no payment is taken." : ""}
+      </p>
+    </div>
   );
 }
 

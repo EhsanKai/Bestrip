@@ -48,7 +48,10 @@ from ..services.booking_flow import (
     create_run_from_selection,
     start_confirmation,
 )
+from ..services.booking_commercial import finalize_economics, price_run
 from ..services.booking_orchestrator import BookingPhase
+from ..models.commercial import ServiceTier
+from ..persistence import get_db
 from ..models.travel_pass import PassMode, PassStatus
 from ..services.planner import TravelPlanner
 from ..services.confidence import SearchQuality
@@ -61,9 +64,13 @@ from .contracts import (
     BookingIntentResponse,
     BookingItemStateDTO,
     ChangeDiffDTO,
+    CommercialSummaryDTO,
     ConfirmBookingRequest,
     CreateBookingIntentRequest,
     OfferChangeDTO,
+    PriceBreakdownDTO,
+    ServiceTierOptionDTO,
+    SetCommercialOptionsRequest,
     RevalidateRequest,
     RevalidateResponse,
     RevalidatedOfferDTO,
@@ -455,7 +462,97 @@ def _booking_or_404(booking_id: str):
     return run
 
 
+def _breakdown_dto(bd) -> PriceBreakdownDTO:
+    return PriceBreakdownDTO(
+        currency=bd.currency,
+        supplier_transport=bd.supplier_transport,
+        supplier_baggage=bd.supplier_baggage,
+        supplier_fees=bd.supplier_fees,
+        supplier_total=bd.supplier_total,
+        detoura_service_fee=bd.detoura_service_fee,
+        detoura_markup=bd.detoura_markup,
+        detoura_revenue_gross=bd.detoura_revenue_gross,
+        discount=bd.discount,
+        tax=bd.tax,
+        customer_total=bd.customer_total,
+        explanation=list(bd.explanation),
+    )
+
+
+_TIER_SUMMARIES = {
+    ServiceTier.BASIC: (
+        "You receive the itinerary and handle more of the booking yourself."
+    ),
+    ServiceTier.ALL_IN_ONE: (
+        "Detoura coordinates every ticket, revalidation, issuance, monitoring "
+        "and recovery support for the whole journey."
+    ),
+}
+
+
+def _commercial_dto(run) -> CommercialSummaryDTO | None:
+    """The transparent price for ``run``, plus each service tier priced with
+    the current promo so the customer compares real numbers."""
+    if run.quote is None:
+        return None
+    from ..services.commercial import CommercialPricingService
+
+    db = get_db()
+    service = CommercialPricingService(db)
+    options: list[ServiceTierOptionDTO] = []
+    for tier in (ServiceTier.BASIC, ServiceTier.ALL_IN_ONE):
+        res = service.quote(
+            supplier_transport=float(run.discovered_total),
+            currency=run.currency,
+            ticket_count=len(run.items),
+            service_tier=tier,
+            promo_code=run.requested_promo,
+            user_key=run.user_key,
+        )
+        b = res.quote.breakdown
+        options.append(ServiceTierOptionDTO(
+            tier=tier, label=tier.label, summary=_TIER_SUMMARIES[tier],
+            detoura_fee=b.detoura_revenue_gross, customer_total=b.customer_total,
+            selected=tier is run.service_tier,
+        ))
+
+    q = run.quote
+    promo_msg = ""
+    promo_ok = bool(q.promo_code)
+    if run.requested_promo and not q.promo_code:
+        # requested but not applied - say why, from a fresh evaluation
+        res = service.quote(
+            supplier_transport=float(run.discovered_total), currency=run.currency,
+            ticket_count=len(run.items), service_tier=run.service_tier,
+            promo_code=run.requested_promo, user_key=run.user_key,
+        )
+        promo_msg = res.promo.reason if res.promo else "code could not be applied"
+    elif q.promo_code:
+        promo_msg = f"{q.promo_code} applied: -{q.promo_discount:.2f} {run.currency}"
+
+    return CommercialSummaryDTO(
+        service_tier=run.service_tier,
+        service_tier_label=run.service_tier.label,
+        breakdown=_breakdown_dto(q.breakdown),
+        markup_policy=str(q.markup_policy),
+        promo_code=q.promo_code or (run.requested_promo or None),
+        promo_accepted=promo_ok,
+        promo_message=promo_msg,
+        tier_options=options,
+        test_mode=True,
+    )
+
+
+def _finalize_if_terminal(run) -> None:
+    if run.phase in _TERMINAL_PHASES and not run.economics_written:
+        try:
+            finalize_economics(run, get_db())
+        except Exception:  # a ledger write must never break a poll
+            pass
+
+
 def _intent_dto(run) -> BookingIntentResponse:
+    _finalize_if_terminal(run)
     return BookingIntentResponse(
         booking_id=run.booking_id,
         journey_reference=run.journey_reference,
@@ -469,6 +566,7 @@ def _intent_dto(run) -> BookingIntentResponse:
         reconfirm_note=run.reconfirm_note,
         party_size=run.party.size if run.party else max((i.travelers for i in run.items), default=1),
         travelers_submitted=run.party is not None,
+        commercial=_commercial_dto(run),
         items=[
             BookingItemStateDTO(
                 sequence=idx,
@@ -521,7 +619,42 @@ def create_booking_intent(body: CreateBookingIntentRequest) -> BookingIntentResp
     else:
         raise HTTPException(status_code=422, detail="provide selection_id or demo_legs")
 
+    # Price it now, so the review screen shows the transparent breakdown from
+    # the first render. The tier is the customer's choice; the server owns
+    # every amount.
+    try:
+        price_run(
+            run, get_db(),
+            service_tier=body.service_tier,
+            promo_code=body.promo_code,
+        )
+    except Exception:  # pricing must not block starting a booking
+        pass
     booking_store().put(run)
+    return _intent_dto(run)
+
+
+@router.post(
+    "/booking-intents/{booking_id}/commercial",
+    response_model=BookingIntentResponse,
+)
+def set_commercial_options(
+    booking_id: str, body: SetCommercialOptionsRequest
+) -> BookingIntentResponse:
+    """Change the service tier and/or promo code before confirmation, and get
+    the re-priced journey back. Rejected after the journey is confirmed."""
+    run = _booking_or_404(booking_id)
+    if run.phase not in (
+        BookingPhase.AWAITING_TRAVELERS,
+        BookingPhase.AWAITING_CONFIRMATION,
+    ):
+        raise HTTPException(status_code=409, detail={
+            "message": "This journey is already being booked; the price is locked.",
+        })
+    promo = None if body.clear_promo else body.promo_code
+    if body.clear_promo:
+        run.requested_promo = None
+    price_run(run, get_db(), service_tier=body.service_tier, promo_code=promo)
     return _intent_dto(run)
 
 
@@ -564,6 +697,13 @@ def confirm_booking(booking_id: str, body: ConfirmBookingRequest) -> BookingInte
     run.tolerance = PriceTolerance(
         absolute=body.tolerance_absolute, percentage=body.tolerance_percentage
     )
+    # Re-price at the moment of confirmation: a promo may have lapsed or been
+    # fully redeemed since the review screen was rendered. Whatever this
+    # yields is the price the customer confirms.
+    try:
+        price_run(run, get_db())
+    except Exception:
+        pass
     try:
         start_confirmation(run)
     except ValueError as error:
@@ -600,6 +740,7 @@ def get_travel_pass(booking_id: str) -> TravelPassResponse:
             "message": _PHASE_MESSAGES.get(run.phase, "The booking is still in progress."),
             "phase": run.phase.value,
         })
+    _finalize_if_terminal(run)
     tp = build_travel_pass(run)
     return TravelPassResponse(
         journey_reference=tp.journey_reference,

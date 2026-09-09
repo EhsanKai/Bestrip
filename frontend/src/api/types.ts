@@ -413,6 +413,8 @@ export interface DemoLegInput {
   checked?: string;
 }
 
+export type ServiceTier = "BASIC" | "ALL_IN_ONE";
+
 export interface CreateBookingIntentRequest {
   selection_id?: string | null;
   demo_trip_label?: string;
@@ -420,6 +422,50 @@ export interface CreateBookingIntentRequest {
   demo_total?: number;
   demo_travelers?: number;
   demo_legs?: DemoLegInput[];
+  service_tier?: ServiceTier;
+  promo_code?: string | null;
+}
+
+export interface SetCommercialOptionsRequest {
+  service_tier?: ServiceTier;
+  promo_code?: string | null;
+  clear_promo?: boolean;
+}
+
+export interface PriceBreakdown {
+  currency: string;
+  supplier_transport: number;
+  supplier_baggage: number;
+  supplier_fees: number;
+  supplier_total: number;
+  detoura_service_fee: number;
+  detoura_markup: number;
+  detoura_revenue_gross: number;
+  discount: number;
+  tax: number;
+  customer_total: number;
+  explanation: string[];
+}
+
+export interface ServiceTierOption {
+  tier: ServiceTier;
+  label: string;
+  summary: string;
+  detoura_fee: number;
+  customer_total: number;
+  selected: boolean;
+}
+
+export interface CommercialSummary {
+  service_tier: ServiceTier;
+  service_tier_label: string;
+  breakdown: PriceBreakdown;
+  markup_policy: string;
+  promo_code: string | null;
+  promo_accepted: boolean;
+  promo_message: string;
+  tier_options: ServiceTierOption[];
+  test_mode: boolean;
 }
 
 export interface TravelerInput {
@@ -468,6 +514,7 @@ export interface BookingIntent {
   travelers_submitted: boolean;
   items: BookingItemStateDTO[];
   pass_available: boolean;
+  commercial: CommercialSummary | null;
 }
 
 export interface TravelPassTicket {

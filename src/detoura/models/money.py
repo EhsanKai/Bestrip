@@ -170,3 +170,28 @@ def _round(amount: float) -> float:
     return float(
         Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     )
+
+
+def round_half_up(amount: float) -> float:
+    """Public: round a monetary amount half-up to cents.
+
+    The commercial layer composes several amounts (supplier cost, a markup, a
+    percentage discount) that each need rounding at the same, single place.
+    """
+    return _round(amount)
+
+
+def to_minor_units(amount: float) -> int:
+    """Cents as an integer, for storage. ``12.34`` -> ``1234``.
+
+    Persistence keeps money as integer minor units so a stored ledger row is
+    never subject to binary-float drift.
+    """
+    return int(
+        Decimal(str(amount)).scaleb(2).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
+
+
+def from_minor_units(minor: int) -> float:
+    """The inverse of :func:`to_minor_units`. ``1234`` -> ``12.34``."""
+    return float((Decimal(int(minor)) / Decimal(100)).quantize(Decimal("0.01")))

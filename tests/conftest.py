@@ -30,6 +30,19 @@ from detoura.services.origin_resolver import StaticOriginResolver
 from detoura.services.planner import TravelPlanner
 from detoura.usable_time import usable_minutes
 
+
+@pytest.fixture(autouse=True)
+def _isolated_commercial_db(tmp_path, monkeypatch):
+    """V8.5: every test gets a fresh, throwaway commercial/ops database so
+    nothing leaks between tests and no `detoura.db` is written into the repo.
+    """
+    import detoura.persistence.db as _db
+
+    monkeypatch.setenv("DETOURA_DB_PATH", str(tmp_path / "detoura-test.db"))
+    monkeypatch.setattr(_db, "_DB", None)
+    yield
+
+
 WINDOW_FROM = date(2026, 9, 10)
 WINDOW_TO = date(2026, 9, 15)
 

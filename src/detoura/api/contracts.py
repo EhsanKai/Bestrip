@@ -30,6 +30,7 @@ from ..models.baggage import (
     PriceCompleteness,
 )
 from ..models.booking import BookingState
+from ..models.commercial import ServiceTier
 from ..models.destination import EXPERIENCE_ATTRIBUTES
 from ..models.freshness import PriceFreshness
 from ..models.revalidation import OfferRevalidationStatus, RevalidationStatus
@@ -1080,7 +1081,12 @@ class DemoLegInput(BaseModel):
 
 
 class CreateBookingIntentRequest(BaseModel):
-    """Start a booking from a server-issued selection, or a demo trip."""
+    """Start a booking from a server-issued selection, or a demo trip.
+
+    ``service_tier`` and ``promo_code`` are the customer's *choice*, not a
+    price. The server computes every amount; a price, fee, markup or discount
+    in this body is ignored because there is no field for one.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -1090,6 +1096,68 @@ class CreateBookingIntentRequest(BaseModel):
     demo_total: float = Field(default=0.0, ge=0.0, le=1_000_000.0)
     demo_travelers: int = Field(default=1, ge=1, le=9)
     demo_legs: list[DemoLegInput] = Field(default_factory=list, max_length=8)
+    service_tier: ServiceTier = ServiceTier.BASIC
+    promo_code: str | None = Field(default=None, max_length=40)
+
+
+class SetCommercialOptionsRequest(BaseModel):
+    """Change the tier and/or promo on a booking that has not been confirmed,
+    and get the re-priced breakdown back."""
+
+    model_config = ConfigDict(frozen=True)
+
+    service_tier: ServiceTier | None = None
+    promo_code: str | None = Field(default=None, max_length=40)
+    clear_promo: bool = False
+
+
+class PriceBreakdownDTO(BaseModel):
+    """A transparent, itemised price. Every unavoidable Detoura amount is here
+    and consistent with what search showed - the supplier figure is never
+    quietly inflated."""
+
+    model_config = ConfigDict(frozen=True)
+
+    currency: str
+    supplier_transport: float
+    supplier_baggage: float
+    supplier_fees: float
+    supplier_total: float
+    detoura_service_fee: float
+    detoura_markup: float
+    detoura_revenue_gross: float
+    discount: float
+    tax: float
+    customer_total: float
+    explanation: list[str] = Field(default_factory=list)
+
+
+class ServiceTierOptionDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    tier: ServiceTier
+    label: str
+    summary: str
+    detoura_fee: float
+    customer_total: float
+    selected: bool
+
+
+class CommercialSummaryDTO(BaseModel):
+    """The commercial view of a booking: the chosen tier, the price breakdown,
+    the promo outcome, and the tier options with their prices so the customer
+    can choose with the numbers in front of them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    service_tier: ServiceTier
+    service_tier_label: str
+    breakdown: PriceBreakdownDTO
+    markup_policy: str
+    promo_code: str | None = None
+    promo_accepted: bool = False
+    promo_message: str = ""
+    tier_options: list[ServiceTierOptionDTO] = Field(default_factory=list)
+    test_mode: bool = True
 
 
 class TravelerInput(BaseModel):
@@ -1156,6 +1224,9 @@ class BookingIntentResponse(BaseModel):
     items: list[BookingItemStateDTO]
     pass_available: bool
     """True once the run reached a terminal phase and a pass can be fetched."""
+    commercial: CommercialSummaryDTO | None = None
+    """The transparent price: supplier fare vs. Detoura's own fee, the chosen
+    service tier and the promo outcome. Present once the intent is priced."""
 
 
 class TravelPassTicketDTO(BaseModel):

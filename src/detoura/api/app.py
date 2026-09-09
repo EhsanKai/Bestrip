@@ -26,6 +26,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from ..persistence import bootstrap as bootstrap_db
 from ..services.feedback import configure_sessions
 from ..services.session_store import store_from_env
 from .routes import router as engine_router
@@ -78,6 +79,10 @@ def create_app() -> FastAPI:
     # profile. Configuring it here rather than at import time keeps the choice
     # observable in tests, which build the app explicitly.
     configure_sessions(store_from_env())
+
+    # The commercial + ops database (SQLite). Seeds the example markup policy
+    # and promo on first run. Path from DETOURA_DB_PATH; see the Dockerfile.
+    bootstrap_db()
 
     app = FastAPI(
         title="Detoura",

@@ -169,6 +169,17 @@ def item_from_selected(seq: int, offer: SelectedOffer) -> ItemProgress:
 # ---------------------------------------------------------------------------
 # The run
 # ---------------------------------------------------------------------------
+#: Deliberate per-leg pacing so the progress screen is actually watchable.
+#: SANDBOX_BOOKED gets its pacing from real Duffel latency (1-3s per call), so
+#: it only needs a small settle; DEMO_ONLY has no network wait at all, so
+#: without this the revalidation and per-leg issuance screens flash past before
+#: anyone can read them.
+_PACE = {
+    PassMode.DEMO_ONLY: {"revalidate": 0.7, "issue_pre": 0.45, "issue_mid": 0.9, "issue_post": 0.45},
+    PassMode.SANDBOX_BOOKED: {"revalidate": 0.15, "issue_pre": 0.2, "issue_mid": 0.3, "issue_post": 0.2},
+}
+
+
 def run_booking(
     run: BookingRun,
     *,
@@ -181,6 +192,7 @@ def run_booking(
     ``duffel`` is required for ``SANDBOX_BOOKED`` and unused for ``DEMO_ONLY``.
     Every state change takes the run's lock so a poll never sees a torn state.
     """
+    pace = _PACE[run.mode]
     with run._lock:
         run.phase = BookingPhase.REVALIDATING
         for item in run.items:
@@ -197,7 +209,7 @@ def run_booking(
                 item.state = BookingState.READY
                 if note:
                     changed.append(f"{item.origin_city} → {item.destination_city}: {note}")
-        sleep(0.15)
+        sleep(pace["revalidate"])
 
     with run._lock:
         failed_reval = [i for i in run.required_items if i.state is BookingState.FAILED]
@@ -225,10 +237,10 @@ def run_booking(
             continue
         with run._lock:
             item.state = BookingState.USER_CONFIRMED
-        sleep(0.1)
+        sleep(pace["issue_pre"])
         with run._lock:
             item.state = BookingState.BOOKING
-        sleep(0.2)
+        sleep(pace["issue_mid"])
         ok, note, order_id = _issue_item(run, item, duffel=duffel)
         with run._lock:
             if ok:
@@ -240,7 +252,7 @@ def run_booking(
                 item.detail = note
                 if item.required:
                     stop = True
-        sleep(0.15)
+        sleep(pace["issue_post"])
 
     with run._lock:
         outcome = run.journey_intent().outcome

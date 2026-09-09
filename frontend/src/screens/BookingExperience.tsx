@@ -132,13 +132,13 @@ export function BookingExperience({
           setPhase("pass");
           return;
         }
-        pollRef.current = window.setTimeout(tick, 700);
+        pollRef.current = window.setTimeout(tick, 450);
       } catch (e) {
         if (cancelled) return;
         setError(e instanceof DetouraApiError ? e.message : "Something went wrong.");
       }
     };
-    pollRef.current = window.setTimeout(tick, 400);
+    pollRef.current = window.setTimeout(tick, 250);
     return () => {
       cancelled = true;
       if (pollRef.current) window.clearTimeout(pollRef.current);

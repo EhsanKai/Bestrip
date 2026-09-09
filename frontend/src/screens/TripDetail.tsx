@@ -23,6 +23,7 @@ interface Props {
   origin?: string;
   onBack: () => void;
   onSave: (trip: TripRecommendation) => void;
+  onBook: () => void;
 }
 
 /**
@@ -33,7 +34,7 @@ interface Props {
  * in reading order — map, summary, itinerary — because a timeline is what you
  * scroll and a map is what you glance at.
  */
-export function TripDetail({ trip, saved, origin, onBack, onSave }: Props) {
+export function TripDetail({ trip, saved, origin, onBack, onSave, onBook }: Props) {
   // Part 12 wants the full loop - Cologne to Munich to Vienna and home again -
   // not just the destinations. A route that does not return is not a trip.
   const loop = origin ? [origin, ...trip.cities, origin] : trip.cities;
@@ -201,6 +202,15 @@ export function TripDetail({ trip, saved, origin, onBack, onSave }: Props) {
               {trip.duration_days.toFixed(0)} days · {percent(trip.preference_match)} match
             </span>
           </div>
+          <Button
+            size="lg"
+            onClick={() => {
+              track("booking_clicked", { trip_id: trip.id });
+              onBook();
+            }}
+          >
+            Choose this journey
+          </Button>
           <Button
             variant={saved ? "secondary" : "primary"}
             size="lg"

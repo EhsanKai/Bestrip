@@ -2,7 +2,6 @@ import type { TripRecommendation } from "../../api/types";
 import { cityCountLabel, hours, joinCities, money, percent } from "../../lib/format";
 import {
   AvailabilityBadge,
-  Badge,
   ConfidenceBadge,
   IntensityBadge,
   PriceFreshnessBadge,
@@ -10,6 +9,8 @@ import {
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { Icon } from "../ui/Icon";
+import { JourneyPoster } from "./JourneyPoster";
+import { variantFor } from "./illustrationVariant";
 import { RouteLine } from "./RouteLine";
 import "./RecommendationCard.css";
 
@@ -23,17 +24,6 @@ interface Props {
   onCompare?: (trip: TripRecommendation) => void;
 }
 
-/**
- * The card the whole product is judged on.
- *
- * Its job is to make one trip understandable in about three seconds, and the
- * information order is the argument: what it is, what it costs, what you
- * actually get, why we picked it, what it costs you relative to your own idea.
- *
- * The trade-off line is not a disclaimer bolted on the end - it is the point.
- * Detoura's claim is "here is what else your budget buys", and a card that
- * showed only the upside would be selling rather than advising.
- */
 export function RecommendationCard({
   trip,
   saved = false,
@@ -44,123 +34,118 @@ export function RecommendationCard({
   onCompare,
 }: Props) {
   const modes = trip.legs.map((leg) => leg.mode);
+  const variant = variantFor(trip.cities);
 
   return (
     <Card
       as="article"
       interactive
       selected={selected}
-      className="rec"
+      className={`rec rec--${variant}`}
       onClick={() => onOpen?.(trip)}
       aria-label={`${joinCities(trip.cities)}, ${money(trip.total_price, trip.currency)}`}
     >
-      <div className="rec__top">
-        <div className="rec__identity">
-          <div className="rec__rank eyebrow">
-            {trip.rank === 1 ? "Best match" : `Option ${trip.rank}`}
+      <div className="rec__hero">
+        <div className="rec__copy">
+          <div className="rec__topline">
+            <span className="rec__rank">{trip.rank === 1 ? "Detoura pick" : `Option ${trip.rank}`}</span>
+            {trip.rank === 1 && <span className="rec__editorial-mark" aria-hidden="true">◆</span>}
           </div>
+
           <h3 className="rec__title">{joinCities(trip.cities)}</h3>
-          <div className="rec__meta muted">
-            {trip.duration_days.toFixed(0)} days · {cityCountLabel(trip.cities.length)}
+          <div className="rec__meta">
+            <span>{trip.duration_days.toFixed(0)} days</span>
+            <span aria-hidden="true">·</span>
+            <span>{cityCountLabel(trip.cities.length)}</span>
           </div>
-        </div>
 
-        <div className="rec__price">
-          <div className="rec__total numeric">{money(trip.total_price, trip.currency)}</div>
-          <div className="rec__pp subtle numeric">
-            {money(trip.price_per_person, trip.currency)} each
+          <RouteLine nodes={trip.route_nodes} modes={modes} cities={trip.cities} compact />
+
+          <div className="rec__trustline" aria-label="Trip confidence and availability">
+            <IntensityBadge band={trip.intensity_band} />
+            <ConfidenceBadge level={trip.confidence.level} />
+            <AvailabilityBadge status={trip.availability} />
+            <PriceFreshnessBadge status={trip.price_freshness} />
           </div>
+
+          {trip.why_we_like_it && (
+            <div className="rec__reason">
+              <div className="rec__reason-label">Why it stands out</div>
+              <p>{trip.why_we_like_it}</p>
+            </div>
+          )}
+
+          {trip.highlights.length > 0 && (
+            <ul className="rec__highlights" aria-label="Highlights">
+              {trip.highlights.slice(0, 3).map((highlight) => <li key={highlight}>{highlight}</li>)}
+            </ul>
+          )}
+        </div>
+
+        {/* Not aria-hidden as a whole: this panel holds the price, which is
+          * the single most important fact on the card. Only the decorative
+          * layers inside it are hidden. */}
+        <div className="rec__visual">
+          <div className="rec__price-block">
+            <div className="rec__total numeric">{money(trip.total_price, trip.currency)}</div>
+            <div className="rec__pp numeric">{money(trip.price_per_person, trip.currency)} each</div>
+          </div>
+          <div className="rec__city-index" aria-hidden="true">
+            {trip.cities.map(cityCode).join(" / ")}
+          </div>
+          <JourneyPoster cities={trip.cities} rank={trip.rank} />
         </div>
       </div>
 
-      <RouteLine
-        nodes={trip.route_nodes}
-        modes={modes}
-        cities={trip.cities}
-        compact
-      />
-
-      {/* The four numbers a traveler actually compares trips on. Usable time
-       * comes first because it is the one a flight search never shows. */}
-      <dl className="rec__stats">
-        <div className="rec__stat">
-          <dt>Usable time</dt>
-          <dd className="numeric">{hours(trip.usable_hours)}</dd>
-        </div>
-        <div className="rec__stat">
-          <dt>In transit</dt>
-          <dd className="numeric">{hours(trip.travel_hours)}</dd>
-        </div>
-        <div className="rec__stat">
-          <dt>Experience</dt>
-          <dd className="numeric">{percent(trip.experience_score)}</dd>
-        </div>
-        <div className="rec__stat">
-          <dt>Your interests</dt>
-          <dd className="numeric">{percent(trip.preference_match)}</dd>
-        </div>
-      </dl>
-
-      <div className="rec__badges">
-        <IntensityBadge band={trip.intensity_band} />
-        <ConfidenceBadge level={trip.confidence.level} />
-        <AvailabilityBadge status={trip.availability} />
-        <PriceFreshnessBadge status={trip.price_freshness} />
+      <div className="rec__metrics">
+        <Metric label="Usable time" value={hours(trip.usable_hours)} />
+        <Metric label="In transit" value={hours(trip.travel_hours)} />
+        <Metric label="Experience" value={percent(trip.experience_score)} />
+        <Metric label="Your interests" value={percent(trip.preference_match)} />
       </div>
 
-      {trip.why_we_like_it && (
-        <div className="rec__section">
-          <div className="eyebrow">Why we like it</div>
-          <p className="rec__prose">{trip.why_we_like_it}</p>
+      <div className="rec__footer">
+        <div className="rec__costs">
+          <span><small>Transport</small>{money(trip.costs.transport, trip.currency)}</span>
+          <span><small>Rooms</small>{money(trip.costs.accommodation, trip.currency)}</span>
+          <span><small>Transfers</small>{money(trip.costs.ground_transfer, trip.currency)}</span>
         </div>
-      )}
 
-      {trip.tradeoff && (
-        <div className="rec__section rec__section--tradeoff">
-          <div className="eyebrow">Trade-off</div>
-          <p className="rec__prose">{trip.tradeoff}</p>
+        {trip.tradeoff && <p className="rec__tradeoff">{trip.tradeoff}</p>}
+
+        <div className="rec__actions" onClick={(event) => event.stopPropagation()}>
+          <button
+            type="button"
+            className={`rec__compare ${comparing ? "is-on" : ""}`}
+            onClick={() => onCompare?.(trip)}
+            aria-pressed={comparing}
+          >
+            {Icon.compare({ size: 15 })}
+            {comparing ? "Comparing" : "Compare"}
+          </button>
+          <Button onClick={() => onOpen?.(trip)} iconAfter={Icon.arrowRight({ size: 16 })}>
+            Explore trip
+          </Button>
+          <button
+            type="button"
+            className={`rec__save ${saved ? "rec__save--on" : ""}`}
+            onClick={() => onSave?.(trip)}
+            aria-pressed={saved}
+            aria-label={saved ? "Remove from saved" : "Save this trip"}
+          >
+            {saved ? Icon.heartFilled({ size: 18 }) : Icon.heart({ size: 18 })}
+          </button>
         </div>
-      )}
-
-      {trip.highlights.length > 0 && (
-        <ul className="rec__highlights">
-          {trip.highlights.map((highlight) => (
-            <li key={highlight}>
-              <Badge tone="neutral">{highlight}</Badge>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="rec__costs subtle">
-        <span>Transport {money(trip.costs.transport, trip.currency)}</span>
-        <span>Rooms {money(trip.costs.accommodation, trip.currency)}</span>
-        <span>Transfers {money(trip.costs.ground_transfer, trip.currency)}</span>
-      </div>
-
-      <div className="rec__actions" onClick={(event) => event.stopPropagation()}>
-        <Button onClick={() => onOpen?.(trip)} iconAfter={Icon.arrowRight({ size: 16 })}>
-          Explore trip
-        </Button>
-        <Button
-          variant="secondary"
-          size="md"
-          onClick={() => onCompare?.(trip)}
-          aria-pressed={comparing}
-          icon={Icon.compare({ size: 16 })}
-        >
-          {comparing ? "Comparing" : "Compare"}
-        </Button>
-        <button
-          type="button"
-          className={`rec__save ${saved ? "rec__save--on" : ""}`}
-          onClick={() => onSave?.(trip)}
-          aria-pressed={saved}
-          aria-label={saved ? "Remove from saved" : "Save this trip"}
-        >
-          {saved ? Icon.heartFilled({ size: 18 }) : Icon.heart({ size: 18 })}
-        </button>
       </div>
     </Card>
   );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div className="rec__metric"><span>{label}</span><strong className="numeric">{value}</strong></div>;
+}
+
+function cityCode(city: string) {
+  const letters = city.replace(/[^A-Za-z]/g, "").toUpperCase();
+  return letters.slice(0, 3) || city.slice(0, 3).toUpperCase();
 }

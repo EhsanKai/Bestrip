@@ -37,8 +37,19 @@ from ..search_modes import MODE_SETTINGS, SearchMode, apply_mode
 from ..services.budget_sensitivity import analyze_budget_sensitivity
 from ..services.feedback import record_feedback
 from ..models.booking import PriceTolerance
+from ..models.traveler import Traveler, TravelerGender, TravelerParty, TravelerTitle
 from ..providers.duffel import DuffelTransportProvider, is_test_token
 from ..providers.http import RateLimiter, RetryingHttpClient, UrllibHttpClient
+from ..services.booking_flow import (
+    attach_travelers,
+    booking_store,
+    build_travel_pass,
+    create_run_demo,
+    create_run_from_selection,
+    start_confirmation,
+)
+from ..services.booking_orchestrator import BookingPhase
+from ..models.travel_pass import PassMode, PassStatus
 from ..services.planner import TravelPlanner
 from ..services.confidence import SearchQuality
 from ..services.recheck import recheck_trip
@@ -47,12 +58,19 @@ from ..services.revalidation import RevalidationLimitExceeded, revalidate_select
 from ..services.selection_store import selection_store
 from .assembler import build_response, recommendation_dto
 from .contracts import (
+    BookingIntentResponse,
+    BookingItemStateDTO,
     ChangeDiffDTO,
+    ConfirmBookingRequest,
+    CreateBookingIntentRequest,
     OfferChangeDTO,
     RevalidateRequest,
     RevalidateResponse,
     RevalidatedOfferDTO,
     REVALIDATION_MESSAGES,
+    SubmitTravelersRequest,
+    TravelPassResponse,
+    TravelPassTicketDTO,
     SimilarityDTO,
     TripRecommendation,
     TripReoptimizeRequest,
@@ -405,6 +423,217 @@ def revalidate(body: RevalidateRequest) -> RevalidateResponse:
             for offer in result.offers
         ],
         checked_at=result.checked_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Booking flow (V8 Phase 4) — one confirmation, several tickets, a test pass.
+# The server owns every price, status and the journey reference.
+# ---------------------------------------------------------------------------
+_TERMINAL_PHASES = {
+    BookingPhase.COMPLETE, BookingPhase.PARTIAL_FAILURE, BookingPhase.FAILED,
+}
+_PHASE_MESSAGES = {
+    BookingPhase.AWAITING_TRAVELERS: "Enter who is travelling.",
+    BookingPhase.AWAITING_CONFIRMATION: "Review your journey and confirm once.",
+    BookingPhase.REVALIDATING: "Checking your trip before ticketing…",
+    BookingPhase.RECONFIRM_REQUIRED: "Something changed — please confirm again.",
+    BookingPhase.ISSUING: "Preparing your journey…",
+    BookingPhase.COMPLETE: "Your test journey has been prepared.",
+    BookingPhase.PARTIAL_FAILURE: "We couldn't complete your entire journey.",
+    BookingPhase.FAILED: "This journey could not be prepared.",
+}
+
+
+def _booking_or_404(booking_id: str):
+    run = booking_store().get(booking_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"message": "That booking is unknown or has expired. Start again from the trip."},
+        )
+    return run
+
+
+def _intent_dto(run) -> BookingIntentResponse:
+    return BookingIntentResponse(
+        booking_id=run.booking_id,
+        journey_reference=run.journey_reference,
+        mode=run.mode,
+        phase=run.phase,
+        trip_label=run.trip_label,
+        route_cities=list(run.route_cities),
+        currency=run.currency,
+        discovered_total=run.discovered_total,
+        current_total=run.current_total,
+        reconfirm_note=run.reconfirm_note,
+        party_size=run.party.size if run.party else max((i.travelers for i in run.items), default=1),
+        travelers_submitted=run.party is not None,
+        items=[
+            BookingItemStateDTO(
+                sequence=idx,
+                origin_city=i.origin_city, origin_airport=i.origin_airport,
+                destination_city=i.destination_city, destination_airport=i.destination_airport,
+                departure=i.departure, arrival=i.arrival,
+                carrier=i.carrier, flight_number=i.flight_number,
+                cabin_baggage=i.cabin_baggage, checked_baggage=i.checked_baggage,
+                price_per_person=i.quoted_price, current_price=i.current_price,
+                currency=i.currency, state=i.state, detail=i.detail,
+                provider_order_id=i.provider_order_id,
+            )
+            for idx, i in enumerate(run.items, start=1)
+        ],
+        pass_available=run.phase in _TERMINAL_PHASES,
+    )
+
+
+@router.post("/booking-intents", response_model=BookingIntentResponse, status_code=201)
+def create_booking_intent(body: CreateBookingIntentRequest) -> BookingIntentResponse:
+    """Begin a booking. From a server-issued `selection_id` (real Duffel offers,
+    `SANDBOX_BOOKED`) or from a synthetic trip's legs (`DEMO_ONLY` — no Duffel
+    Order is ever created and the pass says so)."""
+    if body.selection_id:
+        selection = selection_store().get(body.selection_id)
+        if selection is None:
+            raise HTTPException(status_code=404, detail={
+                "message": "That selection is unknown or has expired. Search again.",
+            })
+        run = create_run_from_selection(selection)
+    elif body.demo_legs:
+        run = create_run_demo(
+            trip_label=body.demo_trip_label or "Detoura journey",
+            currency=body.demo_currency,
+            discovered_total=body.demo_total or sum(
+                leg.price_per_person * body.demo_travelers for leg in body.demo_legs
+            ),
+            legs=[
+                {
+                    "origin": leg.origin, "destination": leg.destination,
+                    "departure": leg.departure, "arrival": leg.arrival,
+                    "carrier": leg.carrier, "flight_number": leg.flight_number,
+                    "price_per_person": leg.price_per_person,
+                    "travelers": body.demo_travelers,
+                    "cabin": leg.cabin, "checked": leg.checked,
+                }
+                for leg in body.demo_legs
+            ],
+        )
+    else:
+        raise HTTPException(status_code=422, detail="provide selection_id or demo_legs")
+
+    booking_store().put(run)
+    return _intent_dto(run)
+
+
+_TITLES = {t.value: t for t in TravelerTitle}
+_GENDERS = {g.value: g for g in TravelerGender}
+
+
+@router.post("/booking-intents/{booking_id}/travelers", response_model=BookingIntentResponse)
+def submit_travelers(booking_id: str, body: SubmitTravelersRequest) -> BookingIntentResponse:
+    """The traveller enters their details once; they are reused for every leg.
+
+    Validated here. Never logged, never echoed into a URL, never stored beyond
+    this booking's in-memory run.
+    """
+    run = _booking_or_404(booking_id)
+    if run.phase not in (BookingPhase.AWAITING_TRAVELERS, BookingPhase.AWAITING_CONFIRMATION):
+        raise HTTPException(status_code=409, detail={"message": "This booking is past the traveller step."})
+    try:
+        party = TravelerParty(travelers=tuple(
+            Traveler(
+                given_name=t.given_name, family_name=t.family_name,
+                born_on=t.born_on, email=t.email, phone=t.phone,
+                title=_TITLES.get((t.title or "").lower()),
+                gender=_GENDERS.get((t.gender or "").lower()),
+                nationality=t.nationality,
+            )
+            for t in body.travelers
+        ))
+        attach_travelers(run, party)
+    except (ValueError, TypeError) as error:
+        raise HTTPException(status_code=422, detail={"message": str(error)}) from error
+    return _intent_dto(run)
+
+
+@router.post("/booking-intents/{booking_id}/confirm", response_model=BookingIntentResponse)
+def confirm_booking(booking_id: str, body: ConfirmBookingRequest) -> BookingIntentResponse:
+    """One confirmation for the whole journey. Kicks off revalidation, then
+    per-leg issuance. Poll `GET /booking-intents/{id}` for progress."""
+    run = _booking_or_404(booking_id)
+    run.tolerance = PriceTolerance(
+        absolute=body.tolerance_absolute, percentage=body.tolerance_percentage
+    )
+    try:
+        start_confirmation(run)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail={"message": str(error)}) from error
+    return _intent_dto(run)
+
+
+@router.get("/booking-intents/{booking_id}", response_model=BookingIntentResponse)
+def get_booking_intent(booking_id: str) -> BookingIntentResponse:
+    return _intent_dto(_booking_or_404(booking_id))
+
+
+_PASS_HEADLINES = {
+    PassStatus.READY: "Your journey is ready",
+    PassStatus.RECOVERY_REQUIRED: "Your journey needs attention",
+    PassStatus.FAILED: "This journey could not be prepared",
+}
+_MODE_NOTES = {
+    PassMode.SANDBOX_BOOKED: "Duffel Test Mode Orders were created. Not real tickets.",
+    PassMode.DEMO_ONLY: "DEMO ONLY — no Duffel Order was created. No payment collected.",
+}
+
+
+@router.get("/booking-intents/{booking_id}/travel-pass", response_model=TravelPassResponse)
+def get_travel_pass(booking_id: str) -> TravelPassResponse:
+    """The Detoura Test Travel Pass — server-generated from the actual journey.
+
+    Available only once the run reached a terminal phase. A journey with any
+    failed required leg produces a `recovery_required` pass, never a success.
+    """
+    run = _booking_or_404(booking_id)
+    if run.phase not in _TERMINAL_PHASES:
+        raise HTTPException(status_code=409, detail={
+            "message": _PHASE_MESSAGES.get(run.phase, "The booking is still in progress."),
+            "phase": run.phase.value,
+        })
+    tp = build_travel_pass(run)
+    return TravelPassResponse(
+        journey_reference=tp.journey_reference,
+        booking_id=tp.booking_id,
+        mode=tp.mode,
+        status=tp.status,
+        traveler_name=tp.traveler_name,
+        party_size=tp.party_size,
+        route_cities=list(tp.route_cities),
+        travel_dates=list(tp.travel_dates),
+        tickets=[
+            TravelPassTicketDTO(
+                sequence=t.sequence,
+                origin_city=t.origin_city, origin_airport=t.origin_airport,
+                destination_city=t.destination_city, destination_airport=t.destination_airport,
+                departure=t.departure, arrival=t.arrival,
+                carrier=t.carrier, flight_number=t.flight_number,
+                cabin_baggage=t.cabin_baggage, checked_baggage=t.checked_baggage,
+                price_per_person=t.price_per_person, currency=t.currency,
+                booking_state=t.booking_state, confirmed=t.confirmed,
+                provider_order_id=t.provider_order_id,
+            )
+            for t in tp.tickets
+        ],
+        tickets_prepared=tp.tickets_prepared,
+        trip_total=tp.trip_total,
+        currency=tp.currency,
+        baggage_complete=tp.baggage_complete,
+        unknowns=list(tp.unknowns),
+        provider_order_ids=list(tp.provider_order_ids),
+        disclaimer=tp.disclaimer.model_dump(),
+        headline=_PASS_HEADLINES[tp.status],
+        mode_note=_MODE_NOTES[tp.mode],
+        generated_at=tp.generated_at,
     )
 
 

@@ -187,13 +187,93 @@ No price change was manufactured — Duffel produced none, so the delta is
 across concurrent requests (Phase 4/hardening). No auth on the endpoint (the app
 has none; product is stateless). Real market re-price not detected by id (see above).
 
+---
+
+# V8 Phase 4 — complete booking experience + test travel pass. Checkpoint.
+
+Scope changed: Phase 4 is full-stack. A traveller can go search → recommendation
+→ choose → traveller details → review → confirm → revalidation → ticket
+issuance → **a data-driven Detoura Test Travel Pass**. No real payment, ever.
+
+## What changed — backend
+
+| Change | File |
+|---|---|
+| `Traveler` / `TravelerParty` — provider-neutral, validated (name/email/phone/DOB shapes, ISO nationality), `SENSITIVITY` map (PUBLIC/INTERNAL/PERSONAL/SENSITIVE/SECRET), `public_summary()` exposes name only | `models/traveler.py` (new) |
+| `DetouraTravelPass` / `PassTicket` / `PassMode` (SANDBOX_BOOKED / DEMO_ONLY) / `PassStatus` (ready / recovery_required / failed) / `PassDisclaimer`. READY only when every required leg confirmed | `models/travel_pass.py` (new) |
+| `new_journey_reference()` → `DTR-V8-XXXXXX`, server-side, random, no I/O/1/0, never derived from PII or secrets | `services/journey_reference.py` (new) |
+| `duffel.create_test_order(...)` — Duffel **Test Mode** Order per leg. Refuses unless test token + fresh `get_offer` proves `live_mode=false` + current total still matches the confirmed figure. Payment `type: balance` (test balance, no card). Created Order re-checked for `live_mode=false`. `duffel_passengers_from()` maps `Traveler`→Duffel passenger against the offer's own `pas_` ids | `providers/duffel.py` |
+| `BookingRun` / `ItemProgress` / `run_booking()` — executes a journey against the V7.5 booking domain, leg by leg: all→REVALIDATING → per-leg revalidate → all→READY → per-leg USER_CONFIRMED→BOOKING→(order)→CONFIRMED. **Stops at the first failed required leg**; the rest stay NOT_ATTEMPTED. Journey outcome derived by `JourneyBookingIntent.outcome` | `services/booking_orchestrator.py` (new) |
+| `BookingStore` (in-memory, TTL 1h, bounded), `create_run_from_selection` (SANDBOX), `create_run_demo` (synthetic → DEMO_ONLY), `attach_travelers`, `start_confirmation` (spawns run thread; no token → honest downgrade to DEMO_ONLY), `build_travel_pass` | `services/booking_flow.py` (new) |
+| `POST /booking-intents`, `POST /booking-intents/{id}/travelers`, `POST /booking-intents/{id}/confirm`, `GET /booking-intents/{id}` (poll), `GET /booking-intents/{id}/travel-pass` (409 until terminal). DTOs in `contracts.py` | `api/v1.py`, `api/contracts.py` |
+| `tests/test_v8_booking.py` — 20 tests | (new) |
+
+## What changed — frontend (booking journey only; visual system preserved)
+
+| Change | File |
+|---|---|
+| Booking types + client methods (`createBookingIntent`, `submitTravelers`, `confirmBooking`, `getBookingIntent`, `getTravelPass`) | `api/types.ts`, `api/client.ts` |
+| `BookingExperience.tsx` — full rewrite driving the real backend: **Traveller** (validated form, "Payment is not required in this test version", no PII in URL/localStorage) → **Review** (per-ticket breakdown, route diagram, trip total, unknowns, payment note) → one **Confirm journey** → **"Checking your trip before ticketing…"** checklist → **per-leg issuance progress** (✓/●/✕ from real `BookingItem` states, no global spinner) → **reconfirm** screen on a price move (shows discovered vs current vs delta) → **pass** or partial-failure | `screens/BookingExperience.tsx` |
+| `TravelPass.tsx` + `.css` — premium data-driven pass: DETOURA crest, TEST TRAVEL PASS badge, big airport/city route, traveller, `DTR-V8-…` reference, per-leg tickets with ✓/✕ and booking state, `RECOVERY_REQUIRED` block that says the journey is NOT booked, technical `<details>` for Duffel Order ids ("not ticket numbers"), disclaimer strip (DEMO ONLY / TEST MODE · Not a valid boarding pass · No payment collected) | `components/booking/TravelPass.{tsx,css}` |
+| `BookingExperience.css` extended; `TripDetail` CTA "Book this journey" → **"Choose this journey"**; `App.tsx` booking screen wires `onViewDetails` | |
+
+`tsc -b` clean. `vite build` clean (272 KB JS / 82 KB gzip).
+
+## Verification — real Duffel Test Mode Orders
+
+`live_search` (real, 48 Duffel Offer Requests) → selection → `create_run_from_selection`
+(SANDBOX_BOOKED) → traveller → confirm → per leg: real Get Offer revalidation +
+real **Create Order**:
+
+```
+booking bk_bu5mbV3vnUBEJ9DWYMbO   ref DTR-V8-YR44VQ   mode sandbox_booked
+phases: revalidating -> issuing -> complete
+  Cologne -> Prague:  CONFIRMED  order=ord_0000BAEfWrpOAsDFCizCwv
+  Prague -> Vienna:   CONFIRMED  order=ord_0000BAEfWzjni9LEEjxiLO
+  Vienna -> Cologne:  CONFIRMED  order=ord_0000BAEfX7PXBNsq2CXdrX
+PASS: ready / sandbox_booked   3/3 prepared   EUR 250.17
+  payment against the Duffel test balance — no card, no real money
+```
+
+Partial failure (fake provider, leg 3 refused): journey → `PARTIAL_FAILURE`,
+legs `[CONFIRMED, CONFIRMED, FAILED]`, pass `RECOVERY_REQUIRED`, never READY.
+Gone-at-revalidation: journey `FAILED`, **no Order created for any leg**.
+
+The three concepts stay distinct in code and UI: Duffel Test Order (`ord_…`,
+technical detail) · Detoura Test Travel Pass (marked TEST) · real ticket (never
+produced). User-facing language: "Your test journey has been prepared."
+
+## Security
+
+- `DUFFEL_ACCESS_TOKEN`: read only from env in `_duffel_for_booking()` /
+  `_revalidation_duffel()`; never in a DTO, log, error, or the browser.
+- No client-supplied truth: `CreateBookingIntentRequest` / `ConfirmBookingRequest`
+  carry no price, status, or order id. `discovered_*` and the journey reference
+  are server-set. DEMO_ONLY uses the search price the user already saw (no
+  provider truth exists in that mode) and the pass is loudly labelled DEMO ONLY.
+- Traveller PII: validated, never logged, never in a URL (`test_traveler_pii_never_appears_in_an_error_or_the_url`), not in `localStorage` (the frontend holds drafts in component state only), sent once over POST body.
+- `create_test_order` bounded by `max_calls`; offer id matched to `^off_[A-Za-z0-9]+$`; `assert_test_mode` on the Order response.
+
+## Known limitations
+
+- `live_search` still not wired to `/api/v1/search`; the **UI booking flow runs
+  in DEMO_ONLY** (data-driven pass, no Duffel Order). The SANDBOX_BOOKED path
+  (real Orders) is exercised and proven via `test_v8_booking.py` + a live
+  script, and the endpoint supports `selection_id`. Wiring the real search into
+  the UI is the remaining step for a manual sandbox-order test.
+- Idempotency: a double-confirm is guarded by the phase check (`start_confirmation`
+  refuses unless AWAITING_CONFIRMATION / RECONFIRM_REQUIRED), not yet by a
+  stored idempotency key.
+- No recovery *action* beyond disclosure (RECOVERY_REQUIRED tells the user and
+  stops).
+- Cross-currency still UNVERIFIED.
+
 ## Resume point
 
-Phases 1 (`224446f`) + 2 (`7f53ddc`) committed, not pushed. Phase 3 code in the
-working tree, uncommitted. Full-suite confirmation pending, then commit Phase 3,
-then Docker.
+Phases 1 (`224446f`), 2 (`7f53ddc`), 3 (`11803d0` + `4a1b482`) committed, not
+pushed. Phase 4 code in the working tree. Full suite + Docker rebuild in
+progress, then commit Phase 4 + final report.
 
-Next (Phase 4/5): traveler PII model, Duffel TEST Order creation, multi-ticket
-orchestration against `JourneyBookingIntent` (domain already built), partial-
-failure recovery, idempotency. Wire `live_search` into an endpoint. Attempt a
-real cross-currency case (still UNVERIFIED).
+Next (Phase 5 / hardening): wire `live_search` into `/search` behind a flag so
+the UI can do a real sandbox-order run; idempotency keys; recovery actions;
+cross-currency.

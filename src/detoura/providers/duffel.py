@@ -60,6 +60,7 @@ log = logging.getLogger(__name__)
 DEFAULT_HOST = "https://api.duffel.com"
 OFFER_REQUEST_PATH = "/air/offer_requests"
 OFFER_PATH = "/air/offers"
+ORDER_PATH = "/air/orders"
 DUFFEL_API_VERSION = "v2"
 
 #: A Duffel offer id, validated before it is ever substituted into a URL. The
@@ -101,6 +102,19 @@ class DuffelOfferGone(ProviderHttpError):
     def __init__(self, offer_id: str, *, status: int | None = None) -> None:
         super().__init__(f"Duffel offer {offer_id} is gone ({status})", status=status)
         self.offer_id = offer_id
+
+
+class DuffelOrderError(ProviderHttpError):
+    """Creating a Duffel Test Mode Order failed.
+
+    The offer expired between revalidation and order, the price moved at the
+    provider, a passenger detail was rejected, or the sandbox balked. Carries
+    Duffel's error code when there is one, never a token or a full payload.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, code: str | None = None) -> None:
+        super().__init__(message, status=status)
+        self.code = code
 
 
 class DuffelLiveModeError(DuffelConfigurationError):
@@ -473,6 +487,105 @@ class DuffelTransportProvider:
         return option
 
     # ------------------------------------------------------------------
+    # Sandbox Order creation (V8 Phase 4)
+    # ------------------------------------------------------------------
+    def create_test_order(
+        self,
+        offer_id: str,
+        *,
+        passengers: list[dict],
+        expected_amount: str,
+        expected_currency: str,
+    ) -> dict:
+        """Create ONE Duffel **Test Mode** Order for one offer.
+
+        Refuses unless the configured token is a test token AND a fresh
+        `get_offer` proves ``live_mode is False`` AND the offer's current total
+        still matches ``expected_amount``/``expected_currency`` - the revalidated
+        figure the traveller confirmed. Any drift raises rather than charging a
+        different number to the sandbox balance.
+
+        ``passengers`` is a list of Duffel passenger dicts already keyed by the
+        offer's own ``pas_...`` ids. Payment is ``type: "balance"`` - the test
+        account's fake balance, never a card. The created Order's response is
+        itself checked for ``live_mode is False`` before it is returned.
+
+        Raises :class:`DuffelConfigurationError` (not a test token / bad id),
+        :class:`DuffelOfferGone`, :class:`DuffelLiveModeError`, or
+        :class:`DuffelOrderError`.
+        """
+        if not is_test_token(self._token):
+            raise DuffelConfigurationError(
+                "refusing to create an Order: the configured token is not a "
+                "test-mode token"
+            )
+        if not OFFER_ID_RE.match(offer_id or ""):
+            raise DuffelConfigurationError("offer id is not a Duffel offer id")
+
+        # Fresh proof of sandbox + price, immediately before the write.
+        offer = self.get_offer(offer_id)
+        current_amount = str(offer.get("total_amount"))
+        current_currency = offer.get("total_currency")
+        if current_amount != str(expected_amount) or current_currency != expected_currency:
+            raise DuffelOrderError(
+                "the offer's total changed between revalidation and order "
+                f"({expected_amount} {expected_currency} -> "
+                f"{current_amount} {current_currency}); not creating an Order",
+                code="price_changed",
+            )
+
+        if self.search_calls >= self.max_calls:
+            raise ProviderCallBudgetExceeded(
+                f"refusing Order creation: hard ceiling of {self.max_calls} "
+                "provider calls is spent."
+            )
+        self.search_calls += 1
+
+        payload = {
+            "data": {
+                "type": "instant",
+                "selected_offers": [offer_id],
+                "payments": [{
+                    "type": "balance",
+                    "currency": expected_currency,
+                    "amount": str(expected_amount),
+                }],
+                "passengers": passengers,
+            }
+        }
+        response = self.http.request(
+            "POST",
+            f"{self.host}{ORDER_PATH}",
+            headers=self._headers(),
+            body=json.dumps(payload),
+            timeout=self.timeout,
+        )
+        if response.status in (401, 403):
+            raise DuffelAuthError(
+                f"Duffel rejected the credentials with {response.status}",
+                status=response.status,
+            )
+        try:
+            body = response.json()
+        except Exception as error:
+            raise DuffelOrderError(f"Duffel order response was not JSON: {error}",
+                                   status=response.status) from error
+        if not response.ok:
+            errors = body.get("errors") or [{}]
+            code = errors[0].get("code")
+            title = errors[0].get("title") or "order failed"
+            raise DuffelOrderError(
+                f"Duffel refused the Order ({response.status}): {title}",
+                status=response.status, code=code,
+            )
+        # The Order itself must prove it was sandbox.
+        assert_test_mode(body)
+        order = body.get("data")
+        if not isinstance(order, dict) or not order.get("id"):
+            raise DuffelOrderError("Duffel returned no Order body", status=response.status)
+        return order
+
+    # ------------------------------------------------------------------
     # Parsing - the whole Duffel vocabulary stops here
     # ------------------------------------------------------------------
     def parse_offers(
@@ -749,6 +862,46 @@ def _parse_dt(value: Any) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def duffel_passengers_from(offer: dict, travelers) -> list[dict]:
+    """Map Detoura travellers onto the offer's own passenger slots.
+
+    Duffel assigns each offer a list of ``pas_...`` ids; an Order's passengers
+    must reuse them in order. This is the one place a `Traveler` becomes a
+    provider passenger dict - the mapping the traveller model exists to keep out
+    of the domain.
+    """
+    slots = offer.get("passengers") or []
+    out: list[dict] = []
+    for slot, traveler in zip(slots, travelers):
+        entry = {
+            "id": slot.get("id"),
+            "given_name": traveler.given_name,
+            "family_name": traveler.family_name,
+            "born_on": traveler.born_on.isoformat(),
+            "email": traveler.email,
+            "phone_number": _e164(traveler.phone),
+            "gender": (traveler.gender.value if traveler.gender else "m"),
+            "title": (traveler.title.value if traveler.title else "mr"),
+        }
+        if traveler.nationality:
+            entry["identity_documents"] = []  # sandbox flows here need none
+        out.append(entry)
+    if len(out) != len(slots):
+        raise DuffelOrderError(
+            f"offer has {len(slots)} passenger slots but {len(out)} travellers were given",
+            code="passenger_count",
+        )
+    return out
+
+
+def _e164(phone: str) -> str:
+    """Duffel wants +CC number. Keep digits, keep a leading +, default nothing."""
+    cleaned = "".join(ch for ch in phone if ch.isdigit() or ch == "+")
+    if not cleaned.startswith("+"):
+        cleaned = "+" + cleaned
+    return cleaned
 
 
 def _duration_minutes(chosen: dict, departure: datetime, arrival: datetime) -> int:

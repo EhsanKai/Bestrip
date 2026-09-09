@@ -1,0 +1,198 @@
+.pass {
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background: linear-gradient(180deg, var(--bg-raised), var(--bg-sunken));
+  box-shadow: var(--shadow);
+  padding: clamp(22px, 4vw, 40px);
+  position: relative;
+  overflow: hidden;
+}
+.pass::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 5px;
+  background: linear-gradient(90deg, var(--coral), #d49b39);
+}
+.pass--recovery_required::before { background: #d49b39; }
+.pass--failed::before { background: #b0413e; }
+
+.pass__crest {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.pass__brand {
+  font-family: var(--font-serif);
+  font-size: 1.5rem;
+  letter-spacing: 0.28em;
+}
+.pass__kicker {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.pass__badge {
+  margin-top: 14px;
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+}
+
+.pass__route {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 6px;
+  margin: 28px 0 6px;
+}
+.pass__stop {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.pass__stop b {
+  font-family: var(--font-serif);
+  font-size: clamp(1.8rem, 5vw, 3rem);
+  line-height: 0.9;
+  font-weight: 400;
+}
+.pass__stop span {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding-bottom: 4px;
+}
+.pass__arrow {
+  font-style: normal;
+  color: var(--text-subtle);
+  padding: 0 4px 6px;
+  font-size: 1.2rem;
+}
+
+.pass__meta {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px 24px;
+  margin: 26px 0;
+  padding: 20px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.pass__meta dt {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+.pass__meta dd {
+  margin: 4px 0 0;
+  font-size: 1rem;
+}
+.pass__ref {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: 0.06em;
+}
+
+.pass__tickets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.pass__tickets li {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  gap: 14px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+}
+.pass__tickets li.is-bad { border-color: #b0413e55; }
+.pass__tick {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  color: #fff;
+  background: #1f6b4c;
+}
+.is-bad .pass__tick { background: #b0413e; }
+.pass__leg { display: grid; gap: 3px; min-width: 0; }
+.pass__leg strong { font-size: 0.98rem; }
+.pass__leg small { color: var(--text-muted); font-size: 12px; }
+.pass__legbag { color: var(--text-subtle) !important; }
+.pass__legstate {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+
+.pass__recovery {
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 12px;
+  background: #fbecd9;
+  color: #6b4310;
+  font-size: 13px;
+}
+:root[data-theme="dark"] .pass__recovery,
+:root:not([data-theme="light"]) .pass__recovery {
+  background: #3a2c17;
+  color: #f0d6ac;
+}
+
+.pass__technical {
+  margin-top: 18px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.pass__technical summary { cursor: pointer; font-weight: 700; }
+.pass__technical code {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+}
+
+.pass__disclaimer {
+  margin-top: 22px;
+  border: 1px solid #d49b39;
+  background: #fff6dd;
+  color: #76520f;
+  border-radius: 12px;
+  padding: 13px 15px;
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+}
+.pass__disclaimer b {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+}
+:root[data-theme="dark"] .pass__disclaimer,
+:root:not([data-theme="light"]) .pass__disclaimer {
+  background: #34290f;
+  color: #e9c987;
+  border-color: #7a5a1e;
+}
+
+@media (max-width: 640px) {
+  .pass__meta { grid-template-columns: 1fr; }
+  .pass__tickets li { grid-template-columns: 22px 1fr; }
+  .pass__legstate { grid-column: 2; }
+}

@@ -17,6 +17,7 @@ import { Landing } from "./screens/Landing";
 import { Results } from "./screens/Results";
 import { SavedTrips } from "./screens/SavedTrips";
 import { TripDetail } from "./screens/TripDetail";
+import { BookingExperience } from "./screens/BookingExperience";
 import { useSearch } from "./state/useSearch";
 import { useSaved } from "./state/useSaved";
 import "./App.css";
@@ -28,7 +29,8 @@ type Screen =
   | "results"
   | "detail"
   | "compare"
-  | "saved";
+  | "saved"
+  | "booking";
 
 /**
  * The shell.
@@ -183,6 +185,15 @@ export default function App() {
             origin={search.response?.origin ?? search.request?.origin}
             onBack={() => setScreen("results")}
             onSave={toggleSaved}
+            onBook={() => setScreen("booking")}
+          />
+        )}
+
+        {screen === "booking" && selected && (
+          <BookingExperience
+            trip={selected}
+            onBack={() => setScreen("results")}
+            onViewDetails={() => setScreen("detail")}
           />
         )}
 

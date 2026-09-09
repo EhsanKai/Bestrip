@@ -12,10 +12,14 @@
 
 import {
   DetouraApiError,
+  type BookingIntent,
   type BudgetSensitivityResponse,
+  type CreateBookingIntentRequest,
   type DestinationSummary,
   type OriginResponse,
   type ProfileName,
+  type TravelerInput,
+  type TravelPass,
   type TripRecheckRequest,
   type TripRecheckResponse,
   type TripSearchRequest,
@@ -124,6 +128,46 @@ export const api = {
   profiles() {
     return request<{ name: ProfileName; label: string; description: string }[]>(
       "/profiles",
+    );
+  },
+
+  /* --- Booking flow (V8 Phase 4) --------------------------------------- *
+   * The server owns booking truth. These methods send the traveller's
+   * intent and poll the server for what actually happened. */
+
+  createBookingIntent(body: CreateBookingIntentRequest) {
+    return request<BookingIntent>("/booking-intents", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  submitTravelers(bookingId: string, travelers: TravelerInput[]) {
+    return request<BookingIntent>(
+      `/booking-intents/${encodeURIComponent(bookingId)}/travelers`,
+      { method: "POST", body: JSON.stringify({ travelers }) },
+    );
+  },
+
+  confirmBooking(
+    bookingId: string,
+    tolerance: { tolerance_absolute?: number; tolerance_percentage?: number } = {},
+  ) {
+    return request<BookingIntent>(
+      `/booking-intents/${encodeURIComponent(bookingId)}/confirm`,
+      { method: "POST", body: JSON.stringify(tolerance) },
+    );
+  },
+
+  getBookingIntent(bookingId: string) {
+    return request<BookingIntent>(
+      `/booking-intents/${encodeURIComponent(bookingId)}`,
+    );
+  },
+
+  getTravelPass(bookingId: string) {
+    return request<TravelPass>(
+      `/booking-intents/${encodeURIComponent(bookingId)}/travel-pass`,
     );
   },
 };

@@ -362,3 +362,156 @@ export interface TripRecheckResponse {
   transfers: RecheckComponent[];
   issues: ProviderIssue[];
 }
+
+/* ------------------------------------------------------------------ *
+ * Booking flow (V8 Phase 4)
+ *
+ * One confirmation for a whole Detoura journey. No real payment. The server
+ * owns every price, status and the journey reference; the client sends intent.
+ * ------------------------------------------------------------------ */
+
+export type BookingMode = "sandbox_booked" | "demo_only";
+
+export type BookingPhase =
+  | "awaiting_travelers"
+  | "awaiting_confirmation"
+  | "revalidating"
+  | "reconfirm_required"
+  | "issuing"
+  | "complete"
+  | "partial_failure"
+  | "failed";
+
+export type BookingItemState =
+  | "DRAFT"
+  | "REVALIDATING"
+  | "READY"
+  | "USER_CONFIRMED"
+  | "BOOKING"
+  | "CONFIRMED"
+  | "PRICE_CHANGED"
+  | "UNAVAILABLE"
+  | "EXPIRED"
+  | "TIMEOUT"
+  | "PROVIDER_FAILURE"
+  | "PARTIAL_FAILURE"
+  | "RECOVERY_REQUIRED"
+  | "FAILED"
+  | "NOT_ATTEMPTED";
+
+export type PassStatus = "ready" | "recovery_required" | "failed";
+
+export interface DemoLegInput {
+  origin: string;
+  destination: string;
+  departure: string;
+  arrival: string;
+  carrier?: string;
+  flight_number?: string;
+  price_per_person: number;
+  cabin?: string;
+  checked?: string;
+}
+
+export interface CreateBookingIntentRequest {
+  selection_id?: string | null;
+  demo_trip_label?: string;
+  demo_currency?: string;
+  demo_total?: number;
+  demo_travelers?: number;
+  demo_legs?: DemoLegInput[];
+}
+
+export interface TravelerInput {
+  given_name: string;
+  family_name: string;
+  born_on: string;
+  email: string;
+  phone: string;
+  title?: string | null;
+  gender?: string | null;
+  nationality?: string | null;
+}
+
+export interface BookingItemStateDTO {
+  sequence: number;
+  origin_city: string;
+  origin_airport: string;
+  destination_city: string;
+  destination_airport: string;
+  departure: string;
+  arrival: string;
+  carrier: string;
+  flight_number: string;
+  cabin_baggage: string;
+  checked_baggage: string;
+  price_per_person: number;
+  current_price: number | null;
+  currency: string;
+  state: BookingItemState;
+  detail: string;
+  provider_order_id: string | null;
+}
+
+export interface BookingIntent {
+  booking_id: string;
+  journey_reference: string;
+  mode: BookingMode;
+  phase: BookingPhase;
+  trip_label: string;
+  route_cities: string[];
+  currency: string;
+  discovered_total: number;
+  current_total: number | null;
+  reconfirm_note: string;
+  party_size: number;
+  travelers_submitted: boolean;
+  items: BookingItemStateDTO[];
+  pass_available: boolean;
+}
+
+export interface TravelPassTicket {
+  sequence: number;
+  origin_city: string;
+  origin_airport: string;
+  destination_city: string;
+  destination_airport: string;
+  departure: string;
+  arrival: string;
+  carrier: string;
+  flight_number: string;
+  cabin_baggage: string;
+  checked_baggage: string;
+  price_per_person: number;
+  currency: string;
+  booking_state: BookingItemState;
+  confirmed: boolean;
+  provider_order_id: string | null;
+}
+
+export interface TravelPass {
+  journey_reference: string;
+  booking_id: string;
+  mode: BookingMode;
+  status: PassStatus;
+  traveler_name: string;
+  party_size: number;
+  route_cities: string[];
+  travel_dates: string[];
+  tickets: TravelPassTicket[];
+  tickets_prepared: number;
+  trip_total: number;
+  currency: string;
+  baggage_complete: boolean;
+  unknowns: string[];
+  provider_order_ids: string[];
+  disclaimer: {
+    test_mode: boolean;
+    valid_boarding_pass: boolean;
+    payment_collected: boolean;
+    note: string;
+  };
+  headline: string;
+  mode_note: string;
+  generated_at: string;
+}

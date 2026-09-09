@@ -18,7 +18,7 @@ not is everything that only explains *how* we found it.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -29,9 +29,12 @@ from ..models.baggage import (
     BaggageStatus,
     PriceCompleteness,
 )
+from ..models.booking import BookingState
 from ..models.destination import EXPERIENCE_ATTRIBUTES
 from ..models.freshness import PriceFreshness
 from ..models.revalidation import OfferRevalidationStatus, RevalidationStatus
+from ..models.travel_pass import PassMode, PassStatus
+from ..services.booking_orchestrator import BookingPhase
 from ..models.trip import AccommodationPreference, TransportType
 from ..profiles import ProfileName
 from ..search_modes import SearchMode
@@ -1051,3 +1054,149 @@ REVALIDATION_MESSAGES: dict[RevalidationStatus, str] = {
         "This itinerary can't proceed as selected — see which part and why."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Booking flow (V8 Phase 4)
+#
+# One user confirmation for a whole Detoura journey. No real payment. A
+# SANDBOX_BOOKED run creates a Duffel Test Mode Order per leg; a DEMO_ONLY run
+# creates none and the resulting pass says so. The server owns every price,
+# status and the journey reference - the client sends intent, not truth.
+# ---------------------------------------------------------------------------
+
+
+class DemoLegInput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    origin: str = Field(min_length=2, max_length=40)
+    destination: str = Field(min_length=2, max_length=40)
+    departure: datetime
+    arrival: datetime
+    carrier: str = Field(default="", max_length=40)
+    flight_number: str = Field(default="", max_length=12)
+    price_per_person: float = Field(ge=0.0, le=100_000.0)
+    cabin: str = "unknown"
+    checked: str = "unknown"
+
+
+class CreateBookingIntentRequest(BaseModel):
+    """Start a booking from a server-issued selection, or a demo trip."""
+
+    model_config = ConfigDict(frozen=True)
+
+    selection_id: str | None = Field(default=None, max_length=200)
+    demo_trip_label: str | None = Field(default=None, max_length=120)
+    demo_currency: str = Field(default="EUR", max_length=3)
+    demo_total: float = Field(default=0.0, ge=0.0, le=1_000_000.0)
+    demo_travelers: int = Field(default=1, ge=1, le=9)
+    demo_legs: list[DemoLegInput] = Field(default_factory=list, max_length=8)
+
+
+class TravelerInput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    given_name: str = Field(min_length=1, max_length=60)
+    family_name: str = Field(min_length=1, max_length=60)
+    born_on: date
+    email: str = Field(min_length=3, max_length=120)
+    phone: str = Field(min_length=6, max_length=20)
+    title: str | None = Field(default=None, max_length=8)
+    gender: str | None = Field(default=None, max_length=1)
+    nationality: str | None = Field(default=None, max_length=2)
+
+
+class SubmitTravelersRequest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    travelers: list[TravelerInput] = Field(min_length=1, max_length=9)
+
+
+class ConfirmBookingRequest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    tolerance_absolute: float = Field(default=25.0, ge=0.0, le=100_000.0)
+    tolerance_percentage: float = Field(default=0.0, ge=0.0, le=100.0)
+
+
+class BookingItemStateDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    sequence: int
+    origin_city: str
+    origin_airport: str
+    destination_city: str
+    destination_airport: str
+    departure: datetime
+    arrival: datetime
+    carrier: str = ""
+    flight_number: str = ""
+    cabin_baggage: str = "unknown"
+    checked_baggage: str = "unknown"
+    price_per_person: float
+    current_price: float | None = None
+    currency: str
+    state: BookingState
+    detail: str = ""
+    provider_order_id: str | None = None
+
+
+class BookingIntentResponse(BaseModel):
+    """The whole booking, as the server sees it. Polled while it runs."""
+
+    model_config = ConfigDict(frozen=True)
+
+    booking_id: str
+    journey_reference: str
+    mode: PassMode
+    phase: BookingPhase
+    trip_label: str
+    route_cities: list[str]
+    currency: str
+    discovered_total: float
+    current_total: float | None = None
+    reconfirm_note: str = ""
+    party_size: int
+    travelers_submitted: bool
+    items: list[BookingItemStateDTO]
+    pass_available: bool
+    """True once the run reached a terminal phase and a pass can be fetched."""
+
+
+class TravelPassTicketDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    sequence: int
+    origin_city: str
+    origin_airport: str
+    destination_city: str
+    destination_airport: str
+    departure: datetime
+    arrival: datetime
+    carrier: str = ""
+    flight_number: str = ""
+    cabin_baggage: str = "unknown"
+    checked_baggage: str = "unknown"
+    price_per_person: float
+    currency: str
+    booking_state: BookingState
+    confirmed: bool
+    provider_order_id: str | None = None
+
+
+class TravelPassResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    journey_reference: str
+    booking_id: str
+    mode: PassMode
+    status: PassStatus
+    traveler_name: str
+    party_size: int
+    route_cities: list[str]
+    travel_dates: list[str]
+    tickets: list[TravelPassTicketDTO]
+    tickets_prepared: int
+    trip_total: float
+    currency: str
+    baggage_complete: bool
+    unknowns: list[str]
+    provider_order_ids: list[str]
+    disclaimer: dict
+    headline: str
+    mode_note: str
+    generated_at: datetime

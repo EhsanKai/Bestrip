@@ -1,0 +1,63 @@
+/* Detoura destination etchings.
+ *
+ * The landmark is intentionally not a hero illustration. It behaves like an
+ * architectural trace printed into the card: fine ink, contour geometry and
+ * a restrained coral detour. This keeps the city identity without drifting
+ * into postcard or cartoon territory.
+ */
+.cityart { position: relative; color: var(--text); pointer-events: none; user-select: none; }
+.cityart__svg { display: block; width: 100%; height: 100%; overflow: visible; }
+
+.cityart__line,
+.cityart__anchor,
+.cityart__contour,
+.cityart__datum {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.cityart__line { stroke-width: 0.82; opacity: 0.29; }
+.cityart__anchor { stroke-width: 1.15; opacity: 0.34; }
+.cityart__far .cityart__line { opacity: 0.18; }
+.cityart__far .cityart__anchor { opacity: 0.22; }
+
+/* Older iterations used coloured circles behind the landmarks. They read as
+ * illustration props. The backdrop is now cartographic: two contours, one
+ * datum and a registration point, closer to an architectural plate. */
+.cityart__contour { stroke: var(--sage); stroke-width: 0.8; opacity: 0.28; }
+.cityart__contour--soft { opacity: 0.15; stroke-dasharray: 1 4; }
+.cityart__datum { stroke: currentColor; stroke-width: 0.55; opacity: 0.09; }
+.cityart__point { fill: var(--accent); opacity: 0.44; }
+.cityart__frame { fill: none; stroke: currentColor; stroke-width: 0.7; stroke-dasharray: 1 5; opacity: 0.13; vector-effect: non-scaling-stroke; }
+.cityart__blob, .cityart__horizon { display: none; }
+
+.cityart__detour {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.15;
+  stroke-linecap: round;
+  opacity: 0.68;
+  vector-effect: non-scaling-stroke;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cityart__detour {
+    stroke-dasharray: 320;
+    stroke-dashoffset: 320;
+    animation: cityart-draw 950ms var(--ease) 180ms forwards;
+  }
+}
+@keyframes cityart-draw { to { stroke-dashoffset: 0; } }
+
+:root[data-theme="dark"] .cityart__line { opacity: 0.27; }
+:root[data-theme="dark"] .cityart__anchor { opacity: 0.31; }
+:root[data-theme="dark"] .cityart__contour { opacity: 0.22; }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .cityart__line { opacity: 0.27; }
+  :root:not([data-theme="light"]) .cityart__anchor { opacity: 0.31; }
+  :root:not([data-theme="light"]) .cityart__contour { opacity: 0.22; }
+}

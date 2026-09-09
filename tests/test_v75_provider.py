@@ -259,10 +259,22 @@ def test_hold_capability_is_tri_state():
 # Robustness
 # ---------------------------------------------------------------------------
 def test_one_broken_offer_does_not_cost_the_whole_page():
+    """Counted relative to the fixture, not pinned to a number.
+
+    This asserted `offers_seen == 6` until a preflight audit added a seventh
+    malformed case, and the test broke for a reason that had nothing to do with
+    the behaviour it guards. The claim is "every broken offer is dropped and
+    the good one survives", so that is what it now measures.
+    """
     duffel = provider()
+    total = len(fx.MIXED_VALID_AND_BROKEN["data"]["offers"])
+    broken = len(fx.MALFORMED_OFFERS["data"]["offers"])
     options = duffel.parse_offers(fx.MIXED_VALID_AND_BROKEN, "CGN", "BCN")
-    assert len(options) == 1, "the usable offer must survive its broken neighbours"
-    assert duffel.offers_seen == 6 and len(duffel.offers_dropped) == 5
+    assert len(options) == total - broken, (
+        "the usable offer must survive its broken neighbours"
+    )
+    assert duffel.offers_seen == total
+    assert len(duffel.offers_dropped) == broken
 
 
 def test_an_empty_page_is_an_answer_not_an_error():

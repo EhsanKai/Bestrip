@@ -275,6 +275,10 @@ MALFORMED_OFFERS = response([
     _offer("off_badtime", [
         _slice("CGN", "BCN", "PT2H10M", [
             _segment("CGN", "BCN", "not-a-timestamp", "also-not", "PT2H10M")])]),
+    {"id": "off_nocurrency", "slices": [                                        # amount, no currency
+        _slice("CGN", "BCN", "PT2H10M", [
+            _segment("CGN", "BCN", "2026-10-15T08:00:00", "2026-10-15T10:10:00",
+                     "PT2H10M")])], "total_amount": "99.00"},
     _offer("off_negative", [
         _slice("CGN", "BCN", "PT2H10M", [
             _segment("CGN", "BCN", "2026-10-15T08:00:00", "2026-10-15T10:10:00", "PT2H10M")])],

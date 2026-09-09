@@ -238,6 +238,7 @@ class DuffelTransportProvider:
         departure_date: date,
         *,
         travelers: int | None = None,
+        cabin: str = "economy",
     ) -> list[TransportOption]:
         """One Offer Request. The only method here that touches the network.
 
@@ -263,7 +264,7 @@ class DuffelTransportProvider:
                     "departure_date": departure_date.isoformat(),
                 }],
                 "passengers": [{"type": "adult"} for _ in range(max(travelers, 1))],
-                "cabin_class": "economy",
+                "cabin_class": cabin,
             }
         }
         response = self.http.request(

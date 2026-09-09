@@ -48,6 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--destination", required=True, help="IATA code, e.g. BCN")
     parser.add_argument("--date", required=True, help="departure date, YYYY-MM-DD")
     parser.add_argument("--travelers", type=int, default=1)
+    parser.add_argument(
+        "--cabin", default="economy",
+        choices=["economy", "premium_economy", "business", "first"],
+        help="cabin class to request",
+    )
     parser.add_argument("--limit", type=int, default=5, help="offers to display")
     return parser
 
@@ -76,9 +81,13 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_PROVIDER_ERROR
 
     provider = DuffelTransportProvider(access_token=token)
-    print(f"Provider: Duffel TEST ({redact(token)})")
+    # Says the mode outright. Someone reading this output six months from now
+    # must not have to infer from a token prefix whether real money was in
+    # play, so the banner states it rather than implying it.
+    print("=== DUFFEL TEST MODE ===")
+    print(f"Token:    {redact(token)}")
     print(f"Route:    {args.origin} -> {args.destination} on {departure}")
-    print(f"Party:    {args.travelers} adult(s), economy")
+    print(f"Party:    {args.travelers} adult(s), {args.cabin}")
     print()
 
     try:
@@ -87,7 +96,8 @@ def main(argv: list[str] | None = None) -> int:
         # reach the network - this probe is the deliberate, single-call path
         # that refusal exists to point at.
         options = provider.fetch_offers(
-            args.origin, args.destination, departure, travelers=args.travelers
+            args.origin, args.destination, departure,
+            travelers=args.travelers, cabin=args.cabin,
         )
     except DuffelConfigurationError as error:
         print(f"Refused: {error}")

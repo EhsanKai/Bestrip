@@ -10,6 +10,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.5",
+    # A real Duffel call verifies TLS against a CA bundle. The interpreter's
+    # default trust store is not portable - a slim container or a Framework
+    # Python can point it at a path that does not exist, failing every HTTPS
+    # request at the handshake. certifi is pure data, no transitive deps, and
+    # the alternative is documenting an SSL_CERT_FILE requirement nobody reads.
+    "certifi>=2024.2.2",
 ]
 
 [project.optional-dependencies]

@@ -107,6 +107,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Provider error: {error}")
         return EXIT_PROVIDER_ERROR
 
+    # `fetch_offers` calls `assert_test_mode` before it returns anything, so
+    # reaching this line means the response's own `live_mode` said sandbox.
+    print("live_mode=false confirmed on the Duffel response envelope.")
+    metrics = provider.supply_metrics()
+    print(
+        f"supply: {metrics['offers_received']} received, "
+        f"{metrics['offers_retained']} retained, "
+        f"{metrics['offers_truncated']} dropped to max_offers={metrics['max_offers']}, "
+        f"{metrics['offers_unusable']} unusable"
+    )
+    print()
+
     if not options:
         print("No offers returned for this route and date.")
         print(f"(offers seen: {provider.offers_seen}, unusable: {len(provider.offers_dropped)})")

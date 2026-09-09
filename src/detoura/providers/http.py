@@ -8,10 +8,18 @@ optimizer asked for options on a route" and "an upstream API answered".
 Three deliberate choices.
 
 **stdlib only.** ``urllib.request`` is not glamorous, but a travel optimizer
-whose only runtime dependency is pydantic should not grow a networking stack to
-make one kind of GET request. The abstraction is :class:`HttpClient`, so a
-deployment that already has ``httpx`` or ``requests`` supplies its own in about
-fifteen lines.
+should not grow a networking stack to make one kind of POST request. The
+abstraction is :class:`HttpClient`, so a deployment that already has ``httpx``
+or ``requests`` supplies its own in about fifteen lines.
+
+**Trust is explicit (V8).** ``urllib`` verifies TLS against the interpreter's
+default trust store, and a build whose ``openssl_cafile`` points at a path that
+does not exist - a Framework Python, a slim container - fails *every* HTTPS
+call at the handshake, before a request leaves the machine. So the client
+pins :mod:`certifi`'s CA bundle when it is installed, unless the operator has
+set ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` to say otherwise. Verification is
+never disabled: an unverified TLS connection to a payments-capable API is not
+a fallback, it is the vulnerability.
 
 **The client is injected, always.** :class:`HttpClient` is a protocol, and
 every provider takes one. That is what makes a real integration testable
@@ -27,12 +35,39 @@ budgeting live here so every provider inherits the same behaviour.
 from __future__ import annotations
 
 import json
+import os
+import ssl
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, runtime_checkable
 from urllib.parse import urlencode
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """A TLS context that verifies, using a CA bundle that actually exists.
+
+    Order of trust, most explicit first:
+
+    1. ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` in the environment - an operator
+       override, honoured by :func:`ssl.create_default_context` itself.
+    2. :mod:`certifi`'s bundled roots, when the package is installed. This is
+       the case the function exists for: it makes a real Duffel call work on a
+       host whose system trust store is unconfigured, which the V8 sandbox
+       probe hit on the first attempt.
+    3. The interpreter default, when neither of the above is available.
+
+    ``check_hostname`` and ``CERT_REQUIRED`` are left at their defaults
+    throughout. There is no code path here that disables verification.
+    """
+    if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
+        return ssl.create_default_context()
+    try:
+        import certifi
+    except ImportError:
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=certifi.where())
 
 #: Status codes worth trying again. 408 and 429 are explicit "come back later";
 #: 5xx is the server having a bad moment. Everything else is a bug in the
@@ -128,6 +163,9 @@ class UrllibHttpClient:
 
     def __init__(self, *, user_agent: str = "travel-planner/4.0") -> None:
         self.user_agent = user_agent
+        # Built once: loading a CA bundle per request is wasted work, and the
+        # trust configuration cannot change under a running process anyway.
+        self._ssl_context = _build_ssl_context()
 
     def request(
         self,
@@ -147,8 +185,12 @@ class UrllibHttpClient:
             data=body.encode("utf-8") if body is not None else None,
             headers={"User-Agent": self.user_agent, **(headers or {})},
         )
+        # The context is used only for https:// URLs; urllib ignores it for
+        # plain http, so passing it unconditionally is safe.
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib.request.urlopen(
+                request, timeout=timeout, context=self._ssl_context
+            ) as response:
                 return HttpResponse(
                     status=response.status,
                     body=response.read().decode("utf-8", errors="replace"),

@@ -80,6 +80,64 @@ class DuffelAuthError(ProviderHttpError):
     """Duffel rejected the credentials."""
 
 
+class DuffelLiveModeError(DuffelConfigurationError):
+    """A Duffel response did not prove it came from Test Mode.
+
+    Raised before a single offer is normalized or any Order action is taken.
+    Duffel stamps every response and every offer with a machine-readable
+    ``live_mode`` boolean; V8 is sandbox-only, so anything other than an
+    explicit ``live_mode == False`` on the envelope - missing, ``True``, or a
+    non-boolean - fails closed here. This is a second, independent guard beyond
+    the ``duffel_test_`` token prefix: the token says what we *sent*, this says
+    what the provider says it *did*.
+
+    Carries no offer payload and no token material - the message states the
+    shape problem only, because it will end up in a log.
+    """
+
+
+#: The key Duffel stamps on the response envelope and on each offer.
+LIVE_MODE_KEY = "live_mode"
+
+
+def assert_test_mode(body: dict) -> None:
+    """Prove a Duffel payload is sandbox, or refuse it.
+
+    The envelope's ``data.live_mode`` is authoritative and must be exactly
+    ``False``. Individual offers are additionally checked: any offer that
+    positively asserts ``live_mode`` truthy, or carries a non-boolean there,
+    is treated as contamination of the whole page. An offer that simply omits
+    the key is tolerated - the envelope has already spoken for it.
+    """
+    data = (body or {}).get("data")
+    if not isinstance(data, dict):
+        raise DuffelLiveModeError(
+            "Duffel response carried no data object to check live_mode on; "
+            "refusing to treat it as a sandbox response"
+        )
+    envelope = data.get(LIVE_MODE_KEY)
+    if envelope is not False:
+        if envelope is True:
+            raise DuffelLiveModeError(
+                "Duffel response reported live_mode=true; V8 is sandbox-only "
+                "and refuses to normalize a live payload"
+            )
+        raise DuffelLiveModeError(
+            "Duffel response did not state live_mode=false on its envelope "
+            f"(got {envelope!r}); refusing to assume it was Test Mode"
+        )
+    for offer in data.get("offers") or []:
+        if not isinstance(offer, dict):
+            continue
+        flag = offer.get(LIVE_MODE_KEY)
+        if flag is None or flag is False:
+            continue
+        raise DuffelLiveModeError(
+            "a Duffel offer asserted a non-sandbox live_mode "
+            f"({flag!r}); refusing the whole page"
+        )
+
+
 def redact(token: str | None) -> str:
     """A token rendered safe to print.
 
@@ -200,6 +258,16 @@ class DuffelTransportProvider:
         "no results" without checking this is reporting our bug as the market's
         answer.
         """
+        self.offers_received = 0
+        """Every offer Duffel put in a payload, before any mapping or cap."""
+        self.offers_retained = 0
+        """Offers that survived mapping *and* the ``max_offers`` cap - what a
+        caller actually gets back."""
+        self.offers_truncated = 0
+        """Successfully-mapped offers discarded purely because ``max_offers``
+        was reached. The checkpoint's 23->20: never allowed to be silent, so a
+        caller can surface it the way acquisition surfaces CALL_BUDGET_EXHAUSTED.
+        """
 
     # ------------------------------------------------------------------
     def _headers(self) -> dict[str, str]:
@@ -293,6 +361,11 @@ class DuffelTransportProvider:
         except Exception as error:
             raise ProviderHttpError(f"Duffel response was not JSON: {error}") from error
 
+        # Prove sandbox before a single offer is normalized. A live-looking or
+        # silent payload raises here, with nothing parsed and nothing counted
+        # as retained.
+        assert_test_mode(body)
+
         return self.parse_offers(body, origin, destination, travelers=travelers)
 
     # ------------------------------------------------------------------
@@ -309,6 +382,7 @@ class DuffelTransportProvider:
         recorded and skipped rather than raised.
         """
         offers = (body or {}).get("data", {}).get("offers", []) or []
+        self.offers_received += len(offers)
         options: list[TransportOption] = []
         for offer in offers:
             self.offers_seen += 1
@@ -323,7 +397,20 @@ class DuffelTransportProvider:
             if option is not None:
                 options.append(option)
         options.sort(key=lambda o: (o.price_per_person, o.departure, o.id))
-        return options[: self.max_offers]
+        retained = options[: self.max_offers]
+        dropped_to_cap = len(options) - len(retained)
+        if dropped_to_cap:
+            # Never silent. 23 mapped, 20 kept, 3 gone to the cap - a caller
+            # that reports "20 offers" without this is under-reporting supply.
+            self.offers_truncated += dropped_to_cap
+            log.info(
+                "Duffel %s->%s: %d offers received, %d mapped, %d retained, "
+                "%d dropped by max_offers=%d",
+                origin, destination, len(offers), len(options),
+                len(retained), dropped_to_cap, self.max_offers,
+            )
+        self.offers_retained += len(retained)
+        return retained
 
     def _map_offer(
         self, offer: dict, origin: str, destination: str, travelers: int
@@ -517,6 +604,24 @@ class DuffelTransportProvider:
                 for s in segments
             ),
         )
+
+    # ------------------------------------------------------------------
+    def supply_metrics(self) -> dict[str, int]:
+        """What this provider actually saw, for a diagnostics surface.
+
+        Every number here is cumulative over the life of the instance.
+        ``truncated`` is the count the checkpoint insists must never be
+        implicit: offers that existed, mapped cleanly, and were dropped only
+        because ``max_offers`` was reached.
+        """
+        return {
+            "calls": self.search_calls,
+            "offers_received": self.offers_received,
+            "offers_retained": self.offers_retained,
+            "offers_truncated": self.offers_truncated,
+            "offers_unusable": len(self.offers_dropped),
+            "max_offers": self.max_offers,
+        }
 
 
 # ---------------------------------------------------------------------------

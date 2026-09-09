@@ -78,9 +78,14 @@ def _offer(
     requires_instant_payment: bool = True,
     available_services: list[dict] | None = None,
     owner: str = "VY",
+    live_mode: bool | None = False,
 ) -> dict:
     offer = {
         "id": offer_id,
+        # Real sandbox responses stamp this on every offer as well as the
+        # envelope; V8's guard treats a truthy value here as page-level
+        # contamination. Default False, overridable for the adversarial cases.
+        "live_mode": live_mode,
         "total_amount": total_amount,
         "total_currency": total_currency,
         "base_amount": total_amount,
@@ -94,6 +99,8 @@ def _offer(
             "price_guarantee_expires_at": None if requires_instant_payment else "2026-10-13T00:00:00Z",
         },
     }
+    if live_mode is None:
+        del offer["live_mode"]
     if expires_at is not None:
         offer["expires_at"] = expires_at
     if available_services is not None:
@@ -112,9 +119,59 @@ def _slice(origin: str, destination: str, duration: str, segments: list[dict]) -
     }
 
 
-def response(offers: list[dict]) -> dict:
-    """Wrap offers the way an Offer Request response carries them."""
-    return {"data": {"id": "orq_0000000000000000000000", "offers": offers}}
+def response(offers: list[dict], *, live_mode: bool | None = False) -> dict:
+    """Wrap offers the way an Offer Request response carries them.
+
+    ``live_mode`` defaults to ``False`` - the envelope Duffel Test Mode
+    actually returns, and what V8's :func:`assert_test_mode` guard requires.
+    Pass ``True`` to model a live payload or ``None`` to model one that omits
+    the key; both must fail closed.
+    """
+    data: dict = {"id": "orq_0000000000000000000000", "offers": offers}
+    if live_mode is not None:
+        data["live_mode"] = live_mode
+    return {"data": data}
+
+
+# ---------------------------------------------------------------------------
+# Live-mode safety (V8). The envelope guard is the second, independent check
+# beyond the token prefix - these are the payloads it must refuse.
+# ---------------------------------------------------------------------------
+#: Envelope says live_mode=true. Must never be normalized.
+LIVE_MODE_ENVELOPE = response(
+    [_offer("off_live", [
+        _slice("CGN", "BCN", "PT2H10M", [
+            _segment("CGN", "BCN", "2026-10-15T08:00:00", "2026-10-15T10:10:00", "PT2H10M"),
+        ]),
+    ], live_mode=True)],
+    live_mode=True,
+)
+
+#: Envelope omits live_mode entirely. Silence fails closed - "might be live".
+LIVE_MODE_MISSING = response(
+    [_offer("off_silent_mode", [
+        _slice("CGN", "BCN", "PT2H10M", [
+            _segment("CGN", "BCN", "2026-10-15T08:00:00", "2026-10-15T10:10:00", "PT2H10M"),
+        ]),
+    ], live_mode=None)],
+    live_mode=None,
+)
+
+#: Envelope is sandbox but one offer on the page asserts live_mode=true.
+#: Page-level contamination: the whole response is refused.
+LIVE_MODE_MIXED_OFFERS = response([
+    _offer("off_ok_mode", [
+        _slice("CGN", "BCN", "PT2H10M", [
+            _segment("CGN", "BCN", "2026-10-15T08:00:00", "2026-10-15T10:10:00", "PT2H10M"),
+        ]),
+    ]),
+    _offer("off_bad_mode", [
+        _slice("CGN", "BCN", "PT2H15M", [
+            _segment("CGN", "BCN", "2026-10-15T09:00:00", "2026-10-15T11:15:00", "PT2H15M",
+                     flight_number="9999"),
+        ]),
+    ], live_mode=True),
+])
 
 
 # ---------------------------------------------------------------------------

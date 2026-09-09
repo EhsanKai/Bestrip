@@ -41,6 +41,18 @@ class Destination(BaseModel):
     name: str
     country: str
 
+    primary_airport: str | None = Field(default=None, min_length=3, max_length=3)
+    """The IATA code a real transport provider is queried with for this city (V8).
+
+    Synthetic like the rest of the catalog - a real deployment would carry a
+    proper city-to-airports table with alternates - but the codes themselves
+    are the genuine primary airport for each city, because a made-up code would
+    just make Duffel return 422. ``None`` means "not wired for a real provider":
+    beam search over the synthetic graph keys on the city ``id`` and never needs
+    this, so a catalog entry without one still works everywhere except real
+    acquisition.
+    """
+
     # --- V1 attributes -------------------------------------------------
     history: float = Field(ge=0.0, le=1.0)
     nature: float = Field(ge=0.0, le=1.0)

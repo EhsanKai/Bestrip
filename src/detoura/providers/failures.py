@@ -58,6 +58,14 @@ class ProviderFailureKind(str, Enum):
     would tell a traveller no such trip exists when the truth is that we chose
     not to look any further.
     """
+    OFFERS_TRUNCATED = "OFFERS_TRUNCATED"
+    """A route returned more offers than the snapshot kept (V8).
+
+    The cheapest were retained and the rest dropped to a per-route cap, so the
+    ranked answer is sound but the real supply was deeper than the count
+    implies. Recorded because the probe checkpoint found this happening
+    silently (23 offers shown as 20); never "no trips", if anything the reverse.
+    """
     AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
     RATE_LIMITED = "RATE_LIMITED"
 
@@ -102,6 +110,9 @@ FAILURE_MESSAGES: dict[ProviderFailureKind, str] = {
         "We could not authenticate with the provider."
     ),
     ProviderFailureKind.RATE_LIMITED: "We are being rate limited by the provider.",
+    ProviderFailureKind.OFFERS_TRUNCATED: (
+        "Some routes had more fares than we show; the cheapest were kept."
+    ),
     ProviderFailureKind.CALL_BUDGET_EXHAUSTED: (
         # Says what we did, not what exists. "We looked at part of the market"
         # and "the market is empty" are different sentences, and only one of

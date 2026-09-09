@@ -105,6 +105,7 @@ def _destination(
     id_: str,
     country: str,
     *,
+    airport: str,
     history: float,
     nature: float,
     nightlife: float,
@@ -124,6 +125,7 @@ def _destination(
         id=id_,
         name=id_,
         country=country,
+        primary_airport=airport,
         history=history,
         nature=nature,
         nightlife=nightlife,
@@ -151,6 +153,7 @@ def _destination(
 DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "London", "United Kingdom",
+        airport="LHR",
         history=0.85, nature=0.35, nightlife=0.90, culture=0.95, food=0.75,
         architecture=0.80, shopping=0.95, museums=0.98, beaches=0.00,
         family_friendly=0.80, romance=0.60, adventure=0.45,
@@ -158,6 +161,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Brussels", "Belgium",
+        airport="BRU",
         history=0.65, nature=0.30, nightlife=0.55, culture=0.70, food=0.85,
         architecture=0.75, shopping=0.60, museums=0.70, beaches=0.00,
         family_friendly=0.65, romance=0.50, adventure=0.30,
@@ -165,6 +169,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Paris", "France",
+        airport="CDG",
         history=0.90, nature=0.35, nightlife=0.75, culture=0.98, food=0.95,
         architecture=0.95, shopping=0.95, museums=1.00, beaches=0.00,
         family_friendly=0.70, romance=1.00, adventure=0.35,
@@ -172,6 +177,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Amsterdam", "Netherlands",
+        airport="AMS",
         history=0.70, nature=0.55, nightlife=0.85, culture=0.80, food=0.65,
         architecture=0.85, shopping=0.70, museums=0.90, beaches=0.20,
         family_friendly=0.70, romance=0.75, adventure=0.45,
@@ -179,6 +185,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Prague", "Czechia",
+        airport="PRG",
         history=0.95, nature=0.40, nightlife=0.85, culture=0.85, food=0.70,
         architecture=0.95, shopping=0.50, museums=0.70, beaches=0.00,
         family_friendly=0.65, romance=0.85, adventure=0.40,
@@ -186,6 +193,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Vienna", "Austria",
+        airport="VIE",
         history=0.92, nature=0.45, nightlife=0.60, culture=0.95, food=0.80,
         architecture=0.92, shopping=0.70, museums=0.95, beaches=0.00,
         family_friendly=0.75, romance=0.85, adventure=0.35,
@@ -193,6 +201,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Madrid", "Spain",
+        airport="MAD",
         history=0.80, nature=0.35, nightlife=0.90, culture=0.88, food=0.90,
         architecture=0.78, shopping=0.85, museums=0.92, beaches=0.00,
         family_friendly=0.70, romance=0.70, adventure=0.40,
@@ -200,6 +209,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Barcelona", "Spain",
+        airport="BCN",
         history=0.75, nature=0.70, nightlife=0.92, culture=0.90, food=0.88,
         architecture=0.95, shopping=0.85, museums=0.80, beaches=0.90,
         family_friendly=0.80, romance=0.80, adventure=0.65,
@@ -207,6 +217,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Milan", "Italy",
+        airport="MXP",
         history=0.70, nature=0.40, nightlife=0.70, culture=0.80, food=0.85,
         architecture=0.80, shopping=1.00, museums=0.75, beaches=0.00,
         family_friendly=0.55, romance=0.60, adventure=0.35,
@@ -214,6 +225,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Rome", "Italy",
+        airport="FCO",
         history=1.00, nature=0.35, nightlife=0.65, culture=0.95, food=0.92,
         architecture=1.00, shopping=0.75, museums=0.95, beaches=0.15,
         family_friendly=0.70, romance=0.90, adventure=0.40,
@@ -221,6 +233,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Dublin", "Ireland",
+        airport="DUB",
         history=0.65, nature=0.65, nightlife=0.88, culture=0.70, food=0.60,
         architecture=0.55, shopping=0.55, museums=0.60, beaches=0.25,
         family_friendly=0.65, romance=0.55, adventure=0.60,
@@ -228,6 +241,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Copenhagen", "Denmark",
+        airport="CPH",
         history=0.60, nature=0.60, nightlife=0.70, culture=0.78, food=0.85,
         architecture=0.75, shopping=0.70, museums=0.72, beaches=0.35,
         family_friendly=0.90, romance=0.70, adventure=0.45,
@@ -235,6 +249,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Budapest", "Hungary",
+        airport="BUD",
         history=0.85, nature=0.50, nightlife=0.90, culture=0.80, food=0.72,
         architecture=0.90, shopping=0.50, museums=0.70, beaches=0.00,
         family_friendly=0.60, romance=0.80, adventure=0.50,
@@ -242,6 +257,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Berlin", "Germany",
+        airport="BER",
         history=0.90, nature=0.45, nightlife=0.95, culture=0.88, food=0.70,
         architecture=0.70, shopping=0.75, museums=0.95, beaches=0.10,
         family_friendly=0.65, romance=0.45, adventure=0.50,
@@ -249,6 +265,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Munich", "Germany",
+        airport="MUC",
         history=0.70, nature=0.75, nightlife=0.65, culture=0.75, food=0.80,
         architecture=0.70, shopping=0.70, museums=0.75, beaches=0.00,
         family_friendly=0.85, romance=0.55, adventure=0.70,
@@ -256,6 +273,7 @@ DESTINATIONS: tuple[Destination, ...] = (
     ),
     _destination(
         "Zurich", "Switzerland",
+        airport="ZRH",
         history=0.50, nature=0.90, nightlife=0.45, culture=0.65, food=0.70,
         architecture=0.55, shopping=0.80, museums=0.60, beaches=0.30,
         family_friendly=0.80, romance=0.65, adventure=0.85,

@@ -254,12 +254,26 @@ class ExpiringProviderCache(Generic[K, V]):
     def __len__(self) -> int:
         return len(self._entries)
 
-    def get_or_compute(self, key: K, compute, *, expires_at: datetime | None = None) -> V:
+    def get_or_compute(
+        self,
+        key: K,
+        compute,
+        *,
+        expires_at: datetime | None = None,
+        expires_from=None,
+    ) -> V:
         """Return the cached value, or compute and store one.
 
         ``expires_at`` lets the caller declare the provider's own deadline for
-        whatever ``compute`` is about to return. It is *not* read from the value
-        here, because this cache must stay generic over what it stores.
+        whatever ``compute`` is about to return, when it is known up front.
+
+        ``expires_from`` is for the common case where it is not: a callable that
+        reads the provider deadline *out of* the freshly computed value (a
+        Duffel offer states its own ``expires_at``, and the caller does not know
+        it until the response arrives). It runs only on a miss, only on the new
+        value, and only when ``expires_at`` was not given. The cache still never
+        inspects the value itself - the caller supplies the accessor - so it
+        stays generic over what it stores.
         """
         now = self._clock()
         entry = self._entries.get(key)
@@ -278,6 +292,8 @@ class ExpiringProviderCache(Generic[K, V]):
         # nothing stored. Caching a failure is how one timeout becomes a
         # permanent absence of flights.
         value = compute()
+        if expires_at is None and expires_from is not None:
+            expires_at = expires_from(value)
         self._store(key, value, now, expires_at)
         return value
 

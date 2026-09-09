@@ -528,6 +528,16 @@ function ReviewStep({
   );
 }
 
+/** An itemised breakdown must reconcile line by line, so it always shows exact
+ *  cents — unlike the headline trip price, where `money()` drops them. */
+function money2(amount: number, currency: string): string {
+  const symbol = currency === "EUR" ? "€" : `${currency} `;
+  return `${symbol}${amount.toLocaleString("en-GB", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 function CommercialReview({
   commercial,
   currency,
@@ -564,11 +574,11 @@ function CommercialReview({
           >
             <span className="booking__tier-head">
               <b>{opt.label}</b>
-              <span className="numeric">{money(opt.customer_total, currency)}</span>
+              <span className="numeric">{money2(opt.customer_total, currency)}</span>
             </span>
             <span className="booking__tier-sub">{opt.summary}</span>
             <span className="booking__tier-fee">
-              Detoura service {money(opt.detoura_fee, currency)}
+              Detoura service {money2(opt.detoura_fee, currency)}
             </span>
           </button>
         ))}
@@ -621,29 +631,29 @@ function CommercialReview({
       <dl className="booking__breakdown">
         <div>
           <dt>Flights (supplier fare)</dt>
-          <dd className="numeric">{money(b.supplier_total, currency)}</dd>
+          <dd className="numeric">{money2(b.supplier_total, currency)}</dd>
         </div>
         <div>
           <dt>
             Detoura service · {commercial.service_tier_label}
           </dt>
-          <dd className="numeric">{money(b.detoura_revenue_gross, currency)}</dd>
+          <dd className="numeric">{money2(b.detoura_revenue_gross, currency)}</dd>
         </div>
         {b.tax > 0 && (
           <div>
             <dt>Tax</dt>
-            <dd className="numeric">{money(b.tax, currency)}</dd>
+            <dd className="numeric">{money2(b.tax, currency)}</dd>
           </div>
         )}
         {b.discount > 0 && (
           <div className="booking__breakdown-discount">
             <dt>Promo {commercial.promo_code}</dt>
-            <dd className="numeric">−{money(b.discount, currency)}</dd>
+            <dd className="numeric">−{money2(b.discount, currency)}</dd>
           </div>
         )}
         <div className="booking__breakdown-total">
           <dt>You pay{travellers > 1 ? ` (${travellers} travellers)` : ""}</dt>
-          <dd className="numeric">{money(b.customer_total, currency)}</dd>
+          <dd className="numeric">{money2(b.customer_total, currency)}</dd>
         </div>
       </dl>
 

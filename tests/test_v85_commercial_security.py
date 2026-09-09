@@ -72,7 +72,7 @@ def test_client_supplied_price_fields_are_ignored(client):
     )
     c = j["commercial"]
     assert c["breakdown"]["supplier_total"] == 325.0
-    assert c["breakdown"]["customer_total"] == 341.25  # 325 + 5% basic markup
+    assert c["breakdown"]["customer_total"] == 334.75  # 325 + 3% basic markup
     assert c["breakdown"]["discount"] == 0.0
 
 

@@ -15,26 +15,32 @@ from . import audit
 from .db import Database
 
 DEFAULT_POLICY_ID = "detoura.markup"
+BUILTIN_VERSION = 2
+_SEED_LABEL_PREFIX = "Detoura sandbox markup"
 
 #: Seed policy - **an example for the sandbox, not commercial truth**. Every
-#: number here is meant to be re-tuned through ops configuration. Basic is
-#: self-service and costs more in percentage terms; All-in-One is a lower
-#: percentage plus an explicit service fee for the orchestration Detoura does.
+#: number here is meant to be re-tuned through ops configuration.
+#:
+#: The product rule the numbers encode: All-in-One is the higher-service
+#: product, so its Detoura fee is higher - a bigger percentage plus an explicit
+#: orchestration fee for the multi-ticket booking, monitoring and recovery
+#: Detoura runs. Basic is self-service and cheaper. The commercial service also
+#: enforces All-in-One >= Basic regardless of what a policy says.
 _DEFAULT_POLICY = DynamicMarkupPolicy(
     policy_id=DEFAULT_POLICY_ID,
-    version=1,
-    label="Detoura sandbox markup v1 (example - not commercial truth)",
+    version=BUILTIN_VERSION,
+    label="Detoura sandbox markup v2 (example - not commercial truth)",
     rules=(
         MarkupRule(
             label="All-in-One",
             when_tier=ServiceTier.ALL_IN_ONE,
-            percentage=0.03,
-            fixed_fee=8.0,
+            percentage=0.05,
+            fixed_fee=6.0,
         ),
         MarkupRule(
             label="Basic / self-service",
             when_tier=ServiceTier.BASIC,
-            percentage=0.05,
+            percentage=0.03,
             fixed_fee=0.0,
         ),
     ),
@@ -52,11 +58,21 @@ def _now() -> str:
 
 
 def seed_defaults(db: Database) -> None:
-    """Idempotent. Installs the example policy only if the table is empty."""
+    """Idempotent. Installs the built-in example policy if none exists, and
+    upgrades an *un-edited* built-in seed to the current version - but never
+    touches a policy an operator has authored or changed."""
     row = db.query_one("SELECT COUNT(*) AS n FROM markup_policies")
-    if row and row["n"]:
+    if not row or not row["n"]:
+        save_policy(db, _DEFAULT_POLICY, active=True, actor="system:seed")
         return
-    save_policy(db, _DEFAULT_POLICY, active=True, actor="system:seed")
+    active = _active_row(db, DEFAULT_POLICY_ID)
+    if (
+        active is not None
+        and str(active["label"]).startswith(_SEED_LABEL_PREFIX)
+        and int(active["version"]) < BUILTIN_VERSION
+        and get_policy(db, DEFAULT_POLICY_ID, BUILTIN_VERSION) is None
+    ):
+        save_policy(db, _DEFAULT_POLICY, active=True, actor="system:seed-upgrade")
 
 
 def save_policy(

@@ -32,6 +32,7 @@ from enum import Enum
 from ..models.booking import (
     BookingItem,
     BookingState,
+    GuidedBookingState,
     JourneyBookingIntent,
     PriceTolerance,
 )
@@ -59,6 +60,10 @@ class BookingPhase(str, Enum):
     COMPLETE = "complete"
     PARTIAL_FAILURE = "partial_failure"
     FAILED = "failed"
+    #: Basic / guided: Detoura prepared and re-checked the journey and now
+    #: guides the traveller through booking each ticket. No managed
+    #: orchestration runs and Detoura creates no Duffel Order in this flow.
+    GUIDED_BOOKING = "guided_booking"
 
 
 @dataclass(slots=True)
@@ -86,6 +91,13 @@ class ItemProgress:
     detail: str = ""
     current_price: float | None = None
     provider_order_id: str | None = None
+    #: Basic / guided flow only. Set once the journey is prepared; advanced by
+    #: the traveller as they book each ticket. ``guided_reported_by`` records
+    #: who last set it ("traveller" | "detoura" | "provider") so a
+    #: traveller-reported CONFIRMED is never shown as Detoura-verified.
+    guided_state: "GuidedBookingState | None" = None
+    guided_reported_by: str = ""
+    guided_ref: str = ""
 
     def to_item(self) -> BookingItem:
         from ..models.provider_reference import ProviderOfferReference

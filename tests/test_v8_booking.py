@@ -275,7 +275,8 @@ def test_the_endpoints_generate_a_data_driven_demo_pass():
         "flight_number": "1", "price_per_person": 95.8, "cabin": "included", "checked": "unknown",
     }]
     r = c.post("/api/v1/booking-intents", json={
-        "demo_trip_label": "T", "demo_currency": "EUR", "demo_travelers": 1, "demo_legs": legs,
+        "demo_trip_label": "T", "demo_currency": "EUR", "demo_travelers": 1,
+        "demo_legs": legs, "service_tier": "ALL_IN_ONE",
     })
     assert r.status_code == 201
     bid = r.json()["booking_id"]

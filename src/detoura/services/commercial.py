@@ -84,15 +84,35 @@ class CommercialPricingService:
             supplier_transport + supplier_baggage + supplier_fees
         )
 
-        markup = policy.evaluate(
-            MarkupContext(
-                service_tier=service_tier,
-                ticket_count=max(1, min(ticket_count, 12)),
-                supplier_total=supplier_total,
-                currency=currency,
-                market=self._market,
-            )
+        ctx_kw = dict(
+            ticket_count=max(1, min(ticket_count, 12)),
+            supplier_total=supplier_total,
+            currency=currency,
+            market=self._market,
         )
+        markup = policy.evaluate(
+            MarkupContext(service_tier=service_tier, **ctx_kw)
+        )
+
+        # Product invariant: All-in-One is the higher-service tier, so its
+        # Detoura fee is never below Basic's for the same supplier inputs. This
+        # holds even if a policy is mis-configured. A promotion targeted only at
+        # All-in-One can still make the *final total* lower - that is disclosed,
+        # not prevented.
+        if service_tier is ServiceTier.ALL_IN_ONE:
+            basic_fee = policy.evaluate(
+                MarkupContext(service_tier=ServiceTier.BASIC, **ctx_kw)
+            ).total_fee
+            if markup.total_fee + 1e-6 < basic_fee:
+                bump = round_half_up(basic_fee - markup.total_fee)
+                markup = markup.model_copy(update={
+                    "markup": round_half_up(markup.markup + bump),
+                    "bounded": True,
+                    "explanation": markup.explanation + (
+                        f"All-in-One fee raised {markup.total_fee:.2f} -> "
+                        f"{basic_fee:.2f} so it is never below the Basic fee",
+                    ),
+                })
 
         tax = round_half_up((markup.service_fee + markup.markup) * self._tax_rate)
 

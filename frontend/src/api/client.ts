@@ -17,7 +17,10 @@ import {
   type CreateBookingIntentRequest,
   type DestinationSummary,
   type OriginResponse,
+  type CommercialPreviewResponse,
+  type GuidedMarkRequest,
   type ProfileName,
+  type SelfServiceItinerary,
   type SetCommercialOptionsRequest,
   type TravelerInput,
   type TravelPass,
@@ -163,6 +166,38 @@ export const api = {
   setCommercialOptions(bookingId: string, body: SetCommercialOptionsRequest) {
     return request<BookingIntent>(
       `/booking-intents/${encodeURIComponent(bookingId)}/commercial`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  },
+
+  commercialPreview(body: {
+    supplier_total: number;
+    currency?: string;
+    ticket_count?: number;
+    promo_code?: string | null;
+  }) {
+    return request<CommercialPreviewResponse>("/commercial/preview", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  getItinerary(bookingId: string) {
+    return request<SelfServiceItinerary>(
+      `/booking-intents/${encodeURIComponent(bookingId)}/itinerary`,
+    );
+  },
+
+  startTicketBooking(bookingId: string, sequence: number) {
+    return request<SelfServiceItinerary>(
+      `/booking-intents/${encodeURIComponent(bookingId)}/tickets/${sequence}/start-booking`,
+      { method: "POST" },
+    );
+  },
+
+  markTicket(bookingId: string, sequence: number, body: GuidedMarkRequest) {
+    return request<SelfServiceItinerary>(
+      `/booking-intents/${encodeURIComponent(bookingId)}/tickets/${sequence}/mark`,
       { method: "POST", body: JSON.stringify(body) },
     );
   },

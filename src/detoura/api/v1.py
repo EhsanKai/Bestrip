@@ -18,7 +18,7 @@ from __future__ import annotations
 import copy
 import os
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -36,7 +36,7 @@ from ..providers.failures import FailureLog, ProviderFailureKind
 from ..search_modes import MODE_SETTINGS, SearchMode, apply_mode
 from ..services.budget_sensitivity import analyze_budget_sensitivity
 from ..services.feedback import record_feedback
-from ..models.booking import PriceTolerance
+from ..models.booking import BookingState, PriceTolerance
 from ..models.traveler import Traveler, TravelerGender, TravelerParty, TravelerTitle
 from ..providers.duffel import DuffelTransportProvider, is_test_token
 from ..providers.http import RateLimiter, RetryingHttpClient, UrllibHttpClient
@@ -65,11 +65,16 @@ from .contracts import (
     BookingIntentResponse,
     BookingItemStateDTO,
     ChangeDiffDTO,
+    CommercialPreviewRequest,
+    CommercialPreviewResponse,
     CommercialSummaryDTO,
     ConfirmBookingRequest,
     CreateBookingIntentRequest,
+    GuidedMarkRequest,
     OfferChangeDTO,
     PriceBreakdownDTO,
+    SelfServiceItineraryDTO,
+    SelfServiceTicketDTO,
     ServiceTierOptionDTO,
     SetCommercialOptionsRequest,
     RevalidateRequest,
@@ -130,7 +135,10 @@ def to_trip_request(body: TripSearchRequest) -> TripRequest:
 
     return TripRequest(
         origin=body.origin,
-        budget=body.budget,
+        # The engine searches up to preferred + flexibility; the response
+        # labels anything above the preferred budget. The committed budget the
+        # traveller set is never silently raised.
+        budget=body.budget + max(0.0, body.budget_flex),
         travelers=body.travelers,
         duration_days=body.duration_days,
         date_from=start,
@@ -440,16 +448,18 @@ def revalidate(body: RevalidateRequest) -> RevalidateResponse:
 # ---------------------------------------------------------------------------
 _TERMINAL_PHASES = {
     BookingPhase.COMPLETE, BookingPhase.PARTIAL_FAILURE, BookingPhase.FAILED,
+    BookingPhase.GUIDED_BOOKING,
 }
 _PHASE_MESSAGES = {
     BookingPhase.AWAITING_TRAVELERS: "Enter who is travelling.",
     BookingPhase.AWAITING_CONFIRMATION: "Review your journey and confirm once.",
-    BookingPhase.REVALIDATING: "Checking your trip before ticketing…",
+    BookingPhase.REVALIDATING: "Checking your trip…",
     BookingPhase.RECONFIRM_REQUIRED: "Something changed — please confirm again.",
     BookingPhase.ISSUING: "Preparing your journey…",
     BookingPhase.COMPLETE: "Your test journey has been prepared.",
     BookingPhase.PARTIAL_FAILURE: "We couldn't complete your entire journey.",
     BookingPhase.FAILED: "This journey could not be prepared.",
+    BookingPhase.GUIDED_BOOKING: "Your journey is ready — book each ticket with Detoura's guidance.",
 }
 
 
@@ -480,15 +490,64 @@ def _breakdown_dto(bd) -> PriceBreakdownDTO:
     )
 
 
-_TIER_SUMMARIES = {
-    ServiceTier.BASIC: (
-        "You receive the itinerary and handle more of the booking yourself."
-    ),
-    ServiceTier.ALL_IN_ONE: (
-        "Detoura coordinates every ticket, revalidation, issuance, monitoring "
-        "and recovery support for the whole journey."
-    ),
+_TIER_CONTENT = {
+    ServiceTier.BASIC: {
+        "tagline": "Book with guidance",
+        "summary": "You confirm each ticket yourself, in one organised place.",
+        "flow": "self_service",
+        "included": [
+            "Optimised journey",
+            "One organised itinerary",
+            "Live fare checks",
+            "Guided ticket-by-ticket booking",
+        ],
+        "not_included": [
+            "Detoura books the tickets for you",
+            "Booking monitoring",
+            "Recovery assistance",
+            "Unified travel pass",
+        ],
+    },
+    ServiceTier.ALL_IN_ONE: {
+        "tagline": "Detoura handles it",
+        "summary": "One confirmation — Detoura books and manages the journey.",
+        "flow": "managed",
+        "included": [
+            "Everything in Basic",
+            "One confirmation",
+            "Detoura books all tickets",
+            "Booking monitoring",
+            "Recovery assistance",
+            "Unified travel pass",
+        ],
+        "not_included": [],
+    },
 }
+_RECOMMENDED_TIER = ServiceTier.ALL_IN_ONE
+
+
+def _tier_option_dto(
+    service, *, supplier_total: float, currency: str, ticket_count: int,
+    promo_code: str | None, user_key: str, selected_tier: ServiceTier | None,
+) -> list[ServiceTierOptionDTO]:
+    options: list[ServiceTierOptionDTO] = []
+    for tier in (ServiceTier.BASIC, ServiceTier.ALL_IN_ONE):
+        res = service.quote(
+            supplier_transport=supplier_total, currency=currency,
+            ticket_count=ticket_count, service_tier=tier,
+            promo_code=promo_code, user_key=user_key,
+        )
+        b = res.quote.breakdown
+        c = _TIER_CONTENT[tier]
+        options.append(ServiceTierOptionDTO(
+            tier=tier, label=tier.label, summary=c["summary"],
+            tagline=c["tagline"], flow=c["flow"],
+            detoura_fee=b.detoura_revenue_gross, customer_total=b.customer_total,
+            selected=tier is selected_tier,
+            recommended=tier is _RECOMMENDED_TIER,
+            included=c["included"], not_included=c["not_included"],
+        ))
+    return options
 
 
 def _commercial_dto(run) -> CommercialSummaryDTO | None:
@@ -500,22 +559,11 @@ def _commercial_dto(run) -> CommercialSummaryDTO | None:
 
     db = get_db()
     service = CommercialPricingService(db)
-    options: list[ServiceTierOptionDTO] = []
-    for tier in (ServiceTier.BASIC, ServiceTier.ALL_IN_ONE):
-        res = service.quote(
-            supplier_transport=float(run.discovered_total),
-            currency=run.currency,
-            ticket_count=len(run.items),
-            service_tier=tier,
-            promo_code=run.requested_promo,
-            user_key=run.user_key,
-        )
-        b = res.quote.breakdown
-        options.append(ServiceTierOptionDTO(
-            tier=tier, label=tier.label, summary=_TIER_SUMMARIES[tier],
-            detoura_fee=b.detoura_revenue_gross, customer_total=b.customer_total,
-            selected=tier is run.service_tier,
-        ))
+    options = _tier_option_dto(
+        service, supplier_total=float(run.discovered_total), currency=run.currency,
+        ticket_count=len(run.items), promo_code=run.requested_promo,
+        user_key=run.user_key, selected_tier=run.service_tier,
+    )
 
     q = run.quote
     promo_msg = ""
@@ -544,6 +592,54 @@ def _commercial_dto(run) -> CommercialSummaryDTO | None:
     )
 
 
+def _itinerary_dto(run) -> SelfServiceItineraryDTO:
+    from ..services.guided_booking import guidance, progress
+
+    _finalize_if_terminal(run)
+    persist_run(run, get_db())
+    booked, total = progress(run)
+    tickets = [
+        SelfServiceTicketDTO(
+            sequence=idx,
+            origin_city=i.origin_city, origin_airport=i.origin_airport,
+            destination_city=i.destination_city,
+            destination_airport=i.destination_airport,
+            departure=i.departure, arrival=i.arrival,
+            carrier=i.carrier, flight_number=i.flight_number,
+            fare=i.quoted_price, rechecked_fare=i.current_price, currency=i.currency,
+            cabin_baggage=i.cabin_baggage, checked_baggage=i.checked_baggage,
+            available=i.state is not BookingState.UNAVAILABLE,
+            guided_state=(i.guided_state.value if i.guided_state else "READY_TO_BOOK"),
+            reported_by=i.guided_reported_by or "detoura",
+            detoura_verified=False,
+            note=i.detail,
+            booking_guidance=guidance(i),
+        )
+        for idx, i in enumerate(run.items, start=1)
+    ]
+    dates = sorted({
+        i.departure.date().isoformat() for i in run.items if i.departure
+    })
+    return SelfServiceItineraryDTO(
+        journey_reference=run.journey_reference,
+        booking_id=run.booking_id,
+        trip_label=run.trip_label,
+        route_cities=list(run.route_cities),
+        travel_dates=dates,
+        party_size=run.party.size if run.party else 1,
+        traveller_name=(run.party.lead.full_name if run.party else ""),
+        traveller_details_saved=run.party is not None,
+        tickets=tickets,
+        booked_count=booked,
+        ticket_count=total,
+        fares_rechecked=True,
+        recheck_note=run.reconfirm_note,
+        commercial=_commercial_dto(run),
+        test_mode=True,
+        generated_at=datetime.now(timezone.utc),
+    )
+
+
 def _finalize_if_terminal(run) -> None:
     if run.phase in _TERMINAL_PHASES and not run.economics_written:
         try:
@@ -568,6 +664,9 @@ def _intent_dto(run) -> BookingIntentResponse:
         reconfirm_note=run.reconfirm_note,
         party_size=run.party.size if run.party else max((i.travelers for i in run.items), default=1),
         travelers_submitted=run.party is not None,
+        service_flow=(
+            "self_service" if run.service_tier is ServiceTier.BASIC else "managed"
+        ),
         commercial=_commercial_dto(run),
         items=[
             BookingItemStateDTO(
@@ -583,7 +682,29 @@ def _intent_dto(run) -> BookingIntentResponse:
             )
             for idx, i in enumerate(run.items, start=1)
         ],
-        pass_available=run.phase in _TERMINAL_PHASES,
+        pass_available=run.phase in (
+            BookingPhase.COMPLETE, BookingPhase.PARTIAL_FAILURE, BookingPhase.FAILED,
+        ),
+        itinerary_available=run.phase is BookingPhase.GUIDED_BOOKING,
+    )
+
+
+@router.post("/commercial/preview", response_model=CommercialPreviewResponse)
+def commercial_preview(body: CommercialPreviewRequest) -> CommercialPreviewResponse:
+    """Price both service tiers for a trip without starting a booking. Used on
+    the results and trip-detail screens so the customer sees real numbers, and
+    no unavoidable fee ever appears only at final confirmation."""
+    from ..services.commercial import CommercialPricingService
+
+    service = CommercialPricingService(get_db())
+    options = _tier_option_dto(
+        service, supplier_total=body.supplier_total, currency=body.currency.upper(),
+        ticket_count=body.ticket_count, promo_code=body.promo_code,
+        user_key="anonymous", selected_tier=None,
+    )
+    return CommercialPreviewResponse(
+        currency=body.currency.upper(), supplier_total=body.supplier_total,
+        tiers=options, test_mode=True,
     )
 
 
@@ -693,24 +814,91 @@ def submit_travelers(booking_id: str, body: SubmitTravelersRequest) -> BookingIn
 
 @router.post("/booking-intents/{booking_id}/confirm", response_model=BookingIntentResponse)
 def confirm_booking(booking_id: str, body: ConfirmBookingRequest) -> BookingIntentResponse:
-    """One confirmation for the whole journey. Kicks off revalidation, then
-    per-leg issuance. Poll `GET /booking-intents/{id}` for progress."""
+    """The single journey confirmation.
+
+    * All-in-One: kicks off revalidation then Detoura's per-leg issuance. Poll
+      `GET /booking-intents/{id}` for progress, then fetch the travel pass.
+    * Basic: re-checks the fares and opens the guided booking workflow. No
+      orchestration, no Duffel Order. Fetch `.../itinerary` for the tickets.
+    """
     run = _booking_or_404(booking_id)
     run.tolerance = PriceTolerance(
         absolute=body.tolerance_absolute, percentage=body.tolerance_percentage
     )
     # Re-price at the moment of confirmation: a promo may have lapsed or been
-    # fully redeemed since the review screen was rendered. Whatever this
-    # yields is the price the customer confirms.
+    # fully redeemed since the review screen was rendered.
     try:
         price_run(run, get_db())
     except Exception:
         pass
     try:
-        start_confirmation(run)
+        if run.service_tier is ServiceTier.BASIC:
+            from ..services.guided_booking import prepare_journey
+
+            prepare_journey(run)
+        else:
+            start_confirmation(run)
     except ValueError as error:
         raise HTTPException(status_code=409, detail={"message": str(error)}) from error
     return _intent_dto(run)
+
+
+@router.post(
+    "/booking-intents/{booking_id}/tickets/{sequence}/start-booking",
+    response_model=SelfServiceItineraryDTO,
+)
+def guided_start_ticket(booking_id: str, sequence: int) -> SelfServiceItineraryDTO:
+    """The traveller is going to book this ticket externally now."""
+    run = _booking_or_404(booking_id)
+    from ..services.guided_booking import start_ticket
+
+    try:
+        start_ticket(run, sequence)
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"message": "No such ticket."})
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail={"message": str(error)})
+    persist_run(run, get_db())
+    return _itinerary_dto(run)
+
+
+@router.post(
+    "/booking-intents/{booking_id}/tickets/{sequence}/mark",
+    response_model=SelfServiceItineraryDTO,
+)
+def guided_mark_ticket(
+    booking_id: str, sequence: int, body: GuidedMarkRequest
+) -> SelfServiceItineraryDTO:
+    """The traveller reports where this ticket stands. Recorded as
+    traveller-reported; Detoura never upgrades it to verified."""
+    run = _booking_or_404(booking_id)
+    from ..models.booking import GuidedBookingState
+    from ..services.guided_booking import mark_ticket
+
+    try:
+        mark_ticket(run, sequence, GuidedBookingState(body.state),
+                    reference=body.reference)
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"message": "No such ticket."})
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail={"message": str(error)})
+    persist_run(run, get_db())
+    return _itinerary_dto(run)
+
+
+@router.get(
+    "/booking-intents/{booking_id}/itinerary",
+    response_model=SelfServiceItineraryDTO,
+)
+def get_itinerary(booking_id: str) -> SelfServiceItineraryDTO:
+    run = _booking_or_404(booking_id)
+    if run.phase is not BookingPhase.GUIDED_BOOKING:
+        raise HTTPException(status_code=409, detail={
+            "message": "This journey has no guided itinerary.",
+            "phase": run.phase.value,
+        })
+    _finalize_if_terminal(run)
+    return _itinerary_dto(run)
 
 
 @router.get("/booking-intents/{booking_id}", response_model=BookingIntentResponse)

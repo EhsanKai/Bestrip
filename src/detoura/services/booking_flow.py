@@ -214,6 +214,12 @@ def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -
     A SANDBOX_BOOKED run with no configured sandbox token degrades to
     DEMO_ONLY rather than failing - and the resulting pass says so.
     """
+    from ..models.commercial import ServiceTier
+
+    if run.service_tier is ServiceTier.BASIC:
+        # Hard guarantee: the orchestrator never runs for a self-service
+        # booking. The Basic flow goes through services.self_service instead.
+        raise ValueError("Basic bookings are not orchestrated; prepare an itinerary")
     if run.party is None:
         raise ValueError("traveller details are required before confirmation")
     if run.phase not in (BookingPhase.AWAITING_CONFIRMATION, BookingPhase.RECONFIRM_REQUIRED):

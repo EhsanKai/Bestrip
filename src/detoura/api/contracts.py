@@ -136,7 +136,15 @@ class TripSearchRequest(BaseModel):
     date_flexible: bool = False
 
     travelers: int = Field(default=2, ge=1, le=12)
-    budget: float = Field(gt=0.0, description="Total for the whole party.")
+    budget: float = Field(gt=0.0, description="Preferred total for the whole party.")
+    budget_flex: float = Field(
+        default=0.0, ge=0.0, le=5_000.0,
+        description=(
+            "How far above the preferred budget to also consider, e.g. 100 for "
+            "'show me stronger options up to EUR 100 more'. Does not raise the "
+            "committed budget; results above the preferred budget are labelled."
+        ),
+    )
 
     profile: ProfileName = ProfileName.BEST_VALUE
     search_mode: SearchMode = SearchMode.SMART
@@ -486,6 +494,11 @@ class TripRecommendation(BaseModel):
     """
     price_per_person: float
     currency: str
+    over_budget_by: float = 0.0
+    """How far ``total_price`` exceeds the traveller's *preferred* budget, or
+    0.0 when within it. A flexible-budget search can return trips above the
+    preferred figure; they are never presented as within budget."""
+    within_preferred_budget: bool = True
     costs: CostBreakdownDTO
 
     usable_hours: float
@@ -612,6 +625,8 @@ class TripSearchResponse(BaseModel):
     origin_airports: list[str]
     currency: str
     profile: ProfileName
+    preferred_budget: float = 0.0
+    """Echoed back so the client can label over-budget results consistently."""
     recommendations: list[TripRecommendation] = Field(default_factory=list)
     baseline: BaselineComparisonDTO | None = None
     diagnostics: SearchDiagnostics
@@ -1137,9 +1152,35 @@ class ServiceTierOptionDTO(BaseModel):
     tier: ServiceTier
     label: str
     summary: str
+    tagline: str = ""
+    flow: str = "managed"
+    """"self_service" or "managed" - what actually happens after this choice."""
     detoura_fee: float
     customer_total: float
     selected: bool
+    recommended: bool = False
+    included: list[str] = Field(default_factory=list)
+    not_included: list[str] = Field(default_factory=list)
+
+
+class CommercialPreviewRequest(BaseModel):
+    """Price both tiers for a trip without starting a booking - used on the
+    results and trip-detail screens so the customer sees real numbers before
+    committing to anything."""
+
+    model_config = ConfigDict(frozen=True)
+    supplier_total: float = Field(gt=0.0, le=1_000_000.0)
+    currency: str = Field(default="EUR", min_length=3, max_length=3)
+    ticket_count: int = Field(default=1, ge=1, le=12)
+    promo_code: str | None = Field(default=None, max_length=40)
+
+
+class CommercialPreviewResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    currency: str
+    supplier_total: float
+    tiers: list[ServiceTierOptionDTO]
+    test_mode: bool = True
 
 
 class CommercialSummaryDTO(BaseModel):
@@ -1221,9 +1262,14 @@ class BookingIntentResponse(BaseModel):
     reconfirm_note: str = ""
     party_size: int
     travelers_submitted: bool
+    service_flow: str = "managed"
+    """"self_service" for Basic (traveller books the tickets; no orchestration,
+    no Duffel Order) or "managed" for All-in-One (the full Phase 4 flow)."""
     items: list[BookingItemStateDTO]
     pass_available: bool
     """True once the run reached a terminal phase and a pass can be fetched."""
+    itinerary_available: bool = False
+    """True once a Basic self-service itinerary is ready."""
     commercial: CommercialSummaryDTO | None = None
     """The transparent price: supplier fare vs. Detoura's own fee, the chosen
     service tier and the promo outcome. Present once the intent is priced."""
@@ -1270,4 +1316,71 @@ class TravelPassResponse(BaseModel):
     disclaimer: dict
     headline: str
     mode_note: str
+    generated_at: datetime
+
+
+class GuidedMarkRequest(BaseModel):
+    """The traveller reports where one ticket stands in the guided flow."""
+
+    model_config = ConfigDict(frozen=True)
+    state: str = Field(pattern=(
+        "^(READY_TO_BOOK|EXTERNAL_BOOKING_STARTED|"
+        "BOOKING_CONFIRMATION_REQUIRED|CONFIRMED|UNKNOWN)$"
+    ))
+    reference: str = Field(default="", max_length=40)
+    """An optional airline confirmation code. Never traveller PII."""
+
+
+class SelfServiceTicketDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    sequence: int
+    origin_city: str
+    origin_airport: str
+    destination_city: str
+    destination_airport: str
+    departure: datetime
+    arrival: datetime
+    carrier: str = ""
+    flight_number: str = ""
+    fare: float
+    rechecked_fare: float | None = None
+    currency: str
+    cabin_baggage: str = "unknown"
+    checked_baggage: str = "unknown"
+    available: bool = True
+    guided_state: str = "READY_TO_BOOK"
+    reported_by: str = "detoura"
+    """"detoura" | "traveller" | "provider" - who last set ``guided_state``.
+    A "traveller"-reported CONFIRMED is the traveller's word, not Detoura's."""
+    detoura_verified: bool = False
+    """Always False in this build for a Basic ticket - Detoura has no order to
+    prove a booking."""
+    note: str = ""
+    booking_guidance: str
+
+
+class SelfServiceItineraryDTO(BaseModel):
+    """A Basic booking's guided-booking view. Detoura optimised, priced and
+    re-checked the journey and now guides the traveller through booking each
+    ticket. Not a Travel Pass - Detoura booked nothing and no Duffel Order
+    exists."""
+
+    model_config = ConfigDict(frozen=True)
+
+    journey_reference: str
+    booking_id: str
+    headline: str = "Your journey is ready"
+    trip_label: str
+    route_cities: list[str]
+    travel_dates: list[str]
+    party_size: int
+    traveller_name: str = ""
+    traveller_details_saved: bool = True
+    tickets: list[SelfServiceTicketDTO]
+    booked_count: int = 0
+    ticket_count: int = 0
+    fares_rechecked: bool = True
+    recheck_note: str = ""
+    commercial: CommercialSummaryDTO | None = None
+    test_mode: bool = True
     generated_at: datetime

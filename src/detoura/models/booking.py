@@ -58,6 +58,28 @@ class BookingState(str, Enum):
     FAILED: nothing was sent, so nothing needs undoing."""
 
 
+class GuidedBookingState(str, Enum):
+    """One ticket's status in the **Basic / guided** flow, where the traveller
+    books each ticket themselves and Detoura guides them.
+
+    Detoura never asserts ``CONFIRMED`` from its own side here - there is no
+    Detoura-created order to prove it. ``CONFIRMED`` is only ever set from a
+    traveller's own report (and is stored and shown as traveller-reported) or
+    from real provider evidence if a future integration supplies it.
+    """
+
+    READY_TO_BOOK = "READY_TO_BOOK"
+    EXTERNAL_BOOKING_STARTED = "EXTERNAL_BOOKING_STARTED"
+    BOOKING_CONFIRMATION_REQUIRED = "BOOKING_CONFIRMATION_REQUIRED"
+    CONFIRMED = "CONFIRMED"
+    UNKNOWN = "UNKNOWN"
+
+    @property
+    def is_progress(self) -> bool:
+        """Counts toward "N of M booked"."""
+        return self is GuidedBookingState.CONFIRMED
+
+
 #: The only transitions the domain allows.
 #:
 #: Written as data rather than as scattered ``if`` statements so that "can this

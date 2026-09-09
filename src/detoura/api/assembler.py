@@ -241,6 +241,7 @@ def recommendation_dto(
     *,
     travelers: int,
     now: datetime,
+    preferred_budget: float | None = None,
 ) -> TripRecommendation:
     """One itinerary, translated."""
     value = itinerary.value_breakdown
@@ -296,6 +297,15 @@ def recommendation_dto(
         total_price=itinerary.total_cost,
         price_per_person=round(itinerary.total_cost / max(travelers, 1), 2),
         currency=itinerary.currency,
+        over_budget_by=(
+            round(max(0.0, itinerary.total_cost - preferred_budget), 2)
+            if preferred_budget is not None
+            else 0.0
+        ),
+        within_preferred_budget=(
+            preferred_budget is None
+            or itinerary.total_cost <= preferred_budget + 0.01
+        ),
         costs=CostBreakdownDTO(
             transport=itinerary.cost_breakdown.transport,
             accommodation=itinerary.cost_breakdown.accommodation,
@@ -498,9 +508,11 @@ def build_response(
         deep=mode is SearchMode.DEEP,
     )
 
+    preferred_budget = getattr(api_request, "budget", None)
     recommendations = [
         recommendation_dto(
-            itinerary, result, quality, travelers=request.travelers, now=moment
+            itinerary, result, quality, travelers=request.travelers,
+            now=moment, preferred_budget=preferred_budget,
         )
         for itinerary in result.recommendations
     ]
@@ -553,6 +565,7 @@ def build_response(
         origin_airports=list(metadata.origin_airports),
         currency=metadata.currency,
         profile=result.profile,
+        preferred_budget=float(preferred_budget or 0.0),
         recommendations=recommendations,
         baseline=_baseline_dto(
             result, result.recommendations[0] if result.recommendations else None

@@ -48,6 +48,7 @@ export interface TripSearchRequest {
   date_flexible?: boolean;
   travelers: number;
   budget: number;
+  budget_flex?: number;
   profile?: ProfileName;
   search_mode?: SearchMode;
   interests?: Interest[];
@@ -150,6 +151,8 @@ export interface TripRecommendation {
   nights: number[];
 
   total_price: number;
+  over_budget_by?: number;
+  within_preferred_budget?: boolean;
   price_per_person: number;
   currency: string;
   costs: CostBreakdown;
@@ -206,6 +209,7 @@ export interface TripSearchResponse {
   origin_airports: string[];
   currency: string;
   profile: ProfileName;
+  preferred_budget?: number;
   recommendations: TripRecommendation[];
   baseline: BaselineComparisonDTO | null;
   diagnostics: SearchDiagnostics;
@@ -451,9 +455,74 @@ export interface ServiceTierOption {
   tier: ServiceTier;
   label: string;
   summary: string;
+  tagline: string;
+  flow: "self_service" | "managed";
   detoura_fee: number;
   customer_total: number;
   selected: boolean;
+  recommended: boolean;
+  included: string[];
+  not_included: string[];
+}
+
+export interface CommercialPreviewResponse {
+  currency: string;
+  supplier_total: number;
+  tiers: ServiceTierOption[];
+  test_mode: boolean;
+}
+
+export interface SelfServiceTicket {
+  sequence: number;
+  origin_city: string;
+  origin_airport: string;
+  destination_city: string;
+  destination_airport: string;
+  departure: string;
+  arrival: string;
+  carrier: string;
+  flight_number: string;
+  fare: number;
+  rechecked_fare: number | null;
+  currency: string;
+  cabin_baggage: string;
+  checked_baggage: string;
+  available: boolean;
+  guided_state:
+    | "READY_TO_BOOK"
+    | "EXTERNAL_BOOKING_STARTED"
+    | "BOOKING_CONFIRMATION_REQUIRED"
+    | "CONFIRMED"
+    | "UNKNOWN";
+  reported_by: "detoura" | "traveller" | "provider";
+  detoura_verified: boolean;
+  note: string;
+  booking_guidance: string;
+}
+
+export interface SelfServiceItinerary {
+  journey_reference: string;
+  booking_id: string;
+  headline: string;
+  trip_label: string;
+  route_cities: string[];
+  travel_dates: string[];
+  party_size: number;
+  traveller_name: string;
+  traveller_details_saved: boolean;
+  tickets: SelfServiceTicket[];
+  booked_count: number;
+  ticket_count: number;
+  fares_rechecked: boolean;
+  recheck_note: string;
+  commercial: CommercialSummary | null;
+  test_mode: boolean;
+  generated_at: string;
+}
+
+export interface GuidedMarkRequest {
+  state: SelfServiceTicket["guided_state"];
+  reference?: string;
 }
 
 export interface CommercialSummary {
@@ -512,8 +581,10 @@ export interface BookingIntent {
   reconfirm_note: string;
   party_size: number;
   travelers_submitted: boolean;
+  service_flow: "self_service" | "managed";
   items: BookingItemStateDTO[];
   pass_available: boolean;
+  itinerary_available: boolean;
   commercial: CommercialSummary | null;
 }
 

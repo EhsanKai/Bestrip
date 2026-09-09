@@ -90,12 +90,14 @@ def test_seed_policy_prices_both_tiers(pricing):
         service_tier=ServiceTier.ALL_IN_ONE,
     ).quote.breakdown
     assert basic.supplier_total == 400.0 and allin.supplier_total == 400.0
-    assert basic.detoura_markup == pytest.approx(20.0)  # 5%
+    assert basic.detoura_markup == pytest.approx(12.0)  # 3%
     assert basic.detoura_service_fee == 0.0
-    assert allin.detoura_markup == pytest.approx(12.0)  # 3%
-    assert allin.detoura_service_fee == pytest.approx(8.0)
-    assert basic.customer_total == 420.0
-    assert allin.customer_total == 420.0
+    assert allin.detoura_markup == pytest.approx(20.0)  # 5%
+    assert allin.detoura_service_fee == pytest.approx(6.0)
+    assert basic.customer_total == 412.0
+    assert allin.customer_total == 426.0
+    # the product invariant
+    assert allin.customer_total >= basic.customer_total
 
 
 def test_markup_is_deterministic(pricing):
@@ -224,14 +226,16 @@ def test_promo_on_zero_fee_tier_is_rejected_with_reason(pricing, db):
 
 # --- persistence: policy versioning + immutability ---------------------
 def test_saving_a_new_policy_version_keeps_the_old_one(db):
-    v1 = policies.get_policy(db, "detoura.markup", 1)
-    assert v1 is not None
+    builtin = policies.BUILTIN_VERSION
+    v_builtin = policies.get_policy(db, "detoura.markup", builtin)
+    assert v_builtin is not None
     policies.save_policy(db, DynamicMarkupPolicy(
-        policy_id="detoura.markup", version=2, label="v2",
+        policy_id="detoura.markup", version=builtin + 1, label="ops v",
         rules=(MarkupRule(when_tier=ServiceTier.BASIC, percentage=0.09),),
     ), active=True, actor="ops:alice")
-    assert policies.active_policy(db).version == 2
-    assert policies.get_policy(db, "detoura.markup", 1) is not None  # still there
+    assert policies.active_policy(db).version == builtin + 1
+    # the built-in version is untouched
+    assert policies.get_policy(db, "detoura.markup", builtin) is not None
 
 
 def test_economics_ledger_is_write_once(db, pricing):
@@ -250,7 +254,7 @@ def test_economics_ledger_is_write_once(db, pricing):
     assert ok1 is True and ok2 is False
     row = economics.get(db, "bk_1")
     assert row.customer_price == res.quote.breakdown.customer_total
-    assert row.markup_policy_version == 1
+    assert row.markup_policy_version == policies.BUILTIN_VERSION
     assert row.snapshot == {"x": 1}  # first write wins
 
 

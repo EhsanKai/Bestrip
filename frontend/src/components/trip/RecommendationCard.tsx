@@ -87,8 +87,14 @@ export function RecommendationCard({
           * layers inside it are hidden. */}
         <div className="rec__visual">
           <div className="rec__price-block">
+            <div className="rec__from">Trip price from</div>
             <div className="rec__total numeric">{money(trip.total_price, trip.currency)}</div>
             <div className="rec__pp numeric">{money(trip.price_per_person, trip.currency)} each</div>
+            {trip.over_budget_by && trip.over_budget_by > 0 ? (
+              <div className="rec__over">
+                {money(trip.over_budget_by, trip.currency)} over your preferred budget
+              </div>
+            ) : null}
           </div>
           <div className="rec__city-index" aria-hidden="true">
             {trip.cities.map(cityCode).join(" / ")}

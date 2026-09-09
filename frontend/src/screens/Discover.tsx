@@ -58,7 +58,10 @@ export function Discover({ onSearch, initial }: Props) {
   const [flexible, setFlexible] = useState(initial?.date_flexible ?? true);
   const [duration, setDuration] = useState(initial?.duration_days ?? 5);
   const [travelers, setTravelers] = useState(initial?.travelers ?? 2);
-  const [budget, setBudget] = useState(initial?.budget ?? 450);
+  const [budget, setBudget] = useState(
+    Math.round((initial?.budget ?? 450) / 50) * 50,
+  );
+  const [budgetFlex, setBudgetFlex] = useState(initial?.budget_flex ?? 0);
   const [profile, setProfile] = useState<ProfileName>(initial?.profile ?? "BEST_VALUE");
   const [mode, setMode] = useState<SearchMode>(initial?.search_mode ?? "SMART");
   const [interests, setInterests] = useState<Interest[]>(
@@ -117,6 +120,7 @@ export function Discover({ onSearch, initial }: Props) {
       date_flexible: flexible,
       travelers,
       budget,
+      budget_flex: budgetFlex,
       profile,
       search_mode: mode,
       interests,
@@ -219,27 +223,43 @@ export function Discover({ onSearch, initial }: Props) {
           <Card className="discover__card discover__card--wide">
             <Label icon={Icon.wallet({ size: 16 })}>Budget</Label>
             <div className="discover__budget">
+              <Stepper
+                value={budget}
+                min={150}
+                max={3000}
+                step={50}
+                onChange={setBudget}
+                suffix="total, for everyone"
+                format={(n) => money(n)}
+              />
               <input
                 type="range"
                 min={150}
-                max={2000}
-                step={10}
+                max={3000}
+                step={50}
                 value={budget}
                 onChange={(event) => setBudget(Number(event.target.value))}
                 className="discover__slider"
-                aria-label="Total budget"
+                aria-label="Total budget, in steps of 50 euros"
               />
-              <div className="discover__budget-value">
-                <input
-                  type="number"
-                  className="discover__input discover__input--budget numeric"
-                  value={budget}
-                  min={50}
-                  step={10}
-                  onChange={(event) => setBudget(Number(event.target.value))}
-                  aria-label="Budget amount"
-                />
-                <span className="subtle">total, for everyone</span>
+              <div className="discover__flex" role="group" aria-label="Budget flexibility">
+                <span className="subtle">Flexibility</span>
+                {[0, 50, 100].map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    className={`discover__flex-btn ${budgetFlex === f ? "is-on" : ""}`}
+                    aria-pressed={budgetFlex === f}
+                    onClick={() => setBudgetFlex(f)}
+                  >
+                    {f === 0 ? "Exact" : `+${money(f)}`}
+                  </button>
+                ))}
+                <span className="subtle discover__flex-note">
+                  {budgetFlex === 0
+                    ? "Only trips within your budget"
+                    : `Also show stronger trips up to ${money(budget + budgetFlex)} — clearly marked when over`}
+                </span>
               </div>
             </div>
           </Card>
@@ -358,33 +378,39 @@ function Stepper({
   value,
   min,
   max,
+  step = 1,
   onChange,
   suffix,
+  format,
 }: {
   value: number;
   min: number;
   max: number;
+  step?: number;
   onChange: (next: number) => void;
   suffix: string;
+  format?: (n: number) => string;
 }) {
+  const snap = (n: number) => Math.round(n / step) * step;
   return (
     <div className="stepper">
       <button
         type="button"
-        onClick={() => onChange(Math.max(min, value - 1))}
+        onClick={() => onChange(Math.max(min, snap(value - step)))}
         disabled={value <= min}
-        aria-label="Decrease"
+        aria-label={`Decrease by ${step}`}
       >
         −
       </button>
       <span className="stepper__value">
-        <span className="numeric">{value}</span> <span className="subtle">{suffix}</span>
+        <span className="numeric">{format ? format(value) : value}</span>{" "}
+        <span className="subtle">{suffix}</span>
       </span>
       <button
         type="button"
-        onClick={() => onChange(Math.min(max, value + 1))}
+        onClick={() => onChange(Math.min(max, snap(value + step)))}
         disabled={value >= max}
-        aria-label="Increase"
+        aria-label={`Increase by ${step}`}
       >
         +
       </button>

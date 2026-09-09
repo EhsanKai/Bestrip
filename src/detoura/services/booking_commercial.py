@@ -25,6 +25,10 @@ _TERMINAL = {
     BookingPhase.COMPLETE,
     BookingPhase.PARTIAL_FAILURE,
     BookingPhase.FAILED,
+    # Basic: the Detoura service (optimise + price + re-check + guide) is
+    # delivered once the journey is prepared, so the ledger row is written
+    # then - independent of whether the traveller completes each purchase.
+    BookingPhase.GUIDED_BOOKING,
 }
 
 

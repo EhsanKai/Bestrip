@@ -4,7 +4,10 @@ import { DetouraApiError } from "../api/types";
 import type {
   BookingIntent,
   CommercialSummary,
+  SelfServiceItinerary,
+  SelfServiceTicket,
   ServiceTier,
+  ServiceTierOption,
   SetCommercialOptionsRequest,
   TravelPass as TravelPassData,
   TravelerInput,
@@ -17,11 +20,15 @@ import { money, signedMoney, clockTime, dayMonth } from "../lib/format";
 import "./BookingExperience.css";
 
 type Phase =
+  | "tier"
   | "traveler"
   | "review"
-  | "working" // revalidating / issuing — driven by the polled intent
+  | "working"
   | "reconfirm"
-  | "pass";
+  | "pass"
+  | "guided";
+
+type Flow = "self_service" | "managed";
 
 interface TravelerDraft {
   given_name: string;
@@ -56,13 +63,27 @@ function draftErrors(d: TravelerDraft): Partial<Record<keyof TravelerDraft, stri
   return e;
 }
 
-const STEP_LABELS = ["Traveller", "Review", "Ticketing", "Pass"];
+/** Itemised money always shows exact cents so the lines reconcile. */
+function money2(amount: number, currency: string): string {
+  const symbol = currency === "EUR" ? "€" : `${currency} `;
+  return `${symbol}${amount.toLocaleString("en-GB", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
 
-function stepIndex(phase: Phase): number {
-  if (phase === "traveler") return 0;
-  if (phase === "review") return 1;
-  if (phase === "pass") return 3;
-  return 2;
+function stepLabels(flow: Flow): string[] {
+  return flow === "self_service"
+    ? ["Service", "Traveller", "Review", "Book tickets"]
+    : ["Service", "Traveller", "Review", "Ticketing", "Pass"];
+}
+
+function stepIndex(phase: Phase, flow: Flow): number {
+  if (phase === "tier") return 0;
+  if (phase === "traveler") return 1;
+  if (phase === "review") return 2;
+  if (phase === "guided" || phase === "pass") return flow === "self_service" ? 3 : 4;
+  return 3; // working / reconfirm
 }
 
 export function BookingExperience({
@@ -74,8 +95,8 @@ export function BookingExperience({
   onBack: () => void;
   onViewDetails: () => void;
 }) {
-  const partySize = 1; // the pass shows one lead traveller; multi-pax uses the same form repeated
-  const [phase, setPhase] = useState<Phase>("traveler");
+  const partySize = 1;
+  const [phase, setPhase] = useState<Phase>("tier");
   const [drafts, setDrafts] = useState<TravelerDraft[]>(() =>
     Array.from({ length: partySize }, () => ({ ...EMPTY })),
   );
@@ -83,44 +104,55 @@ export function BookingExperience({
   const [bookingId, setBookingId] = useState<string | null>(null);
   const [intent, setIntent] = useState<BookingIntent | null>(null);
   const [pass, setPass] = useState<TravelPassData | null>(null);
+  const [itinerary, setItinerary] = useState<SelfServiceItinerary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // Commercial choice. Basic is the default and never a pre-selected paid
-  // upgrade; All-in-One is explicitly opt-in on the review screen.
+  // Basic is the default and never a pre-selected paid upgrade.
   const [tier, setTier] = useState<ServiceTier>("BASIC");
   const [promoInput, setPromoInput] = useState("");
   const pollRef = useRef<number | null>(null);
 
   const legs = trip.legs;
+  const flow: Flow = tier === "BASIC" ? "self_service" : "managed";
 
-  // --- create the booking intent (DEMO_ONLY from the selected trip) --------
-  const ensureIntent = useCallback(async (): Promise<string> => {
-    if (bookingId) return bookingId;
-    const created = await api.createBookingIntent({
-      demo_trip_label: trip.route,
-      demo_currency: trip.currency,
-      demo_total: trip.total_price,
-      demo_travelers: partySize,
-      demo_legs: legs.map((l) => {
-        const [carrier, ...rest] = (l.operator || "").split(" ");
-        return {
-          origin: l.from,
-          destination: l.to,
-          departure: l.departure,
-          arrival: l.arrival,
-          carrier: carrier || "",
-          flight_number: rest.join(" "),
-          price_per_person: l.price_per_person,
-        };
-      }),
-      service_tier: tier,
-    });
-    setBookingId(created.booking_id);
-    setIntent(created);
-    return created.booking_id;
-  }, [bookingId, legs, trip, partySize, tier]);
+  const ensureIntent = useCallback(
+    async (chosenTier: ServiceTier): Promise<string> => {
+      if (bookingId) return bookingId;
+      const created = await api.createBookingIntent({
+        demo_trip_label: trip.route,
+        demo_currency: trip.currency,
+        demo_total: trip.total_price,
+        demo_travelers: partySize,
+        demo_legs: legs.map((l) => {
+          const [carrier, ...rest] = (l.operator || "").split(" ");
+          return {
+            origin: l.from,
+            destination: l.to,
+            departure: l.departure,
+            arrival: l.arrival,
+            carrier: carrier || "",
+            flight_number: rest.join(" "),
+            price_per_person: l.price_per_person,
+          };
+        }),
+        service_tier: chosenTier,
+      });
+      setBookingId(created.booking_id);
+      setIntent(created);
+      return created.booking_id;
+    },
+    [bookingId, legs, trip, partySize],
+  );
 
-  // --- change the service tier / promo before confirming ------------------
+  // Create the intent as soon as the screen opens so the tier comparison shows
+  // real prices from the start.
+  useEffect(() => {
+    void ensureIntent("BASIC").catch(() =>
+      setError("Could not start a booking. Go back and try again."),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const changeCommercial = useCallback(
     async (body: SetCommercialOptionsRequest) => {
       if (!bookingId) return;
@@ -141,7 +173,12 @@ export function BookingExperience({
     [bookingId],
   );
 
-  // --- polling while the run is in flight --------------------------------
+  const chooseTier = async (next: ServiceTier) => {
+    setTier(next);
+    if (bookingId) await changeCommercial({ service_tier: next });
+  };
+
+  // Poll only the managed (All-in-One) run.
   useEffect(() => {
     if (phase !== "working" || !bookingId) return;
     let cancelled = false;
@@ -180,7 +217,7 @@ export function BookingExperience({
     setBusy(true);
     setError(null);
     try {
-      const id = await ensureIntent();
+      const id = await ensureIntent(tier);
       const travelers: TravelerInput[] = drafts.map((d) => ({
         given_name: d.given_name.trim(),
         family_name: d.family_name.trim(),
@@ -205,7 +242,13 @@ export function BookingExperience({
     try {
       const next = await api.confirmBooking(bookingId, { tolerance_absolute: toleranceAbsolute });
       setIntent(next);
-      setPhase("working");
+      if (next.service_flow === "self_service") {
+        const it = await api.getItinerary(bookingId);
+        setItinerary(it);
+        setPhase("guided");
+      } else {
+        setPhase("working");
+      }
     } catch (e) {
       setError(e instanceof DetouraApiError ? e.message : "Could not confirm the journey.");
     } finally {
@@ -213,7 +256,22 @@ export function BookingExperience({
     }
   };
 
-  const step = stepIndex(phase);
+  const guidedAction = async (
+    run: () => Promise<SelfServiceItinerary>,
+  ) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setItinerary(await run());
+    } catch (e) {
+      setError(e instanceof DetouraApiError ? e.message : "Could not update the ticket.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const labels = stepLabels(flow);
+  const step = stepIndex(phase, flow);
 
   return (
     <div className="booking">
@@ -224,11 +282,12 @@ export function BookingExperience({
 
         <header className="booking__head">
           <div>
-            <span className="eyebrow">ONE JOURNEY · ONE CONFIRMATION</span>
-            <h1>We’ll handle the tickets.</h1>
+            <span className="eyebrow">ONE JOURNEY · ONE SET OF DETAILS</span>
+            <h1>We’ll help you book it.</h1>
             <p>
-              Enter your details once. Detoura coordinates every flight behind
-              this journey — and this test version never asks for payment.
+              Enter your details once for the whole journey. Choose whether
+              Detoura books the tickets for you or guides you through it — this
+              test version never asks for payment.
             </p>
           </div>
           <div className="booking__poster">
@@ -237,7 +296,7 @@ export function BookingExperience({
         </header>
 
         <div className="booking__steps">
-          {STEP_LABELS.map((label, i) => (
+          {labels.map((label, i) => (
             <div className={i <= step ? "is-on" : ""} key={label}>
               <b>{i < step ? "✓" : i + 1}</b>
               <span>{label}</span>
@@ -248,12 +307,25 @@ export function BookingExperience({
         <section className="booking__panel">
           {error && <div className="booking__error">{error}</div>}
 
+          {phase === "tier" && (
+            <TierStep
+              options={intent?.commercial?.tier_options ?? []}
+              selected={tier}
+              currency={trip.currency}
+              busy={busy}
+              onSelect={chooseTier}
+              onContinue={() => setPhase("traveler")}
+            />
+          )}
+
           {phase === "traveler" && (
             <TravelerStep
               drafts={drafts}
               setDrafts={setDrafts}
               showErrors={showErrors}
               busy={busy}
+              flow={flow}
+              onBack={() => setPhase("tier")}
               onContinue={submitTravelers}
             />
           )}
@@ -263,9 +335,11 @@ export function BookingExperience({
               intent={intent}
               legs={legs}
               busy={busy}
+              flow={flow}
               promoInput={promoInput}
               setPromoInput={setPromoInput}
               onCommercialChange={changeCommercial}
+              onChangeService={() => setPhase("tier")}
               onBack={() => setPhase("traveler")}
               onConfirm={() => confirm(25)}
             />
@@ -279,6 +353,22 @@ export function BookingExperience({
               busy={busy}
               onReconfirm={() => confirm(1_000_000)}
               onAbandon={onBack}
+            />
+          )}
+
+          {phase === "guided" && itinerary && (
+            <GuidedStep
+              itinerary={itinerary}
+              busy={busy}
+              onStart={(seq) =>
+                guidedAction(() => api.startTicketBooking(itinerary.booking_id, seq))
+              }
+              onMark={(seq, state, reference) =>
+                guidedAction(() =>
+                  api.markTicket(itinerary.booking_id, seq, { state, reference }),
+                )
+              }
+              onDone={onBack}
             />
           )}
 
@@ -301,17 +391,100 @@ export function BookingExperience({
 
 /* ------------------------------------------------------------------ */
 
+function TierStep({
+  options,
+  selected,
+  currency,
+  busy,
+  onSelect,
+  onContinue,
+}: {
+  options: ServiceTierOption[];
+  selected: ServiceTier;
+  currency: string;
+  busy: boolean;
+  onSelect: (t: ServiceTier) => void;
+  onContinue: () => void;
+}) {
+  const ordered = [...options].sort((a) =>
+    a.tier === "BASIC" ? -1 : 1,
+  );
+  return (
+    <>
+      <span className="eyebrow">Your service</span>
+      <h2>How would you like to book?</h2>
+      <p className="muted">
+        Same journey, same fares either way. The difference is who books and
+        manages the tickets.
+      </p>
+
+      <div className="booking__tiers booking__tiers--compare">
+        {ordered.map((opt) => (
+          <button
+            type="button"
+            key={opt.tier}
+            className={`booking__tier${opt.tier === selected ? " is-on" : ""}`}
+            aria-pressed={opt.tier === selected}
+            disabled={busy}
+            onClick={() => onSelect(opt.tier)}
+          >
+            <span className="booking__tier-top">
+              <b>{opt.label}</b>
+              <span className="booking__tier-tagline">{opt.tagline}</span>
+              {opt.recommended && (
+                <span className="booking__tier-badge">Recommended</span>
+              )}
+            </span>
+            <span className="booking__tier-summary">{opt.summary}</span>
+            <span className="booking__tier-price numeric">
+              {opt.customer_total > 0
+                ? money2(opt.customer_total, currency)
+                : "—"}
+              <small> total</small>
+            </span>
+            <span className="booking__tier-fee subtle">
+              includes Detoura {opt.label} fee {money2(opt.detoura_fee, currency)}
+            </span>
+            <ul className="booking__tier-feats">
+              {opt.included.map((f) => (
+                <li key={f} className="yes">
+                  {f}
+                </li>
+              ))}
+              {opt.not_included.map((f) => (
+                <li key={f} className="no">
+                  {f}
+                </li>
+              ))}
+            </ul>
+          </button>
+        ))}
+      </div>
+
+      <div className="booking__actions">
+        <Button size="lg" onClick={onContinue} disabled={busy || options.length === 0}>
+          Continue with {selected === "BASIC" ? "Basic" : "All-in-One"}
+        </Button>
+      </div>
+    </>
+  );
+}
+
 function TravelerStep({
   drafts,
   setDrafts,
   showErrors,
   busy,
+  flow,
+  onBack,
   onContinue,
 }: {
   drafts: TravelerDraft[];
   setDrafts: (d: TravelerDraft[]) => void;
   showErrors: boolean;
   busy: boolean;
+  flow: Flow;
+  onBack: () => void;
   onContinue: () => void;
 }) {
   const update = (i: number, field: keyof TravelerDraft, value: string) => {
@@ -324,8 +497,11 @@ function TravelerStep({
       <span className="eyebrow">Traveller details</span>
       <h2>Who’s taking this journey?</h2>
       <p className="muted">
-        Entered once and used server-side to prepare the selected tickets. Your
-        details are not stored in this browser and never appear in a link.
+        Entered <b>once</b> for the whole journey — every ticket, both service
+        options. Your details are not stored in this browser and never appear
+        in a link.
+        {flow === "self_service" &&
+          " An airline site may still ask you to enter them there; that's its requirement, not Detoura's."}
       </p>
 
       {drafts.map((d, i) => {
@@ -389,6 +565,9 @@ function TravelerStep({
       </div>
 
       <div className="booking__actions">
+        <Button variant="secondary" onClick={onBack} disabled={busy}>
+          Back
+        </Button>
         <Button size="lg" onClick={onContinue} disabled={busy}>
           {busy ? "Saving…" : "Continue to review"}
         </Button>
@@ -401,23 +580,31 @@ function ReviewStep({
   intent,
   legs,
   busy,
+  flow,
   promoInput,
   setPromoInput,
   onCommercialChange,
+  onChangeService,
   onBack,
   onConfirm,
 }: {
   intent: BookingIntent;
   legs: TripRecommendation["legs"];
   busy: boolean;
+  flow: Flow;
   promoInput: string;
   setPromoInput: (v: string) => void;
   onCommercialChange: (body: SetCommercialOptionsRequest) => Promise<void>;
+  onChangeService: () => void;
   onBack: () => void;
   onConfirm: () => void;
 }) {
-  const unknowns = intent.items.filter((i) => i.checked_baggage === "unknown");
   const c = intent.commercial;
+  const unknowns = intent.items.filter((i) => i.checked_baggage === "unknown");
+  const dates = intent.items
+    .map((i) => dayMonth(i.departure))
+    .filter((v, idx, a) => a.indexOf(v) === idx);
+
   return (
     <>
       <span className="eyebrow">Review your journey</span>
@@ -426,43 +613,46 @@ function ReviewStep({
         {intent.items.length === 1 ? "" : "s"}.
       </h2>
 
-      <div className="booking__route">
-        {intent.route_cities.map((city, i) => (
-          <span key={i}>
-            {city}
-            {i < intent.route_cities.length - 1 && <i>↓</i>}
-          </span>
-        ))}
-      </div>
+      <dl className="booking__facts">
+        <div>
+          <dt>Route</dt>
+          <dd>{intent.route_cities.join(" → ")}</dd>
+        </div>
+        <div>
+          <dt>Dates</dt>
+          <dd>{dates.join(" · ")}</dd>
+        </div>
+        <div>
+          <dt>Travellers</dt>
+          <dd>{intent.party_size}</dd>
+        </div>
+        <div>
+          <dt>Service</dt>
+          <dd>
+            {c?.service_tier_label ?? "—"}{" "}
+            <button className="booking__linkbtn" onClick={onChangeService}>
+              change
+            </button>
+          </dd>
+        </div>
+      </dl>
 
-      <div className="booking__tickets">
+      <div className="booking__tickets booking__tickets--tight">
         {intent.items.map((it, i) => {
           const leg = legs[i];
           return (
-            <div className="booking__ticket" key={it.sequence}>
-              <header>
-                <b>Ticket {it.sequence}</b>
-                <strong>
+            <details className="booking__ticket" key={it.sequence}>
+              <summary>
+                <b>
                   {it.origin_airport} → {it.destination_airport}
-                </strong>
-              </header>
+                </b>
+                <span className="booking__ticket-meta">
+                  {dayMonth(it.departure)} · {clockTime(it.departure)}–
+                  {clockTime(it.arrival)} · {it.carrier || leg?.operator || "—"}
+                </span>
+                <span className="numeric">{money2(it.price_per_person, it.currency)}</span>
+              </summary>
               <dl>
-                <div>
-                  <dt>Date</dt>
-                  <dd>{dayMonth(it.departure)}</dd>
-                </div>
-                <div>
-                  <dt>Departs</dt>
-                  <dd>{clockTime(it.departure)}</dd>
-                </div>
-                <div>
-                  <dt>Arrives</dt>
-                  <dd>{clockTime(it.arrival)}</dd>
-                </div>
-                <div>
-                  <dt>Carrier</dt>
-                  <dd>{it.carrier || leg?.operator || "—"}</dd>
-                </div>
                 <div>
                   <dt>Cabin bag</dt>
                   <dd>{it.cabin_baggage}</dd>
@@ -472,20 +662,21 @@ function ReviewStep({
                   <dd>{it.checked_baggage}</dd>
                 </div>
                 <div>
-                  <dt>Fare</dt>
-                  <dd>{money(it.price_per_person, it.currency)}</dd>
+                  <dt>Flight</dt>
+                  <dd>
+                    {it.carrier || "—"} {it.flight_number}
+                  </dd>
                 </div>
               </dl>
-            </div>
+            </details>
           );
         })}
       </div>
 
       {c ? (
-        <CommercialReview
+        <PriceSummary
           commercial={c}
           currency={intent.currency}
-          travellers={intent.party_size}
           busy={busy}
           promoInput={promoInput}
           setPromoInput={setPromoInput}
@@ -496,10 +687,6 @@ function ReviewStep({
           <div>
             <span>Trip total</span>
             <strong>{money(intent.discovered_total, intent.currency)}</strong>
-          </div>
-          <div>
-            <span>Travellers</span>
-            <strong>{intent.party_size}</strong>
           </div>
         </div>
       )}
@@ -521,27 +708,20 @@ function ReviewStep({
           Back
         </Button>
         <Button size="lg" onClick={onConfirm} disabled={busy}>
-          {busy ? "Confirming…" : "Confirm journey"}
+          {busy
+            ? "Working…"
+            : flow === "self_service"
+              ? "Prepare my journey"
+              : "Confirm journey"}
         </Button>
       </div>
     </>
   );
 }
 
-/** An itemised breakdown must reconcile line by line, so it always shows exact
- *  cents — unlike the headline trip price, where `money()` drops them. */
-function money2(amount: number, currency: string): string {
-  const symbol = currency === "EUR" ? "€" : `${currency} `;
-  return `${symbol}${amount.toLocaleString("en-GB", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
-function CommercialReview({
+function PriceSummary({
   commercial,
   currency,
-  travellers,
   busy,
   promoInput,
   setPromoInput,
@@ -549,7 +729,6 @@ function CommercialReview({
 }: {
   commercial: CommercialSummary;
   currency: string;
-  travellers: number;
   busy: boolean;
   promoInput: string;
   setPromoInput: (v: string) => void;
@@ -558,40 +737,42 @@ function CommercialReview({
   const b = commercial.breakdown;
   const applied = commercial.promo_accepted;
   return (
-    <div className="booking__commercial">
-      <div className="booking__tiers" role="radiogroup" aria-label="Detoura service">
-        {commercial.tier_options.map((opt) => (
-          <button
-            type="button"
-            key={opt.tier}
-            role="radio"
-            aria-checked={opt.selected}
-            className={`booking__tier${opt.selected ? " is-on" : ""}`}
-            disabled={busy}
-            onClick={() =>
-              !opt.selected && onCommercialChange({ service_tier: opt.tier })
-            }
-          >
-            <span className="booking__tier-head">
-              <b>{opt.label}</b>
-              <span className="numeric">{money2(opt.customer_total, currency)}</span>
-            </span>
-            <span className="booking__tier-sub">{opt.summary}</span>
-            <span className="booking__tier-fee">
-              Detoura service {money2(opt.detoura_fee, currency)}
-            </span>
-          </button>
-        ))}
-      </div>
+    <div className="booking__pricebox">
+      <dl className="booking__breakdown">
+        <div>
+          <dt>Flights</dt>
+          <dd className="numeric">{money2(b.supplier_total, currency)}</dd>
+        </div>
+        <div>
+          <dt>Detoura {commercial.service_tier_label}</dt>
+          <dd className="numeric">{money2(b.detoura_revenue_gross, currency)}</dd>
+        </div>
+        {b.tax > 0 && (
+          <div>
+            <dt>Tax</dt>
+            <dd className="numeric">{money2(b.tax, currency)}</dd>
+          </div>
+        )}
+        {b.discount > 0 && (
+          <div className="booking__breakdown-discount">
+            <dt>Promo {commercial.promo_code}</dt>
+            <dd className="numeric">−{money2(b.discount, currency)}</dd>
+          </div>
+        )}
+        <div className="booking__breakdown-total">
+          <dt>Total</dt>
+          <dd className="numeric">{money2(b.customer_total, currency)}</dd>
+        </div>
+      </dl>
 
       <div className="booking__promo">
-        <label htmlFor="promo">Promo code</label>
         <div className="booking__promo-row">
           <input
             id="promo"
             value={promoInput}
             disabled={busy || applied}
-            placeholder="e.g. WELCOME5"
+            placeholder="Promo code"
+            aria-label="Promo code"
             onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
           />
           {applied ? (
@@ -611,55 +792,21 @@ function CommercialReview({
               variant="secondary"
               type="button"
               disabled={busy || promoInput.trim().length < 3}
-              onClick={() =>
-                onCommercialChange({ promo_code: promoInput.trim() })
-              }
+              onClick={() => onCommercialChange({ promo_code: promoInput.trim() })}
             >
               Apply
             </Button>
           )}
         </div>
         {commercial.promo_message && (
-          <p
-            className={`booking__promo-msg${applied ? " is-ok" : " is-bad"}`}
-          >
+          <p className={`booking__promo-msg${applied ? " is-ok" : " is-bad"}`}>
             {commercial.promo_message}
           </p>
         )}
       </div>
 
-      <dl className="booking__breakdown">
-        <div>
-          <dt>Flights (supplier fare)</dt>
-          <dd className="numeric">{money2(b.supplier_total, currency)}</dd>
-        </div>
-        <div>
-          <dt>
-            Detoura service · {commercial.service_tier_label}
-          </dt>
-          <dd className="numeric">{money2(b.detoura_revenue_gross, currency)}</dd>
-        </div>
-        {b.tax > 0 && (
-          <div>
-            <dt>Tax</dt>
-            <dd className="numeric">{money2(b.tax, currency)}</dd>
-          </div>
-        )}
-        {b.discount > 0 && (
-          <div className="booking__breakdown-discount">
-            <dt>Promo {commercial.promo_code}</dt>
-            <dd className="numeric">−{money2(b.discount, currency)}</dd>
-          </div>
-        )}
-        <div className="booking__breakdown-total">
-          <dt>You pay{travellers > 1 ? ` (${travellers} travellers)` : ""}</dt>
-          <dd className="numeric">{money2(b.customer_total, currency)}</dd>
-        </div>
-      </dl>
-
       <p className="booking__breakdown-note">
-        The supplier fare is shown exactly as the airline quoted it. Detoura's
-        fee is separate and never hidden inside it.
+        The airline fare is shown exactly as quoted. Detoura's fee is separate.
         {commercial.test_mode ? " Sandbox / test mode — no payment is taken." : ""}
       </p>
     </div>
@@ -780,5 +927,197 @@ function ReconfirmStep({
         </Button>
       </div>
     </>
+  );
+}
+
+const GUIDED_LABELS: Record<SelfServiceTicket["guided_state"], string> = {
+  READY_TO_BOOK: "Ready to book",
+  EXTERNAL_BOOKING_STARTED: "Booking started",
+  BOOKING_CONFIRMATION_REQUIRED: "Waiting for the airline’s confirmation",
+  CONFIRMED: "Booked (you told us)",
+  UNKNOWN: "Status unknown",
+};
+
+function GuidedStep({
+  itinerary,
+  busy,
+  onStart,
+  onMark,
+  onDone,
+}: {
+  itinerary: SelfServiceItinerary;
+  busy: boolean;
+  onStart: (seq: number) => void;
+  onMark: (
+    seq: number,
+    state: SelfServiceTicket["guided_state"],
+    reference?: string,
+  ) => void;
+  onDone: () => void;
+}) {
+  return (
+    <>
+      <span className="eyebrow">Your journey · guided booking</span>
+      <h2>{itinerary.headline}</h2>
+      <p className="muted">
+        Detoura optimised this journey, re-checked the fares and saved your
+        traveller details. Book each ticket below — Detoura keeps track. Nothing
+        here is booked by Detoura, and a ticket only shows as booked when you
+        tell us it is.
+      </p>
+
+      <div className="booking__progressbar">
+        <b>
+          {itinerary.booked_count} of {itinerary.ticket_count} booked
+        </b>
+        {itinerary.ticket_count - itinerary.booked_count > 0 && (
+          <span className="muted">
+            {" "}
+            · {itinerary.ticket_count - itinerary.booked_count} to go
+          </span>
+        )}
+      </div>
+
+      <div className="booking__guided">
+        {itinerary.tickets.map((t) => {
+          const done = t.guided_state === "CONFIRMED";
+          const started =
+            t.guided_state === "EXTERNAL_BOOKING_STARTED" ||
+            t.guided_state === "BOOKING_CONFIRMATION_REQUIRED";
+          return (
+            <div
+              key={t.sequence}
+              className={`booking__guided-item${done ? " is-done" : started ? " is-active" : ""}`}
+            >
+              <div className="booking__guided-head">
+                <i>{done ? "✓" : started ? "●" : t.sequence}</i>
+                <div>
+                  <strong>
+                    {t.origin_city} → {t.destination_city}
+                  </strong>
+                  <small>
+                    {dayMonth(t.departure)} · {clockTime(t.departure)}–
+                    {clockTime(t.arrival)} · {t.carrier || "—"} ·{" "}
+                    {money2(t.rechecked_fare ?? t.fare, t.currency)}
+                  </small>
+                </div>
+                <span className={`booking__guided-state s-${t.guided_state}`}>
+                  {GUIDED_LABELS[t.guided_state]}
+                </span>
+              </div>
+
+              {!t.available && (
+                <p className="booking__guided-note is-bad">
+                  This fare is no longer available — {t.note}
+                </p>
+              )}
+
+              {t.guided_state === "READY_TO_BOOK" && t.available && (
+                <div className="booking__guided-body">
+                  <p>{t.booking_guidance}</p>
+                  <Button
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => onStart(t.sequence)}
+                  >
+                    I’ll book this now
+                  </Button>
+                </div>
+              )}
+
+              {started && (
+                <div className="booking__guided-body">
+                  <p className="muted">
+                    Once you’ve booked with the airline, tell Detoura where it
+                    stands:
+                  </p>
+                  <div className="booking__guided-actions">
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => onMark(t.sequence, "CONFIRMED")}
+                    >
+                      It’s booked
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() =>
+                        onMark(t.sequence, "BOOKING_CONFIRMATION_REQUIRED")
+                      }
+                    >
+                      Waiting for confirmation
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => onMark(t.sequence, "READY_TO_BOOK")}
+                    >
+                      Not yet
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {done && (
+                <p className="booking__guided-note">
+                  {t.note}
+                  {t.detoura_verified ? "" : " Detoura has not independently verified this."}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {itinerary.commercial && (
+        <PriceSummaryReadonly
+          commercial={itinerary.commercial}
+          currency={itinerary.commercial.breakdown.currency}
+        />
+      )}
+
+      <div className="booking__actions">
+        <Button onClick={onDone}>
+          {itinerary.booked_count === itinerary.ticket_count
+            ? "All done — back to trips"
+            : "I’ll finish later"}
+        </Button>
+      </div>
+    </>
+  );
+}
+
+function PriceSummaryReadonly({
+  commercial,
+  currency,
+}: {
+  commercial: CommercialSummary;
+  currency: string;
+}) {
+  const b = commercial.breakdown;
+  return (
+    <dl className="booking__breakdown">
+      <div>
+        <dt>Flights</dt>
+        <dd className="numeric">{money2(b.supplier_total, currency)}</dd>
+      </div>
+      <div>
+        <dt>Detoura {commercial.service_tier_label}</dt>
+        <dd className="numeric">{money2(b.detoura_revenue_gross, currency)}</dd>
+      </div>
+      {b.discount > 0 && (
+        <div className="booking__breakdown-discount">
+          <dt>Promo {commercial.promo_code}</dt>
+          <dd className="numeric">−{money2(b.discount, currency)}</dd>
+        </div>
+      )}
+      <div className="booking__breakdown-total">
+        <dt>Detoura total</dt>
+        <dd className="numeric">{money2(b.customer_total, currency)}</dd>
+      </div>
+    </dl>
   );
 }

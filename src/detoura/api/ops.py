@@ -47,6 +47,7 @@ _PHASE_LABEL = {
     "complete": "Complete",
     "partial_failure": "Partial failure",
     "failed": "Failed",
+    "guided_booking": "Guided booking (Basic — traveller books each ticket)",
 }
 
 # Ticket-level actions the spec enumerates. Only VIEW is real in Phase B; the

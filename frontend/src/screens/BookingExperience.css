@@ -63,6 +63,61 @@
 .booking__breakdown-note{font-size:12px;color:var(--text-muted);line-height:1.5;margin:0}
 @media(max-width:640px){.booking__tiers{grid-template-columns:1fr}}
 
+/* --- V8.5 Phase C: tier comparison, simplified review, guided booking --- */
+.booking__tiers--compare{margin-top:26px}
+.booking__tier-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.booking__tier-top b{font-size:1.15rem;font-weight:800}
+.booking__tier-tagline{font-size:12px;font-weight:800;letter-spacing:.03em;color:var(--text-muted);text-transform:uppercase}
+.booking__tier-badge{font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;background:var(--coral);color:#fff;border-radius:999px;padding:2px 8px}
+.booking__tier-summary{font-size:.95rem;color:var(--text);line-height:1.4}
+.booking__tier-price{font-size:1.5rem;font-weight:800;margin-top:4px}
+.booking__tier-price small{font-size:.8rem;font-weight:600;color:var(--text-muted)}
+.booking__tier-feats{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:5px}
+.booking__tier-feats li{font-size:13px;padding-left:20px;position:relative;line-height:1.4}
+.booking__tier-feats li.yes::before{content:"✓";position:absolute;left:0;color:#1f6b4c;font-weight:800}
+.booking__tier-feats li.no{color:var(--text-subtle)}
+.booking__tier-feats li.no::before{content:"—";position:absolute;left:0;color:var(--text-subtle)}
+
+.booking__facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px 22px;margin:20px 0 8px;padding:16px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.booking__facts>div{display:grid;gap:2px}
+.booking__facts dt{font-size:11px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--text-subtle)}
+.booking__facts dd{margin:0;font-size:.98rem;font-weight:600}
+.booking__linkbtn{border:0;background:none;color:var(--coral);font:inherit;font-size:12px;cursor:pointer;padding:0 0 0 4px;text-decoration:underline}
+
+.booking__tickets--tight{display:grid;gap:8px;margin:14px 0}
+.booking__tickets--tight .booking__ticket{padding:0;background:var(--bg)}
+.booking__tickets--tight summary{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;list-style:none}
+.booking__tickets--tight summary::-webkit-details-marker{display:none}
+.booking__tickets--tight summary b{font-size:.95rem;white-space:nowrap}
+.booking__ticket-meta{flex:1;font-size:12px;color:var(--text-muted)}
+.booking__tickets--tight summary .numeric{font-weight:800}
+.booking__tickets--tight dl{grid-template-columns:repeat(3,1fr);padding:0 16px 14px}
+
+.booking__pricebox{display:grid;gap:14px;margin:20px 0}
+.booking__progressbar{margin:18px 0 6px;font-size:1.05rem}
+.booking__progressbar b{font-weight:800}
+
+.booking__guided{display:grid;gap:12px;margin:16px 0}
+.booking__guided-item{border:1px solid var(--border);border-radius:16px;padding:16px;background:var(--bg)}
+.booking__guided-item.is-active{border-color:var(--coral)}
+.booking__guided-item.is-done{border-color:#1f6b4c;background:color-mix(in srgb,#1f6b4c 5%,var(--bg))}
+.booking__guided-head{display:flex;align-items:flex-start;gap:14px}
+.booking__guided-head i{font-style:normal;width:30px;height:30px;flex:none;border-radius:50%;border:1px solid var(--border);display:grid;place-items:center;font-weight:800;font-size:13px}
+.booking__guided-item.is-active .booking__guided-head i{background:var(--coral);color:#fff;border-color:var(--coral)}
+.booking__guided-item.is-done .booking__guided-head i{background:#1f6b4c;color:#fff;border-color:#1f6b4c}
+.booking__guided-head>div{flex:1;display:grid;gap:2px}
+.booking__guided-head strong{font-size:1rem}
+.booking__guided-head small{color:var(--text-muted);font-size:12px}
+.booking__guided-state{font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--text-subtle);white-space:nowrap}
+.booking__guided-state.s-CONFIRMED{color:#1f6b4c}
+.booking__guided-state.s-EXTERNAL_BOOKING_STARTED,.booking__guided-state.s-BOOKING_CONFIRMATION_REQUIRED{color:var(--coral)}
+.booking__guided-state.s-UNKNOWN{color:#b0413e}
+.booking__guided-body{margin-top:12px;padding-top:12px;border-top:1px dashed var(--border);display:grid;gap:10px;font-size:14px}
+.booking__guided-body p{margin:0;line-height:1.5}
+.booking__guided-actions{display:flex;flex-wrap:wrap;gap:8px}
+.booking__guided-note{margin:10px 0 0;font-size:12px;color:var(--text-muted);line-height:1.5}
+.booking__guided-note.is-bad{color:#b0413e}
+
 /* Responsive action rows: on a phone the confirm/continue button stacks to
  * full width and stays clear of the bottom navigation, matching the Trip
  * Detail CTA treatment. */
@@ -70,4 +125,6 @@
   .booking__actions{flex-direction:column;align-items:stretch;gap:12px}
   .booking__actions .btn{width:100%}
   .booking__wrap{padding-bottom:calc(120px + env(safe-area-inset-bottom,0px))}
+  .booking__tickets--tight summary{flex-wrap:wrap}
+  .booking__ticket-meta{flex-basis:100%;order:3}
 }

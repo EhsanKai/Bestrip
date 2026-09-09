@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..persistence import bootstrap as bootstrap_db
 from ..services.feedback import configure_sessions
 from ..services.session_store import store_from_env
+from .ops import router as ops_router
 from .routes import router as engine_router
 from .static import mount_frontend
 from .v1 import router as product_router
@@ -99,7 +100,10 @@ def create_app() -> FastAPI:
     )
     app.include_router(product_router)
     app.include_router(engine_router)
-    # Last: the SPA fallback is a catch-all and would shadow both routers.
+    # V8.5: the admin/ops console API. Disabled (503) unless DETOURA_OPS_TOKEN
+    # is set at runtime.
+    app.include_router(ops_router)
+    # Last: the SPA fallback is a catch-all and would shadow the routers.
     mount_frontend(app)
     return app
 

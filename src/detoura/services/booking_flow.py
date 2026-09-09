@@ -138,6 +138,7 @@ def create_run_from_selection(
         tolerance=tolerance or PriceTolerance(),
         items=items,
         selection_id=selection.selection_id,
+        session_ref="sess_" + secrets.token_urlsafe(8),
     )
     return run
 
@@ -181,6 +182,7 @@ def create_run_demo(
         discovered_total=discovered_total,
         tolerance=tolerance or PriceTolerance(),
         items=items,
+        session_ref="sess_" + secrets.token_urlsafe(8),
     )
 
 
@@ -227,6 +229,19 @@ def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -
         except Exception:  # defensive: a run thread must not die silently
             with run._lock:
                 run.phase = BookingPhase.FAILED
+        finally:
+            # Persist the final state + write the economics ledger even if the
+            # customer has stopped polling.
+            try:
+                from ..persistence import get_db
+                from .booking_commercial import finalize_economics
+                from .booking_persistence import persist_run
+
+                db = get_db()
+                persist_run(run, db)
+                finalize_economics(run, db)
+            except Exception:
+                pass
 
     threading.Thread(target=_worker, name=f"booking-{run.booking_id}", daemon=True).start()
 

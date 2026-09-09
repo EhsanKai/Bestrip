@@ -130,6 +130,7 @@ class BookingRun:
     requested_promo: str | None = None
     quote: CommercialQuote | None = None
     user_key: str = "anonymous"
+    session_ref: str = ""
     economics_written: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 

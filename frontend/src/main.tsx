@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { OpsApp } from "./ops/OpsApp";
 import { init as initAnalytics } from "./lib/analytics";
 import { init as initErrorTracking } from "./lib/errorTracking";
 import "./design/tokens.css";
@@ -11,8 +12,12 @@ import "./design/base.css";
 initAnalytics();
 initErrorTracking();
 
+// The ops console is the same bundle served under /ops, with its own root
+// component and its own layout. The consumer app never mounts there and vice
+// versa.
+const isOps = window.location.pathname.replace(/\/+$/, "").endsWith("/ops")
+  || window.location.pathname.startsWith("/ops/");
+
 createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
+  <StrictMode>{isOps ? <OpsApp /> : <App />}</StrictMode>,
 );

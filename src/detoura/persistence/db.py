@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -97,6 +97,63 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 CREATE INDEX IF NOT EXISTS ix_audit_ts ON audit_events (ts);
 CREATE INDEX IF NOT EXISTS ix_audit_target ON audit_events (target_type, target_id);
+
+-- The operational record of every Detoura journey, for the ops console. This
+-- is mutable (states change, recovery notes get added); the immutable
+-- commercial record is booking_economics. PII is deliberately minimal: lead
+-- name + email for customer identification, nothing else (no DOB, phone,
+-- nationality or document numbers).
+CREATE TABLE IF NOT EXISTS bookings (
+    booking_id            TEXT PRIMARY KEY,
+    session_ref           TEXT NOT NULL DEFAULT '',
+    journey_reference     TEXT NOT NULL,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    mode                  TEXT NOT NULL,
+    phase                 TEXT NOT NULL,
+    trip_label            TEXT NOT NULL DEFAULT '',
+    route_json            TEXT NOT NULL DEFAULT '[]',
+    party_size            INTEGER NOT NULL DEFAULT 1,
+    lead_name             TEXT NOT NULL DEFAULT '',
+    lead_email            TEXT NOT NULL DEFAULT '',
+    currency              TEXT NOT NULL DEFAULT 'EUR',
+    service_tier          TEXT NOT NULL DEFAULT 'BASIC',
+    discovered_total_minor INTEGER NOT NULL DEFAULT 0,
+    current_total_minor   INTEGER,
+    customer_total_minor  INTEGER,
+    recovery_state        TEXT NOT NULL DEFAULT '',
+    reconfirm_note        TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_bookings_phase ON bookings (phase);
+CREATE INDEX IF NOT EXISTS ix_bookings_recovery ON bookings (recovery_state);
+CREATE INDEX IF NOT EXISTS ix_bookings_updated ON bookings (updated_at);
+
+CREATE TABLE IF NOT EXISTS booking_items (
+    booking_id          TEXT NOT NULL,
+    sequence            INTEGER NOT NULL,
+    origin_city         TEXT NOT NULL DEFAULT '',
+    origin_airport      TEXT NOT NULL DEFAULT '',
+    destination_city    TEXT NOT NULL DEFAULT '',
+    destination_airport TEXT NOT NULL DEFAULT '',
+    departure           TEXT,
+    arrival             TEXT,
+    carrier             TEXT NOT NULL DEFAULT '',
+    flight_number       TEXT NOT NULL DEFAULT '',
+    offer_id            TEXT NOT NULL DEFAULT '',
+    provider            TEXT NOT NULL DEFAULT '',
+    quoted_price_minor  INTEGER NOT NULL DEFAULT 0,
+    current_price_minor INTEGER,
+    booked_price_minor  INTEGER,
+    currency            TEXT NOT NULL DEFAULT 'EUR',
+    cabin_baggage       TEXT NOT NULL DEFAULT 'unknown',
+    checked_baggage     TEXT NOT NULL DEFAULT 'unknown',
+    required            INTEGER NOT NULL DEFAULT 1,
+    state               TEXT NOT NULL,
+    detail              TEXT NOT NULL DEFAULT '',
+    provider_order_id   TEXT,
+    updated_at          TEXT NOT NULL,
+    PRIMARY KEY (booking_id, sequence)
+);
 """
 
 
@@ -125,6 +182,12 @@ class Database:
                 self._conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)",
                     (SCHEMA_VERSION,),
+                )
+            elif row["version"] < SCHEMA_VERSION:
+                # The IF NOT EXISTS DDL above already added the new tables; just
+                # record that we are current.
+                self._conn.execute(
+                    "UPDATE schema_version SET version = ?", (SCHEMA_VERSION,)
                 )
 
     @contextmanager

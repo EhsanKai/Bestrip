@@ -49,6 +49,7 @@ from ..services.booking_flow import (
     start_confirmation,
 )
 from ..services.booking_commercial import finalize_economics, price_run
+from ..services.booking_persistence import persist_run
 from ..services.booking_orchestrator import BookingPhase
 from ..models.commercial import ServiceTier
 from ..persistence import get_db
@@ -553,6 +554,7 @@ def _finalize_if_terminal(run) -> None:
 
 def _intent_dto(run) -> BookingIntentResponse:
     _finalize_if_terminal(run)
+    persist_run(run, get_db())
     return BookingIntentResponse(
         booking_id=run.booking_id,
         journey_reference=run.journey_reference,

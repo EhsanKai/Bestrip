@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date, datetime
 from typing import Any
 
@@ -58,7 +59,15 @@ log = logging.getLogger(__name__)
 
 DEFAULT_HOST = "https://api.duffel.com"
 OFFER_REQUEST_PATH = "/air/offer_requests"
+OFFER_PATH = "/air/offers"
 DUFFEL_API_VERSION = "v2"
+
+#: A Duffel offer id, validated before it is ever substituted into a URL. The
+#: id comes from our own snapshot, but a revalidation endpoint takes it back
+#: from a client, so it is checked against this shape before a request is built
+#: - a defence against path traversal and against a mistyped id becoming a
+#: request to some other Duffel resource.
+OFFER_ID_RE = re.compile(r"^off_[A-Za-z0-9]+$")
 
 #: The only token prefix this adapter will transmit.
 TEST_TOKEN_PREFIX = "duffel_test_"
@@ -78,6 +87,20 @@ class DuffelConfigurationError(RuntimeError):
 
 class DuffelAuthError(ProviderHttpError):
     """Duffel rejected the credentials."""
+
+
+class DuffelOfferGone(ProviderHttpError):
+    """A Duffel offer we hold an id for no longer exists (V8 Phase 3).
+
+    Raised for a 404/410 on Get Offer. Distinct from a normalization failure
+    and distinct from "no flights": the offer was real, we quoted it, and it is
+    gone now. Revalidation maps this to ``UNAVAILABLE`` - never to a zero price,
+    an unknown price, or "no trips found".
+    """
+
+    def __init__(self, offer_id: str, *, status: int | None = None) -> None:
+        super().__init__(f"Duffel offer {offer_id} is gone ({status})", status=status)
+        self.offer_id = offer_id
 
 
 class DuffelLiveModeError(DuffelConfigurationError):
@@ -369,6 +392,87 @@ class DuffelTransportProvider:
         return self.parse_offers(body, origin, destination, travelers=travelers)
 
     # ------------------------------------------------------------------
+    # Revalidation - one offer, re-fetched by id (V8 Phase 3)
+    # ------------------------------------------------------------------
+    def get_offer(self, offer_id: str) -> dict:
+        """Re-fetch one offer by id. Returns the raw Duffel offer dict.
+
+        The revalidation read path. Bypasses every cache - the whole point is
+        to learn what changed since the snapshot. Counts against the same hard
+        ``max_calls`` ceiling as an Offer Request, so a caller cannot turn this
+        into an unbounded Duffel query.
+
+        Raises :class:`DuffelOfferGone` on 404/410, :class:`DuffelAuthError` on
+        401/403, :class:`DuffelLiveModeError` if the response is not provably
+        sandbox, and :class:`ProviderHttpError` for anything else. Never returns
+        a partial or a fallback.
+        """
+        if not OFFER_ID_RE.match(offer_id or ""):
+            raise DuffelConfigurationError(
+                "offer id is not a Duffel offer id; refusing to build a request"
+            )
+        if self.search_calls >= self.max_calls:
+            raise ProviderCallBudgetExceeded(
+                f"refusing offer lookup {self.search_calls + 1}: this provider's "
+                f"hard ceiling of {self.max_calls} calls is spent."
+            )
+        self.search_calls += 1
+        response = self.http.request(
+            "GET",
+            f"{self.host}{OFFER_PATH}/{offer_id}",
+            headers=self._headers(),
+            params={"return_available_services": "true"},
+            timeout=self.timeout,
+        )
+        if response.status in (401, 403):
+            raise DuffelAuthError(
+                f"Duffel rejected the credentials with {response.status}",
+                status=response.status,
+            )
+        if response.status in (404, 410):
+            raise DuffelOfferGone(offer_id, status=response.status)
+        if not response.ok:
+            raise ProviderHttpError(
+                f"Duffel offer lookup returned {response.status}",
+                status=response.status,
+            )
+        try:
+            body = response.json()
+        except Exception as error:
+            raise ProviderHttpError(f"Duffel response was not JSON: {error}") from error
+        # `data` is the offer itself here, not a page of them; the same guard
+        # reads `data['live_mode']` and finds no `offers` list to iterate.
+        assert_test_mode(body)
+        offer = (body or {}).get("data")
+        if not isinstance(offer, dict) or not offer.get("id"):
+            raise ProviderHttpError(f"Duffel offer lookup for {offer_id} had no offer body")
+        return offer
+
+    def revalidate_offer(
+        self,
+        offer_id: str,
+        origin: str,
+        destination: str,
+        *,
+        travelers: int = 1,
+    ) -> TransportOption:
+        """Re-fetch one offer and normalize it to a fresh ``TransportOption``.
+
+        ``origin``/``destination`` are the leg's own endpoints - the caller
+        holds them from the selection record, they are not read from client
+        input. Raises if the offer is gone, unmappable, multi-slice, or in an
+        unconvertible currency: revalidation must produce a real current quote
+        or a typed failure, never a guess.
+        """
+        offer = self.get_offer(offer_id)
+        option = self._map_offer(offer, origin, destination, max(travelers, 1))
+        if option is None:
+            raise ProviderHttpError(
+                f"Duffel offer {offer_id} was re-fetched but could not be normalized"
+            )
+        return option
+
+    # ------------------------------------------------------------------
     # Parsing - the whole Duffel vocabulary stops here
     # ------------------------------------------------------------------
     def parse_offers(
@@ -582,10 +686,14 @@ class DuffelTransportProvider:
     ) -> ProviderOfferReference:
         payment = offer.get("payment_requirements") or {}
         instant = payment.get("requires_instant_payment")
+        raw_amount = offer.get("total_amount")
+        raw_currency = offer.get("total_currency")
         return ProviderOfferReference(
             provider="duffel",
             offer_id=offer_id,
             expires_at=_parse_dt(offer.get("expires_at")),
+            quoted_amount=str(raw_amount) if raw_amount is not None else None,
+            quoted_currency=raw_currency or None,
             # `requires_instant_payment` absent means Duffel did not say, which
             # is not the same as "hold is available".
             hold_supported=(not instant) if isinstance(instant, bool) else None,

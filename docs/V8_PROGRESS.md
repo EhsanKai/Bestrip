@@ -113,20 +113,87 @@ acquisition/v5/v75/v76) — exit 0. Full suite — running.
   acquisition latency (~1.7s/edge) makes them slow; boundedness is proven at 25.
 - Phases 3–5, security, Docker, frontend adapters, final report — untouched.
 
+---
+
+# V8 Phase 3 — real offer revalidation + price tolerance. Checkpoint.
+
+Design audit: `docs/V8_PHASE3_DESIGN.md`. Search results are discovery data;
+booking runs on revalidated data. This phase is that gate.
+
+## What changed
+
+| Change | File |
+|---|---|
+| `get_offer(offer_id)` / `revalidate_offer(...)` — Duffel Get Offer read path. `OFFER_ID_RE` validates the id before it touches a URL. `assert_test_mode` on every response. 404/410 → `DuffelOfferGone`. Counts against `max_calls`. No cache. | `providers/duffel.py` |
+| `ProviderOfferReference.quoted_amount` / `quoted_currency` — the provider's raw decimal string + currency, so a currency change is distinguishable from a price change | `models/provider_reference.py` |
+| revalidation domain: `RevalidationStatus` (READY / READY_WITH_MINOR_CHANGE / USER_RECONFIRMATION_REQUIRED / NOT_BOOKABLE), per-offer `OfferRevalidationStatus` (UNCHANGED / PRICE_CHANGED / TERMS_CHANGED / UNAVAILABLE / EXPIRED / PROVIDER_ERROR — kept distinct), `OfferChange`, `RevalidatedOffer`, `OfferRevalidationResult`. `NO_INCREASE` / `absolute_eur()` / `percentage()` tolerance presets. Discovered and current values never share a field. | `models/revalidation.py` (new) |
+| `SelectionStore` — in-memory, TTL 20 min, size-bounded. Server records `{selection_id → SelectedOffer[]}` at search time; `/revalidate` reads it. The client never resends provider data. | `services/selection_store.py` (new) |
+| `compare_offer()` — discovered vs re-fetched, field by field. Currency change ≠ price change. Baggage `INCLUDED → anything` is BLOCKING regardless of price. A quote with no stated expiry is `UNKNOWN` and blocks. Tolerance is a parameter — no hidden default. | `services/offer_comparator.py` (new) |
+| `revalidate_selection()` — one Get Offer per offer, hard ceiling `MAX_OFFERS_PER_REVALIDATION = 8`. Never falls back to the snapshot price: an unreachable offer is `PROVIDER_ERROR` and the itinerary is `NOT_BOOKABLE`. Multi-ticket invariant: two valid + one unavailable → `NOT_BOOKABLE`. Non-flight trip cost carried forward (Phase 3 re-prices flights only). | `services/revalidation.py` (new) |
+| `live_search()` — real Duffel search that records a selection per recommendation, returning opaque `selection_id`s. Same acquisition, same planner, ranking untouched. | `services/live_search.py` (new) |
+| `POST /api/v1/trips/revalidate {selection_id, tolerance_absolute?, tolerance_percentage?}` → `RevalidateResponse` (server-verified current values lead; every change listed; `may_proceed` is the one flag a client gates the confirm button on). 503 without a sandbox token — never a silent snapshot-price fallback. 404 for an unknown/expired selection. | `api/v1.py`, `api/contracts.py` |
+| `tests/test_v8_revalidation.py` — 34 tests: unchanged, price up/down, within/outside tolerance (absolute + percentage), expired, unavailable, provider 5xx/429/timeout/malformed, currency change, baggage downgrade (incl. price-drop-masks-downgrade), hold withdrawn/gained, multi-leg partial failure, offer-id URL-injection, fake live-mode, token-leak, call ceiling, serialization honesty (null not zero), selection store TTL/bounds, endpoint 404/503/no-client-price. | (new) |
+
+## Real-API finding
+
+**Duffel offers are immutable.** `GET /air/offers/{id}` returns the same offer
+or 404 — `total_amount`/baggage do not drift for a fixed id. So real
+revalidation-by-id detects *still there* / *gone* / *expired*; a genuine market
+re-price surfaces at Order creation (Phase 5) or via re-discovery. The
+comparator handles every drift case regardless — the adversarial tests drive it
+with synthesized current offers, and the classification logic is where the
+safety lives. Documented in the design doc, not hidden.
+
+## Verification — real sandbox
+
+Discover (real Duffel QUICK, 48 edges) → wait → revalidate 3 offers via Get Offer:
+
+```
+DISCOVERED  CGN → Prague → Vienna → CGN   EUR 404.76   (3 real Duffel offers)
+REVALIDATE  0.9s, 3 Get Offer calls
+CURRENT     EUR 404.76      DELTA  EUR +0.00  (0.0%)
+STATUS      READY           bookable=true  may_proceed=true
+            CGN → Prague: expiry note "valid → expiring soon" [INFO] — offer's 30-min
+            window nearly elapsed during the 100s acquisition; disclosed, not blocking
+```
+
+No price change was manufactured — Duffel produced none, so the delta is
+€0.00 and the honest status is READY.
+
+## Regression
+
+- Search ranking unchanged: `live=false`/synthetic `/api/v1/search` untouched;
+  golden-signature test green; `acquire_real_supply` unchanged.
+- Beam search still makes **zero** network calls — `revalidate_*` is only
+  reachable post-selection, never from the optimizer.
+- Targeted regression (V7 comparison/reopt/baggage, V7.5, V7.6, V8 P1/P2/P3):
+  276 passed. Broader (api, end_to_end, v5, adversarial, recheck): 247 passed,
+  1 skipped. Full suite: final run in progress.
+
+## Security review (Agent 6)
+
+| check | result |
+|---|---|
+| token in DTO / response / logs / errors | none — Phase 3 code has zero log/print; `test_the_token_never_appears_in_a_revalidation_error` |
+| live-looking token | `is_test_token` gate → 503; provider `__init__` refuses |
+| `live_mode=true` on revalidation | `assert_test_mode` → `DuffelLiveModeError` → `PROVIDER_ERROR` |
+| malformed provider payload | caught → `PROVIDER_ERROR`, `NOT_BOOKABLE` |
+| user-controlled provider URL | host fixed; `offer_id` matched to `^off_[A-Za-z0-9]+$` before URL build |
+| bounded timeout / retry / calls | 12s timeout, 2 retries, `max_calls=16`, `MAX_OFFERS_PER_REVALIDATION=8` |
+| revalidate endpoint as Duffel proxy | only re-fetches ids the server recorded for a server-issued `selection_id`; forged id → 404 |
+| client-supplied price / baggage / status | not in the request schema; `discovered_*` comes from the server's `Selection` record |
+
+**Limitations:** per-request rate limiting only — no global revalidation budget
+across concurrent requests (Phase 4/hardening). No auth on the endpoint (the app
+has none; product is stateless). Real market re-price not detected by id (see above).
+
 ## Resume point
 
-Phase 1 committed as `224446f` (not pushed). Phase 2 code in the working tree,
-uncommitted: `models/destination.py`, `data/destinations.py`,
-`providers/cache.py`, `providers/failures.py`, `services/real_supply.py` (new),
-`tests/test_v8_supply.py` (new).
+Phases 1 (`224446f`) + 2 (`7f53ddc`) committed, not pushed. Phase 3 code in the
+working tree, uncommitted. Full-suite confirmation pending, then commit Phase 3,
+then Docker.
 
-Next: Phase 3 — `services/` revalidation. Revalidate each `BookingItem` of a
-`JourneyBookingIntent` against Duffel (existence, availability, price/currency,
-expiry, baggage, payment/hold metadata), return original/revalidated totals +
-deltas + changed items, wire `PriceTolerance` (NO_INCREASE / ABSOLUTE_EUR /
-PERCENTAGE), require renewed confirmation on any breach.
-
-`models/booking.py` already has the full V7.5 booking domain (state machine,
-`JourneyBookingIntent`, `RevalidationResult`, `PriceTolerance`) — Phase 3/5
-execute against it, they do not rebuild it. Duffel offer→`BookingItem` and the
-supply metrics contract for the frozen frontend still need building.
+Next (Phase 4/5): traveler PII model, Duffel TEST Order creation, multi-ticket
+orchestration against `JourneyBookingIntent` (domain already built), partial-
+failure recovery, idempotency. Wire `live_search` into an endpoint. Attempt a
+real cross-currency case (still UNVERIFIED).

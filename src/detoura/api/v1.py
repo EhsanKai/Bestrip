@@ -16,6 +16,7 @@ decided which one is true.
 from __future__ import annotations
 
 import copy
+import os
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -35,13 +36,23 @@ from ..providers.failures import FailureLog, ProviderFailureKind
 from ..search_modes import MODE_SETTINGS, SearchMode, apply_mode
 from ..services.budget_sensitivity import analyze_budget_sensitivity
 from ..services.feedback import record_feedback
+from ..models.booking import PriceTolerance
+from ..providers.duffel import DuffelTransportProvider, is_test_token
+from ..providers.http import RateLimiter, RetryingHttpClient, UrllibHttpClient
 from ..services.planner import TravelPlanner
 from ..services.confidence import SearchQuality
 from ..services.recheck import recheck_trip
 from ..services.reoptimizer import EditConflict, reoptimize
+from ..services.revalidation import RevalidationLimitExceeded, revalidate_selection
+from ..services.selection_store import selection_store
 from .assembler import build_response, recommendation_dto
 from .contracts import (
     ChangeDiffDTO,
+    OfferChangeDTO,
+    RevalidateRequest,
+    RevalidateResponse,
+    RevalidatedOfferDTO,
+    REVALIDATION_MESSAGES,
     SimilarityDTO,
     TripRecommendation,
     TripReoptimizeRequest,
@@ -294,6 +305,106 @@ def recheck(
             )
             for entry in failures.summary()
         ],
+    )
+
+
+def _revalidation_duffel() -> DuffelTransportProvider:
+    """A Duffel provider for the revalidation read path, or a 503.
+
+    The token is read here from the environment and never from the request.
+    Bounded transport: a rate limiter and the client's own retry ceiling, plus
+    the provider's hard ``max_calls``. If no sandbox token is configured the
+    endpoint is unavailable rather than silently trusting snapshot prices.
+    """
+    token = os.getenv("DUFFEL_ACCESS_TOKEN", "")
+    if not is_test_token(token):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": (
+                    "Revalidation needs a Duffel sandbox token and none is "
+                    "configured. A trip cannot be confirmed without it."
+                ),
+                "issue": {"kind": "PROVIDER_UNCONFIGURED", "retryable": False},
+            },
+        )
+    http = RetryingHttpClient(
+        UrllibHttpClient(), max_retries=2, rate_limiter=RateLimiter(0.2)
+    )
+    return DuffelTransportProvider(
+        access_token=token, http_client=http, max_calls=16, timeout=12.0
+    )
+
+
+@router.post("/trips/revalidate", response_model=RevalidateResponse)
+def revalidate(body: RevalidateRequest) -> RevalidateResponse:
+    """Re-check a selected itinerary against the provider before booking.
+
+    The request carries only a `selection_id` the server issued at search time.
+    The server re-fetches each offer behind it from Duffel and compares against
+    its own record of what was shown - the client never asserts a price, a
+    baggage state, or a booking status. The response leads with the
+    server-verified current values and every change.
+
+    A selection the server does not recognise, or one whose 20-minute window
+    has passed, is a 404: the offers behind it are dead too.
+    """
+    selection = selection_store().get(body.selection_id)
+    if selection is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": (
+                    "That selection is unknown or has expired. Run the search "
+                    "again and re-select the trip."
+                ),
+            },
+        )
+
+    duffel = _revalidation_duffel()
+    tolerance = PriceTolerance(
+        absolute=body.tolerance_absolute, percentage=body.tolerance_percentage
+    )
+    try:
+        result = revalidate_selection(selection, duffel=duffel, tolerance=tolerance)
+    except RevalidationLimitExceeded as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return RevalidateResponse(
+        selection_id=result.selection_id,
+        status=result.status,
+        bookable=result.bookable,
+        may_proceed=result.status.may_proceed_to_confirmation,
+        message=REVALIDATION_MESSAGES[result.status],
+        discovered_total=result.discovered_total,
+        current_total=result.current_total,
+        delta=result.total_delta,
+        delta_pct=result.total_delta_pct,
+        currency=result.currency,
+        tolerance_absolute=tolerance.absolute,
+        tolerance_percentage=tolerance.percentage,
+        offers=[
+            RevalidatedOfferDTO(
+                offer_id=offer.offer_id,
+                leg=offer.leg_label or f"{offer.origin} → {offer.destination}",
+                status=offer.status,
+                discovered_amount=offer.discovered_amount,
+                current_amount=offer.current_amount,
+                delta=offer.amount_delta,
+                discovered_currency=offer.discovered_currency,
+                current_currency=offer.current_currency,
+                changes=[
+                    OfferChangeDTO(
+                        field=c.field, discovered=c.discovered, current=c.current,
+                        severity=c.severity.value, detail=c.detail,
+                    )
+                    for c in offer.changes
+                ],
+                detail=offer.detail,
+            )
+            for offer in result.offers
+        ],
+        checked_at=result.checked_at,
     )
 
 

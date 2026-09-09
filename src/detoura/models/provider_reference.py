@@ -59,6 +59,18 @@ class ProviderOfferReference(BaseModel):
 
     expires_at: datetime | None = None
     """When the provider says this quote dies. ``None`` means it did not say."""
+
+    quoted_amount: str | None = None
+    """The provider's own total, as the decimal *string* it sent (V8 Phase 3).
+
+    Kept alongside the engine's normalized `price_per_person` because
+    revalidation has to tell a currency change from a price change, and a value
+    already converted to the base currency cannot. ``None`` for synthetic fares
+    and for anything quoted before this field existed.
+    """
+    quoted_currency: str | None = None
+    """The currency of :attr:`quoted_amount`, verbatim from the provider."""
+
     hold_supported: bool | None = None
     """Whether the fare can be held without instant payment. ``None`` = unknown.
 

@@ -31,6 +31,7 @@ from ..models.baggage import (
 )
 from ..models.destination import EXPERIENCE_ATTRIBUTES
 from ..models.freshness import PriceFreshness
+from ..models.revalidation import OfferRevalidationStatus, RevalidationStatus
 from ..models.trip import AccommodationPreference, TransportType
 from ..profiles import ProfileName
 from ..search_modes import SearchMode
@@ -960,5 +961,93 @@ RECHECK_MESSAGES: dict[RecheckStatus, str] = {
     RecheckStatus.UNVERIFIABLE: (
         "We couldn't check this trip just now — that's a problem on our side, "
         "not a sign the trip has gone."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Revalidation (V8 Phase 3)
+#
+# `/api/v1/trips/revalidate` re-checks a selected itinerary against the real
+# provider before any move toward booking. The request references a
+# server-issued `selection_id` and nothing else - the server holds the
+# discovered price and terms, so the client cannot assert them.
+# ---------------------------------------------------------------------------
+
+
+class RevalidateRequest(BaseModel):
+    """Re-check the itinerary behind one server-issued selection id."""
+
+    model_config = ConfigDict(frozen=True)
+
+    selection_id: str = Field(min_length=1, max_length=200)
+    tolerance_absolute: float = Field(
+        default=0.0, ge=0.0, le=100_000.0,
+        description="Euros of price increase to tolerate without reconfirmation.",
+    )
+    tolerance_percentage: float = Field(
+        default=0.0, ge=0.0, le=100.0,
+        description="Percent of the discovered total to tolerate. Both bounds apply.",
+    )
+
+
+class OfferChangeDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    field: str
+    discovered: str
+    current: str
+    severity: str
+    detail: str = ""
+
+
+class RevalidatedOfferDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    offer_id: str
+    leg: str
+    status: OfferRevalidationStatus
+    discovered_amount: float
+    current_amount: float | None = None
+    delta: float | None = None
+    discovered_currency: str
+    current_currency: str | None = None
+    changes: list[OfferChangeDTO] = Field(default_factory=list)
+    detail: str = ""
+
+
+class RevalidateResponse(BaseModel):
+    """Whether the selected itinerary may proceed toward booking, and why."""
+
+    model_config = ConfigDict(frozen=True)
+
+    selection_id: str
+    status: RevalidationStatus
+    bookable: bool
+    may_proceed: bool
+    """True only for READY / READY_WITH_MINOR_CHANGE. The single flag a client
+    gates the confirm button on."""
+    message: str
+    discovered_total: float
+    current_total: float | None = None
+    delta: float | None = None
+    delta_pct: float | None = None
+    currency: str
+    tolerance_absolute: float
+    tolerance_percentage: float
+    offers: list[RevalidatedOfferDTO] = Field(default_factory=list)
+    checked_at: datetime
+
+
+REVALIDATION_MESSAGES: dict[RevalidationStatus, str] = {
+    RevalidationStatus.READY: "Still bookable at the price you saw.",
+    RevalidationStatus.READY_WITH_MINOR_CHANGE: (
+        "Still bookable. The price moved slightly, within tolerance — details below."
+    ),
+    RevalidationStatus.USER_RECONFIRMATION_REQUIRED: (
+        "Something you agreed to has changed. Please review and confirm again."
+    ),
+    RevalidationStatus.NOT_BOOKABLE: (
+        "This itinerary can't proceed as selected — see which part and why."
     ),
 }

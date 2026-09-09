@@ -34,3 +34,12 @@
 .booking__delta .down strong{color:#1f6b4c}
 .booking__passwrap{display:grid;gap:24px}
 @media(max-width:640px){.booking__ticket dl{grid-template-columns:repeat(2,1fr)}.booking__delta{grid-template-columns:1fr}}
+
+/* Responsive action rows: on a phone the confirm/continue button stacks to
+ * full width and stays clear of the bottom navigation, matching the Trip
+ * Detail CTA treatment. */
+@media(max-width:640px){
+  .booking__actions{flex-direction:column;align-items:stretch;gap:12px}
+  .booking__actions .btn{width:100%}
+  .booking__wrap{padding-bottom:calc(120px + env(safe-area-inset-bottom,0px))}
+}

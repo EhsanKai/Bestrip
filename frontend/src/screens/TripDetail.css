@@ -220,9 +220,41 @@
   color: var(--warning);
 }
 
-/* Mobile keeps the price and the save action reachable at all times. */
+/* The journey's commit action. A sticky bar so "Choose this journey" is one
+ * glance and one reach away at every width: it docks to the bottom of the
+ * viewport while the page scrolls and comes to rest at the end of the content.
+ * On a phone it sits clear above the bottom navigation and stacks so nothing
+ * is ever clipped. */
 .detail__sticky {
-  display: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  position: sticky;
+  bottom: 0;
+  z-index: 30;
+  margin-top: var(--space-7);
+  padding: var(--space-3) var(--space-4);
+  padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  box-shadow: var(--shadow-lg);
+}
+
+.detail__sticky-price {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  margin-right: auto;
+}
+
+.detail__sticky-price > span:first-child {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-extrabold);
+}
+
+.detail__sticky-price .subtle {
+  font-size: var(--text-xs);
 }
 
 @media (max-width: 1080px) {
@@ -245,35 +277,34 @@
   .detail__price {
     font-size: 1.75rem;
   }
+}
+
+/* At phone width the bottom navigation is on screen. The bar becomes a fixed
+ * full-width dock that sits clear above that navigation, with its contents
+ * stacked to full width so nothing is ever clipped. */
+@media (max-width: 640px) {
   .detail__sticky {
-    display: flex;
     position: fixed;
     left: 0;
     right: 0;
-    bottom: 0;
-    z-index: 20;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-3);
+    bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+    margin-top: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
     padding: var(--space-3) var(--space-4);
-    padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
-    background: var(--bg-raised);
-    border-top: 1px solid var(--border);
-    box-shadow: var(--shadow-lg);
+    border-radius: 0;
   }
   .detail__sticky-price {
-    display: flex;
-    flex-direction: column;
-    line-height: 1.2;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-right: 0;
   }
-  .detail__sticky-price > span:first-child {
-    font-size: var(--text-lg);
-    font-weight: var(--weight-extrabold);
-  }
-  .detail__sticky-price .subtle {
-    font-size: var(--text-xs);
+  .detail__sticky .btn {
+    width: 100%;
   }
   .detail {
-    padding-bottom: calc(var(--space-9) + 60px);
+    padding-bottom: calc(250px + env(safe-area-inset-bottom, 0px));
   }
 }

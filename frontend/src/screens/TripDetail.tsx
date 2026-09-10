@@ -90,11 +90,13 @@ export function TripDetail({
             </p>
           </div>
           <div className="detail__price-block">
+            <div className="eyebrow">Estimated trip cost</div>
             <div className="detail__price numeric">
               {money(trip.total_price, trip.currency)}
             </div>
             <div className="subtle numeric">
-              {money(trip.price_per_person, trip.currency)} per person
+              {money(trip.price_per_person, trip.currency)} per person · flights,
+              stays &amp; transfers
             </div>
           </div>
         </header>
@@ -248,7 +250,10 @@ export function TripDetail({
 
         <div className="detail__sticky">
           <div className="detail__sticky-price">
-            <span className="numeric">{money(trip.total_price, trip.currency)}</span>
+            <span className="numeric">
+              {money(trip.total_price, trip.currency)}
+              <span className="subtle"> est.</span>
+            </span>
             <span className="subtle">
               {trip.duration_days.toFixed(0)} days · {percent(trip.preference_match)} match
             </span>

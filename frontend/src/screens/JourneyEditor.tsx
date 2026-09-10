@@ -222,6 +222,13 @@ export function JourneyEditor({
         })}
       </ol>
 
+      {removeDisabled && (
+        <p className="jed__hint muted">
+          This journey has a single stop, so it can’t be removed — that would
+          leave an empty trip. Use <b>Replace</b> to swap it for somewhere else.
+        </p>
+      )}
+
       {hasEdits && (
         <div className="jed__summary">
           {kept.length > 0 && (

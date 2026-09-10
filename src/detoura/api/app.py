@@ -30,6 +30,7 @@ from ..persistence import bootstrap as bootstrap_db
 from ..services.feedback import configure_sessions
 from ..services.session_store import store_from_env
 from .ops import router as ops_router
+from .ops_search_intel import router as ops_search_intel_router
 from .routes import router as engine_router
 from .static import mount_frontend
 from .v1 import router as product_router
@@ -103,6 +104,9 @@ def create_app() -> FastAPI:
     # V8.5: the admin/ops console API. Disabled (503) unless DETOURA_OPS_TOKEN
     # is set at runtime.
     app.include_router(ops_router)
+    # V9 Phase 1: read access to Search Intelligence (Price Memory coverage,
+    # market signals, search traces, provider economics). Ops-authenticated.
+    app.include_router(ops_search_intel_router)
     # Last: the SPA fallback is a catch-all and would shadow the routers.
     mount_frontend(app)
     return app

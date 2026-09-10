@@ -30,6 +30,7 @@ Design rules, all load-bearing:
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 
@@ -365,18 +366,32 @@ def execute_cancellation(
 def _persist_cancellation_result(
     db, op, result: CancellationResult, idempotency_key: str,
 ) -> TicketOperation:
-    updated = ops_store.update(
-        db, op.operation_id, state=result.state.value,
-        result=result.model_dump(mode="json"),
-    )
+    # Terminal write is conditional on still holding the EXECUTING claim, so a
+    # late reclaim by another execute cannot overwrite a good terminal result.
+    with db.write() as conn:
+        conn.execute(
+            "UPDATE ticket_operations SET state = ?, result_json = ?, "
+            "updated_at = ? WHERE operation_id = ? "
+            "AND state NOT IN ('CANCELLED','REFUNDED','REFUND_PENDING',"
+            "'PARTIALLY_REFUNDED','NON_REFUNDABLE','CANCELLATION_FAILED')",
+            (result.state.value,
+             json.dumps(result.model_dump(mode="json"), default=str,
+                        separators=(",", ":")),
+             datetime.now(timezone.utc).isoformat(), op.operation_id),
+        )
     if idempotency_key and not op.idempotency_key:
-        with db.write() as conn:
-            conn.execute(
-                "UPDATE ticket_operations SET idempotency_key = ? "
-                "WHERE operation_id = ? AND idempotency_key = ''",
-                (idempotency_key, op.operation_id),
-            )
-    return updated
+        try:
+            with db.write() as conn:
+                conn.execute(
+                    "UPDATE ticket_operations SET idempotency_key = ? "
+                    "WHERE operation_id = ? AND idempotency_key = ''",
+                    (idempotency_key, op.operation_id),
+                )
+        except Exception:
+            # a concurrent tag or a key collision must never turn a
+            # successfully-persisted cancellation into a 500.
+            pass
+    return ops_store.get(db, op.operation_id)  # type: ignore[return-value]
 
 
 def _cancellation_quote_from_duffel(
@@ -538,8 +553,14 @@ def execute_change(db: Database, operation_id: str, *, actor: str,
     if op.state in (ChangeState.APPLIED.value, ChangeState.FAILED.value,
                     ChangeState.NOT_SUPPORTED.value, DEMO_STATE):
         return op
+    if op.state == ChangeState.EXECUTING.value:
+        return op  # a concurrent execute holds the claim
     if op.state != ChangeState.APPROVED.value:
         raise TicketOpError(f"A change must be approved first (state {op.state}).")
+    if idempotency_key:
+        prior = ops_store.by_idempotency_key(db, idempotency_key)
+        if prior is not None and prior.operation_id != operation_id:
+            return prior
 
     offer_id = (op.quote_json or {}).get("change_offer_id")
     if not offer_id:
@@ -553,8 +574,17 @@ def execute_change(db: Database, operation_id: str, *, actor: str,
                target_id=operation_id, note=result.detail)
         return ops_store.update(db, operation_id, state=ChangeState.FAILED.value,
                                 result=result.model_dump(mode="json"))
+
+    # Atomic claim before any provider mutation — exactly one execute proceeds.
+    if not ops_store.claim(
+        db, operation_id,
+        from_state=ChangeState.APPROVED.value,
+        to_state=ChangeState.EXECUTING.value,
+    ):
+        return ops_store.get(db, operation_id)  # type: ignore[return-value]
     duffel = (duffel_factory or duffel_for_ops)()
     if duffel is None:
+        ops_store.update(db, operation_id, state=ChangeState.APPROVED.value)
         raise TicketOpError("No Duffel sandbox token is configured.", status=503)
     _audit(db, actor=actor, action="CHANGE_EXECUTION_ATTEMPTED",
            target_id=operation_id, note=f"offer {offer_id}")

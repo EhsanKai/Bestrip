@@ -242,6 +242,8 @@ class ChangeState(str, Enum):
     NOT_SUPPORTED = "NOT_SUPPORTED"
     QUOTED = "QUOTED"
     APPROVED = "APPROVED"
+    EXECUTING = "EXECUTING"
+    """A claim: one caller is applying the change at the provider right now."""
     APPLIED = "APPLIED"
     FAILED = "FAILED"
 

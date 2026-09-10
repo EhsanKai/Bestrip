@@ -155,8 +155,10 @@ def si_prune(actor: str = Depends(require_ops)) -> dict:
     cfg = search_intel_config()
     obs = pm.prune(db, retention_days=cfg.retention_days)
     tr = pm.prune_traces(db, retention_days=cfg.retention_days)
+    stale = pm.prune_stale_provenance(db)
     return {
         "retention_days": cfg.retention_days,
         "observations_pruned": obs,
         "traces_pruned": tr,
+        "stale_provenance_pruned": stale,
     }

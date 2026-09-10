@@ -90,7 +90,9 @@ class AcquisitionEdge:
     destination: str
     day: date
     travelers: int = 1
-    provenance: "EdgeProvenance | None" = field(default=None, compare=False, hash=False)
+    provenance: "EdgeProvenance | None" = field(
+        default=None, compare=False, hash=False, repr=False
+    )
     """Search-intelligence provenance (V9). ``compare=False``/``hash=False`` so
     it rides along with the edge object without changing the edge's identity —
     edges are dict keys for the offer snapshot and the provider cache, and a

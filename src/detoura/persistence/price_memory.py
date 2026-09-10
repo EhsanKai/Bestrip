@@ -266,11 +266,17 @@ def prune_traces(db: Database, *, retention_days: int, now: datetime | None = No
 # ======================================================================
 # Read — coverage / analytics (for Ops)
 # ======================================================================
+#: The provenance-version filter every intelligence read applies, as a SQL
+#: fragment + the bind param, so the constant lives in exactly one place.
+_FRESH_PROV = "COALESCE(provenance_version, 1) >= ?"
+
+
 def coverage_summary(db: Database) -> dict:
     row = db.query_one(
         "SELECT COUNT(*) AS n, MIN(observed_at) AS oldest, MAX(observed_at) AS newest,"
         " COUNT(DISTINCT provider || origin || destination || departure_date || travelers_bucket) AS markets"
-        " FROM price_observations WHERE COALESCE(provenance_version, 1) >= 2"
+        f" FROM price_observations WHERE {_FRESH_PROV}",
+        (CURRENT_PROVENANCE_VERSION,),
     )
     traces = db.query_one("SELECT COUNT(*) AS n FROM search_traces")
     return {
@@ -290,10 +296,10 @@ def top_markets(db: Database, *, limit: int = 20) -> list[dict]:
         " AVG(CASE WHEN contributed_to_top_k THEN 1.0 ELSE 0.0 END) AS top_k_rate,"
         " AVG(CASE WHEN contributed_to_winner THEN 1.0 ELSE 0.0 END) AS winner_rate"
         " FROM price_observations"
-        " WHERE COALESCE(provenance_version, 1) >= 2"
+        f" WHERE {_FRESH_PROV}"
         " GROUP BY provider, origin, destination, departure_date, travelers_bucket"
         " ORDER BY samples DESC LIMIT ?",
-        (max(1, min(int(limit), 200)),),
+        (CURRENT_PROVENANCE_VERSION, max(1, min(int(limit), 200))),
     )
     return [dict(r) for r in rows]
 
@@ -313,10 +319,11 @@ def get_trace(db: Database, search_id: str) -> dict | None:
 
 def contribution_rollup(db: Database, *, since: datetime | None = None) -> dict:
     """Search-wide useful/top-K/winner rates over recent traces + observations."""
-    where, params = "", []
+    clauses = [_FRESH_PROV]
+    params: list = [CURRENT_PROVENANCE_VERSION]
     if since is not None:
-        where = " WHERE observed_at >= ?"
-        params = [since.isoformat()]
+        clauses.append("observed_at >= ?")
+        params.append(since.isoformat())
     row = db.query_one(
         "SELECT COUNT(*) AS obs,"
         " AVG(CASE WHEN normalized_ok AND retained_after_limits THEN 1.0 ELSE 0.0 END) AS retained_rate,"
@@ -324,7 +331,7 @@ def contribution_rollup(db: Database, *, since: datetime | None = None) -> dict:
         " AVG(CASE WHEN contributed_to_top_k THEN 1.0 ELSE 0.0 END) AS top_k_rate,"
         " AVG(CASE WHEN contributed_to_winner THEN 1.0 ELSE 0.0 END) AS winner_rate,"
         " AVG(CASE WHEN exploration THEN 1.0 ELSE 0.0 END) AS explore_rate"
-        f" FROM price_observations WHERE COALESCE(provenance_version, 1) >= 2{(' AND ' + where[7:]) if where else ''}",
+        " FROM price_observations WHERE " + " AND ".join(clauses),
         tuple(params),
     )
     return {k: (float(v) if v is not None else None) for k, v in dict(row or {}).items()}

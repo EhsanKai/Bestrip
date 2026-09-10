@@ -434,6 +434,7 @@ class SearchIntelRecorder:
             try:
                 pm.prune(self.db, retention_days=self.cfg.retention_days)
                 pm.prune_traces(self.db, retention_days=self.cfg.retention_days)
+                pm.prune_stale_provenance(self.db)
             except Exception:
                 pass
         return trace

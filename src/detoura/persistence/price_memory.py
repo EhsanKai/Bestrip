@@ -30,6 +30,12 @@ from ..models.search_trace import SearchIntelligenceTrace
 from .db import Database
 
 
+#: Observations written before the QA fix (return-leg stance mislabeled) carry
+#: provenance_version 1. Intelligence aggregates and benchmarks read only rows
+#: at or above this.
+CURRENT_PROVENANCE_VERSION = 2
+
+
 def new_observation_id() -> str:
     return "obs_" + secrets.token_urlsafe(16)
 
@@ -64,6 +70,9 @@ def record_observations(db: Database, observations: Sequence[PriceObservation]) 
             o.search_id, o.acquisition_call_id, o.search_mode.value,
             o.candidate_reason[:200], int(o.exploration), o.candidate_rank,
             o.provider_call_ordinal, o.provider_call_budget,
+            o.edge_kind, o.secondary_market,
+            o.scoring_reference_date.isoformat() if o.scoring_reference_date else None,
+            int(o.provenance_version),
             int(o.normalized_ok), int(o.retained_after_limits),
             int(o.entered_candidate_set), int(o.contributed_to_top_k),
             int(o.contributed_to_winner),
@@ -80,9 +89,11 @@ def record_observations(db: Database, observations: Sequence[PriceObservation]) 
             " baggage_cabin, baggage_checked, offer_count_for_edge, search_id,"
             " acquisition_call_id, search_mode, candidate_reason, exploration,"
             " candidate_rank, provider_call_ordinal, provider_call_budget,"
+            " edge_kind, secondary_market, scoring_reference_date,"
+            " provenance_version,"
             " normalized_ok, retained_after_limits, entered_candidate_set,"
             " contributed_to_top_k, contributed_to_winner"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
     return len(rows)
@@ -184,7 +195,9 @@ def observations_for_markets(
                        m.departure_date.isoformat(), m.trip_shape.value,
                        m.travelers_bucket])
     sql = ("SELECT * FROM price_observations WHERE ("
-           + " OR ".join(where_parts) + ")")
+           + " OR ".join(where_parts) + ")"
+           + " AND COALESCE(provenance_version, 1) >= ?")
+    params.append(CURRENT_PROVENANCE_VERSION)
     if since is not None:
         sql += " AND observed_at >= ?"
         params.append(since.isoformat())
@@ -226,6 +239,19 @@ def prune(db: Database, *, retention_days: int, now: datetime | None = None) -> 
     return n
 
 
+def prune_stale_provenance(db: Database) -> int:
+    """Delete observations written before the QA-fix provenance model
+    (``provenance_version < CURRENT_PROVENANCE_VERSION``). Only
+    ``price_observations`` — a Search-Intelligence-only cleanup. Returns rows
+    deleted."""
+    with db.write() as conn:
+        cur = conn.execute(
+            "DELETE FROM price_observations WHERE COALESCE(provenance_version, 1) < ?",
+            (CURRENT_PROVENANCE_VERSION,),
+        )
+        return cur.rowcount
+
+
 def prune_traces(db: Database, *, retention_days: int, now: datetime | None = None) -> int:
     if retention_days <= 0:
         return 0
@@ -244,7 +270,7 @@ def coverage_summary(db: Database) -> dict:
     row = db.query_one(
         "SELECT COUNT(*) AS n, MIN(observed_at) AS oldest, MAX(observed_at) AS newest,"
         " COUNT(DISTINCT provider || origin || destination || departure_date || travelers_bucket) AS markets"
-        " FROM price_observations"
+        " FROM price_observations WHERE COALESCE(provenance_version, 1) >= 2"
     )
     traces = db.query_one("SELECT COUNT(*) AS n FROM search_traces")
     return {
@@ -264,6 +290,7 @@ def top_markets(db: Database, *, limit: int = 20) -> list[dict]:
         " AVG(CASE WHEN contributed_to_top_k THEN 1.0 ELSE 0.0 END) AS top_k_rate,"
         " AVG(CASE WHEN contributed_to_winner THEN 1.0 ELSE 0.0 END) AS winner_rate"
         " FROM price_observations"
+        " WHERE COALESCE(provenance_version, 1) >= 2"
         " GROUP BY provider, origin, destination, departure_date, travelers_bucket"
         " ORDER BY samples DESC LIMIT ?",
         (max(1, min(int(limit), 200)),),
@@ -297,7 +324,7 @@ def contribution_rollup(db: Database, *, since: datetime | None = None) -> dict:
         " AVG(CASE WHEN contributed_to_top_k THEN 1.0 ELSE 0.0 END) AS top_k_rate,"
         " AVG(CASE WHEN contributed_to_winner THEN 1.0 ELSE 0.0 END) AS winner_rate,"
         " AVG(CASE WHEN exploration THEN 1.0 ELSE 0.0 END) AS explore_rate"
-        f" FROM price_observations{where}",
+        f" FROM price_observations WHERE COALESCE(provenance_version, 1) >= 2{(' AND ' + where[7:]) if where else ''}",
         tuple(params),
     )
     return {k: (float(v) if v is not None else None) for k, v in dict(row or {}).items()}

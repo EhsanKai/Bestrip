@@ -196,13 +196,19 @@ def main() -> None:
         attribution_demo = {"calls_total": 0}
 
     def _fmt(t):
+        # candidate-level allocation (one decision per selected destination)
+        cand_exploit = sum(1 for c in t.candidates if c.selected and c.stance.value == "EXPLOIT")
+        cand_explore = sum(1 for c in t.candidates if c.selected and c.stance.value == "EXPLORE")
         return {
             "candidates_scored": len(t.candidates),
             "candidates_selected": sum(1 for c in t.candidates if c.selected),
+            "candidate_level_exploit": cand_exploit,
+            "candidate_level_explore": cand_explore,
             "provider_call_budget": t.provider_call_budget,
+            "acquisition_edges": len(t.call_outcomes),
             "provider_calls_used": t.provider_calls_used,
-            "calls_exploit": t.calls_exploit,
-            "calls_explore": t.calls_explore,
+            "provider_call_level_exploit": t.calls_exploit,
+            "provider_call_level_explore": t.calls_explore,
             "explore_fraction": t.explore_fraction,
             "recommendations": t.recommendations_produced,
             "useful_call_rate": t.useful_call_rate,
@@ -212,6 +218,12 @@ def main() -> None:
 
     report = {
         "runs": args.runs,
+        "provenance_version": pm.CURRENT_PROVENANCE_VERSION,
+        "note_provenance": "Only provenance_version >= "
+                           f"{pm.CURRENT_PROVENANCE_VERSION} rows count toward "
+                           "aggregates; the pre-QA-fix warm split (12 exploit / "
+                           "8 explore, explore_fraction 0.4) is INVALID and "
+                           "discarded.",
         "cold_start": _fmt(cold),
         "warm": _fmt(warm),
         "warm_search_latency_ms": {

@@ -172,23 +172,18 @@ def acquire_real_supply(
     used_airports = tuple(sorted(airports)[: _budget.max_airport_variants])
     used_days = tuple(sorted(days)[: _budget.max_date_variants])
 
-    preselected = None
+    candidate_provenance = None
     if recorder is not None and getattr(recorder, "enabled", False) and used_days:
-        ranked, _ = rank_candidates(
-            destinations, request, limit=_budget.max_destinations,
-            exploration_share=_budget.exploration_share,
-        )
-        # keep a slightly wider pool for the scorer to choose from
+        # a slightly wider ranked pool for the scorer to choose from
         wide, _ = rank_candidates(
             destinations, request,
             limit=min(len(destinations), _budget.max_destinations * 2),
             exploration_share=_budget.exploration_share,
         )
-        chosen = recorder.plan_candidates(
+        _chosen, candidate_provenance = recorder.plan_candidates(
             wide, city_airports=city_airports, origin_airports=used_airports,
             departure_date=used_days[0], slots=_budget.max_destinations,
         )
-        preselected = [d.id for d in chosen]
 
     plan = build_plan(
         request,
@@ -196,7 +191,7 @@ def acquire_real_supply(
         airports=airports,
         days=days,
         budget=budget,
-        preselected=preselected,
+        candidate_provenance=candidate_provenance,
     )
     cache = cache if cache is not None else ExpiringProviderCache()
     metrics = RealSupplyMetrics(edges_planned=plan.planned_request_count)

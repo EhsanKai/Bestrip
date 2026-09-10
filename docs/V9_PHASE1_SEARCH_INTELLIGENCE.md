@@ -95,6 +95,55 @@ Derived rates: `explore_fraction`, `useful_call_rate`,
 (`test_no_pii_columns_in_price_observations_or_traces`,
 `test_trace_json_contains_no_pii`, `test_recorder_source_never_reads_traveler_pii`)
 
+## Edge-level provenance (QA fix round)
+
+The EXPLOIT/EXPLORE decision is made **once per selected destination** — it is a
+decision about a one-way market from the trip origin. `build_plan` then builds
+**several** acquisition edges from each selected destination, and each edge
+carries an explicit `EdgeProvenance` (an `AcquisitionEdge` field with
+`compare=False`/`hash=False`, so it rides along without changing the edge's
+identity as a dict/cache key). Stance is **never** inferred later from
+`edge.destination`.
+
+| edge | `EdgeKind` | stance | reason |
+|---|---|---|---|
+| origin airport → selected city | `OUTBOUND` | the destination's candidate stance | the candidate's scoring reason |
+| selected city → origin airport | `RETURN` | **the same** destination's candidate stance | `"return leg of selected market {city} ({reason})"` |
+| selected city A → selected city B | `INTER_CITY` | **`EXPLOIT` only when *both* A and B are `EXPLOIT` candidates**, else `EXPLORE` | `"inter-city edge between selected markets {A} and {B}"` |
+
+The RETURN leg inherits the same decision because the traveller only flies home
+*because that destination was selected* — there is no separate "return market"
+decision in Phase 1. The INTER_CITY rule is conservative: a hop is only
+exploitation if the intelligence backs **both** ends.
+
+*Before this fix* the recorder keyed provenance by destination id and looked it
+up by `edge.destination`; for the RETURN leg that is the origin airport, which
+missed, so every return leg was silently recorded `EXPLORE / "" / rank NULL`,
+corrupting `PriceObservation.exploration` / `candidate_reason` / `candidate_rank`
+and the trace's `calls_explore`/`calls_exploit`. Fixed at the provenance level;
+counters are not patched afterward. (`tests/test_v9_provenance_fix.py`)
+
+## Multi-date rule
+
+Candidate scoring uses the **first acquired date** (`used_days[0]`). When
+`max_date_variants > 1`, acquisition still spans every date variant and the
+candidate decision is **shared** across them. Every `PriceObservation` records
+`scoring_reference_date` (the date actually scored); a row whose own
+`departure_date` differs from it was acquired under a shared decision, and the
+field says so — a persisted row never implies date-specific intelligence it did
+not have. (`test_F_multi_date_records_the_scoring_reference_date`) Full
+per-(destination, date) scoring is a later-phase refinement.
+
+## Currency invariant
+
+The recorder does **not** stamp a currency literal. `acquire_real_supply` →
+`DuffelTransportProvider` normalizes every retained option's price to
+`money.BASE_CURRENCY` and drops any offer it cannot convert
+(`ProviderFailureKind.CURRENCY_UNAVAILABLE`). A `TransportOption` that reaches
+the recorder is therefore, **by pipeline contract**, in `BASE_CURRENCY`, and
+`_observation` encodes exactly that invariant (`currency = BASE_CURRENCY`, with
+the reason in a comment). (`test_G_currency_is_base_currency_by_invariant`)
+
 ## Provenance chain (contribution attribution)
 
 ```
@@ -105,18 +154,42 @@ acquisition_call_id  (search_id : ordinal)
   → optimizer results             recorder.attribute() walks recommendations
 ```
 
-`recorder.attribute(recommendations)`:
+**Canonical winner / Top-K rule — the planner rank contract.** Every
+`Itinerary` carries a total order via `Itinerary.rank` (the planner assigns
+`1..N`, one best trip). `recorder.attribute` uses `rank` **only**, never list
+position:
 
 * every call whose id appears on any recommendation leg →
   `entered_candidate_set` (class C)
-* … on a Top-K (default 5, `SEARCH_INTEL_TOP_K`) recommendation → class D
-* … on the winner (`rank == 0`) → class E
+* … on one of the `top_k` (default 5, `SEARCH_INTEL_TOP_K`) **lowest-rank**
+  recommendations → class D
+* … on the **single lowest-rank** recommendation → class E
+
+A recommendation with no `rank` (a test double) is treated as `rank = +inf` and
+can never be Top-K or winner. There is **no** "first in the list" fallback.
+(`test_H_winner_is_lowest_rank_not_first_in_list`, `test_H_no_rank_means_never_winner`)
 
 Classes A (no usable offer) / B (usable but unused) fall out of the retained /
 candidate flags. IDs are **propagated, not inferred** — `TransportOption`
 carries `acquisition_call_id` and the optimizer never rewrites it.
 (`test_attribution_marks_optimizer_top_k_and_winner`,
 `test_contribution_classes_are_written_back_to_observations`)
+
+## Dataset trustworthiness — pre-fix observations
+
+`PriceObservation.provenance_version` identifies the provenance schema: `1` =
+pre-QA-fix (return-leg stance mislabeled), `2` = corrected (`record_observations`
+writes `2`). Every intelligence read —
+`observations_for_markets`, `coverage_summary`, `top_markets`,
+`contribution_rollup` — filters `provenance_version >= 2`, and
+`prune_stale_provenance()` deletes the `< 2` rows (a Search-Intelligence-only
+cleanup; `booking_economics` / `audit_events` / `bookings` are different tables
+and never referenced). V9 Phase 1 Price Memory has only ever been written by
+tests and the benchmark, both against **ephemeral** databases, so no persistent
+pre-fix rows exist anywhere; the version field + prune exist so that any that do
+cannot influence a benchmark. (`test_pre_fix_observations_are_excluded_from_aggregates_and_prunable`)
+Local/dev V9 Price Memory should be discarded (delete the SQLite file, or run
+the prune) before re-running benchmarks.
 
 ## Aggregation (`services/market_intel.py`)
 
@@ -276,20 +349,31 @@ backend it will read.
 ## Benchmark (`scripts/bench_search_intel.py`)
 
 `python3 scripts/bench_search_intel.py --runs 5` — deterministic synthetic
-fake-Duffel run. Representative output:
+fake-Duffel run. **Revised** output after the QA fix (the pre-fix warm split
+was invalid — see the dataset section):
 
 ```
-cold_start : 8 candidates, 4 selected, budget 48, 20 calls, 0 exploit / 20 explore  (explore_fraction 1.0)
-warm       : 8 candidates, 4 selected, budget 48, 20 calls, 12 exploit / 8 explore  (explore_fraction 0.4)
-attribution_demo : 20 calls → 6 candidate, 6 top-K, 2 winner
-lookup_overhead  : 8 candidate markets, one query, ~0.9 ms  (baseline ~0.0 ms)
-warm_search_latency : ~10 ms median
-price_memory : 120 observations, 28 markets, 6 traces
+                          candidate-level        provider-call-level (edges)
+cold_start  8 scored, 4 sel   0 exploit / 4 explore    0 exploit / 20 explore   explore_fraction 1.0
+warm        8 scored, 4 sel   3 exploit / 1 explore   12 exploit /  8 explore   explore_fraction 0.4
+
+attribution_demo   : 20 calls → 6 candidate, 6 top-K, 2 winner
+lookup_overhead    : 8 candidate markets, one batched query, ~1.0 ms  (baseline ~0.0 ms)
+warm_search_latency: ~10 ms median
+price_memory       : 120 observations (provenance_version 2), 28 markets, 6 traces
 ```
 
-Cold start is 100 % exploration; once history accumulates the same budget
-shifts toward exploitation while never dropping exploration below its floor.
-Price Memory lookup adds ~1 ms for 8 candidate markets (single batched query).
+The **candidate-level** split is one decision per selected destination; the
+**provider-call-level** split is per acquisition edge, and one selected
+destination generates multiple edges (OUTBOUND + RETURN + inter-city hops) —
+which is why the two columns differ. Both are now correct: every RETURN edge
+carries its destination's stance, and inter-city edges are EXPLOIT only when
+both endpoints are.
+
+Cold start is 100 % exploration at both levels; once history accumulates the
+same budget shifts toward exploitation while never dropping exploration below
+its floor. Price Memory lookup adds ~1 ms for 8 candidate markets (single
+batched query).
 
 **This is the baseline for the real adaptive-acquisition benchmark in a later
 V9 phase.**

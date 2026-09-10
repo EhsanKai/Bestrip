@@ -202,22 +202,26 @@ def test_a_call_that_returns_nothing_is_class_A(tmp_path):
 # ======================================================================
 def test_cold_start_is_all_explore_then_warm_markets_become_exploit():
     d = Database(":memory:")
-    # first search: cold
+    # first search: cold — every call is EXPLORE, exactly
     r1, _ = _run(d)
     t1 = r1.search_trace
     assert t1.calls_exploit == 0
-    assert t1.calls_explore > 0
+    assert t1.calls_explore == len(t1.call_outcomes)
 
     # many more searches to build history for the chosen destinations
-    for _ in range(6):
+    for _ in range(7):
         _run(d)
 
     r_last, _ = _run(d)
     t = r_last.search_trace
-    # by now at least some calls should be EXPLOIT for markets we've seen a lot
-    assert t.calls_exploit >= 1
-    # but exploration never disappears entirely (invariant)
-    assert t.calls_explore >= 1
+    # counters equal the recomputed per-call stance split — no slop
+    from detoura.models.search_intel import AcquisitionStance
+    exploit = sum(1 for c in t.call_outcomes if c.stance is AcquisitionStance.EXPLOIT)
+    explore = sum(1 for c in t.call_outcomes if c.stance is AcquisitionStance.EXPLORE)
+    assert (t.calls_exploit, t.calls_explore) == (exploit, explore)
+    assert exploit >= 1              # some markets are now exploited
+    assert explore >= 1             # exploration never disappears (invariant)
+    assert t.calls_exploit + t.calls_explore == len(t.call_outcomes)
 
 
 def test_provider_budget_is_never_exceeded_by_the_recorder():

@@ -12,18 +12,15 @@ is an operational attribution handle, not a person.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .search_intel import ContributionClass, MarketConfidence, SearchModeTag
-
-
-class AcquisitionStance(str, Enum):
-    EXPLOIT = "EXPLOIT"
-    """Chosen because existing signals predict useful value."""
-    EXPLORE = "EXPLORE"
-    """Chosen for information / diversity despite weaker historical evidence."""
+from .search_intel import (
+    AcquisitionStance,
+    ContributionClass,
+    MarketConfidence,
+    SearchModeTag,
+)
 
 
 class CandidateDecision(BaseModel):

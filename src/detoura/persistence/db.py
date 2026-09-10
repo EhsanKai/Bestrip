@@ -212,6 +212,10 @@ CREATE TABLE IF NOT EXISTS price_observations (
     candidate_rank        INTEGER,
     provider_call_ordinal INTEGER,
     provider_call_budget  INTEGER,
+    edge_kind             TEXT NOT NULL DEFAULT '',
+    secondary_market      TEXT,
+    scoring_reference_date TEXT,
+    provenance_version    INTEGER NOT NULL DEFAULT 1,
     normalized_ok         INTEGER NOT NULL DEFAULT 1,
     retained_after_limits INTEGER NOT NULL DEFAULT 1,
     entered_candidate_set INTEGER NOT NULL DEFAULT 0,
@@ -310,6 +314,11 @@ class Database:
         ("booking_items", "operating_carrier", "TEXT NOT NULL DEFAULT ''"),
         ("booking_items", "operating_flight_number", "TEXT NOT NULL DEFAULT ''"),
         ("booking_items", "carrier_name", "TEXT NOT NULL DEFAULT ''"),
+        # V9 Phase 1 QA fix — provenance fields on an already-created v5 table.
+        ("price_observations", "edge_kind", "TEXT NOT NULL DEFAULT ''"),
+        ("price_observations", "secondary_market", "TEXT"),
+        ("price_observations", "scoring_reference_date", "TEXT"),
+        ("price_observations", "provenance_version", "INTEGER NOT NULL DEFAULT 1"),
     )
 
     def _migrate(self) -> None:

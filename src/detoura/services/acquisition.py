@@ -33,9 +33,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 from ..models.destination import Destination
+from ..models.search_intel import (
+    AcquisitionStance,
+    CandidateProvenance,
+    EdgeKind,
+    EdgeProvenance,
+)
 from ..models.transport import TransportOption
 from ..models.trip import TripRequest
 from ..providers.failures import ProviderFailureKind
@@ -84,6 +90,11 @@ class AcquisitionEdge:
     destination: str
     day: date
     travelers: int = 1
+    provenance: "EdgeProvenance | None" = field(default=None, compare=False, hash=False)
+    """Search-intelligence provenance (V9). ``compare=False``/``hash=False`` so
+    it rides along with the edge object without changing the edge's identity —
+    edges are dict keys for the offer snapshot and the provider cache, and a
+    lookup edge built without provenance must still match."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +281,7 @@ def build_plan(
     days: Sequence[date],
     budget: ProviderCallBudget | None = None,
     preselected: Sequence[str] | None = None,
+    candidate_provenance: "Mapping[str, CandidateProvenance] | None" = None,
 ) -> ProviderAcquisitionPlan:
     """Decide the whole question set up front, inside the budget.
 
@@ -277,8 +289,17 @@ def build_plan(
     ids to acquire — e.g. the search-intelligence recorder after explore/exploit
     allocation — passes them here, in order, and the internal preference
     ranking is skipped. The budget's other ceilings still bind.
+
+    ``candidate_provenance`` (V9 QA fix): the per-destination EXPLOIT/EXPLORE
+    decision, keyed by destination id (its keys, in order, also serve as
+    ``preselected``). Every edge built from a selected destination — the
+    OUTBOUND leg, the RETURN leg, and each INTER_CITY leg — is stamped with an
+    :class:`EdgeProvenance` derived from it, so stance is never inferred later
+    from ``edge.destination``.
     """
     budget = budget or ProviderCallBudget()
+    if candidate_provenance is not None and preselected is None:
+        preselected = list(candidate_provenance.keys())
     if preselected is not None:
         by_id = {d.id: d for d in destinations}
         chosen = [by_id[i] for i in preselected if i in by_id][: budget.max_destinations]
@@ -297,17 +318,63 @@ def build_plan(
         used_days = ()
     city_ids = tuple(d.id for d in chosen)
 
+    prov = dict(candidate_provenance or {})
+
+    def _outbound(city: str) -> "EdgeProvenance | None":
+        cp = prov.get(city)
+        if cp is None:
+            return None
+        return EdgeProvenance(
+            kind=EdgeKind.OUTBOUND, stance=cp.stance, reason=cp.reason,
+            candidate_id=city, candidate_rank=cp.rank,
+            scoring_reference_date=cp.scoring_reference_date,
+        )
+
+    def _return(city: str) -> "EdgeProvenance | None":
+        cp = prov.get(city)
+        if cp is None:
+            return None
+        # The RETURN leg inherits the SAME candidate decision — the traveller
+        # only flies home because that destination was selected.
+        return EdgeProvenance(
+            kind=EdgeKind.RETURN, stance=cp.stance,
+            reason=f"return leg of selected market {city} ({cp.reason})",
+            candidate_id=city, candidate_rank=cp.rank,
+            scoring_reference_date=cp.scoring_reference_date,
+        )
+
+    def _inter_city(first: str, second: str) -> "EdgeProvenance | None":
+        a, b = prov.get(first), prov.get(second)
+        if a is None or b is None:
+            return None
+        # Derived stance: EXPLOIT only when BOTH endpoints were EXPLOIT
+        # candidates; any EXPLORE endpoint makes the inter-city hop EXPLORE.
+        both_exploit = (
+            a.stance is AcquisitionStance.EXPLOIT
+            and b.stance is AcquisitionStance.EXPLOIT
+        )
+        return EdgeProvenance(
+            kind=EdgeKind.INTER_CITY,
+            stance=AcquisitionStance.EXPLOIT if both_exploit else AcquisitionStance.EXPLORE,
+            reason=f"inter-city edge between selected markets {first} and {second}",
+            candidate_id=first, secondary_candidate_id=second,
+            candidate_rank=a.rank,
+            scoring_reference_date=a.scoring_reference_date,
+        )
+
     edges: list[AcquisitionEdge] = []
     for day in used_days:
         for airport in used_airports:
             for city in city_ids:
-                edges.append(AcquisitionEdge(airport, city, day, travelers))
-                edges.append(AcquisitionEdge(city, airport, day, travelers))
+                edges.append(AcquisitionEdge(airport, city, day, travelers, _outbound(city)))
+                edges.append(AcquisitionEdge(city, airport, day, travelers, _return(city)))
         if budget.include_inter_city:
             for first in city_ids:
                 for second in city_ids:
                     if first != second:
-                        edges.append(AcquisitionEdge(first, second, day, travelers))
+                        edges.append(AcquisitionEdge(
+                            first, second, day, travelers, _inter_city(first, second)
+                        ))
 
     # Order before truncating, so a budget cut removes the same edges every
     # time rather than whichever the dict happened to yield.

@@ -23,10 +23,72 @@ not a Duffel offer.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+# ======================================================================
+# Acquisition edge provenance (V9 Phase 1 — QA fix round)
+# ======================================================================
+class AcquisitionStance(str, Enum):
+    EXPLOIT = "EXPLOIT"
+    """Chosen because existing signals predict useful value."""
+    EXPLORE = "EXPLORE"
+    """Chosen for information / diversity despite weaker historical evidence."""
+
+
+class EdgeKind(str, Enum):
+    """What role an acquisition edge plays in the plan built from the selected
+    destinations."""
+
+    OUTBOUND = "OUTBOUND"        # origin airport -> selected destination
+    RETURN = "RETURN"           # selected destination -> origin airport
+    INTER_CITY = "INTER_CITY"   # between two selected destinations
+
+
+@dataclass(frozen=True, slots=True)
+class EdgeProvenance:
+    """Why one acquisition edge is being fetched.
+
+    Attached to :class:`~detoura.services.acquisition.AcquisitionEdge` as a
+    ``compare=False`` field so it travels with the edge object without changing
+    the edge's identity (edges are dict keys for the snapshot and the cache).
+
+    The **candidate-level** decision was made once per selected destination
+    (a one-way from the trip origin). Both the OUTBOUND and RETURN edges of a
+    destination inherit that *same* decision — the traveller only gets there and
+    back because that destination was selected. An INTER_CITY edge inherits a
+    *derived* stance: EXPLOIT only when **both** endpoints were EXPLOIT
+    candidates, else EXPLORE, with a reason naming both markets.
+    """
+
+    kind: EdgeKind
+    stance: AcquisitionStance
+    reason: str
+    candidate_id: str
+    """The primary selected destination this edge serves."""
+    candidate_rank: int | None = None
+    scoring_reference_date: date | None = None
+    """The date the candidate decision was scored against. When an edge's own
+    day differs (``max_date_variants > 1``), the decision was *shared* across
+    date variants — this field records which date carried the intelligence."""
+    secondary_candidate_id: str = ""
+    """For INTER_CITY, the other selected destination endpoint."""
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateProvenance:
+    """The per-destination decision the recorder makes, passed into
+    ``build_plan`` so it can attach the right :class:`EdgeProvenance` to every
+    edge (both directions + inter-city)."""
+
+    stance: AcquisitionStance
+    reason: str
+    rank: int | None
+    scoring_reference_date: date | None = None
 
 
 # ======================================================================
@@ -186,6 +248,23 @@ class PriceObservation(BaseModel):
     """The candidate's rank before acquisition (0 = top)."""
     provider_call_ordinal: int | None = Field(default=None, ge=0)
     provider_call_budget: int | None = Field(default=None, ge=0)
+
+    # --- edge provenance (V9 QA fix) ---
+    edge_kind: str = ""
+    """OUTBOUND / RETURN / INTER_CITY — which leg of the plan this observation
+    is. RETURN inherits its destination's candidate decision; INTER_CITY
+    carries a derived stance."""
+    secondary_market: str | None = None
+    """For INTER_CITY, the other selected-destination endpoint id."""
+    scoring_reference_date: date | None = None
+    """The date the candidate decision was scored against. Differs from
+    ``departure_date`` only when acquisition spanned multiple date variants and
+    the decision was shared — this records which date carried the intelligence,
+    so a persisted row never implies date-specific intelligence it did not have."""
+    provenance_version: int = 2
+    """Schema of the provenance fields. ``1`` = pre-QA-fix rows (return-leg
+    stance was mislabeled EXPLORE); ``2`` = corrected. Aggregates and benchmarks
+    exclude ``< 2``."""
 
     # --- quality / outcome ---
     normalized_ok: bool = True

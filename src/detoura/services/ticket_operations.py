@@ -153,6 +153,21 @@ def check_cancellation_eligibility(
     order_id = item.provider_order_id if item else next(
         (i.provider_order_id for i in rec.items if i.provider_order_id), None
     )
+    # What was actually paid to the provider for what is being cancelled - a
+    # per-person fare times the party size, summed across the affected legs.
+    # Used only to tell a full refund from a partial one; never to *derive* a
+    # refund amount.
+    party = max(rec.party_size, 1)
+    affected = [item] if item is not None else list(rec.items)
+    paid = [
+        i for i in affected
+        if (i.booked_price or i.current_price or i.quoted_price)
+    ]
+    order_paid = round(
+        sum((i.booked_price or i.current_price or i.quoted_price or 0.0) * party
+            for i in paid),
+        2,
+    ) or None
 
     op = ops_store.create(
         db, booking_id=booking_id, sequence=sequence,
@@ -196,7 +211,7 @@ def check_cancellation_eligibility(
         raise TicketOpError(f"Could not reach the provider to quote a "
                             f"cancellation ({type(e).__name__}).", status=502)
 
-    quote = _cancellation_quote_from_duffel(raw)
+    quote = _cancellation_quote_from_duffel(raw, order_paid=order_paid)
     return ops_store.update(
         db, op.operation_id, state=CancellationState.ELIGIBLE.value,
         provider_order_id=order_id,
@@ -233,6 +248,8 @@ def execute_cancellation(
     op = _op_or_raise(db, operation_id, OperationKind.CANCELLATION)
     if op.state in CANCELLATION_TERMINAL or op.state == DEMO_STATE:
         return op  # already done; do not call the provider again
+    if op.state == CancellationState.EXECUTING.value:
+        return op  # a concurrent execute holds the claim; in flight
     if op.state != CancellationState.APPROVED.value:
         raise TicketOpError(
             f"A cancellation must be approved before it is executed "
@@ -243,13 +260,28 @@ def execute_cancellation(
         if prior is not None and prior.operation_id != operation_id:
             return prior
 
+    # Atomic claim: exactly one execute moves APPROVED -> EXECUTING and goes on
+    # to call the provider. A racing execute loses the claim and returns the
+    # in-flight op - the provider confirm is never issued twice, and a good
+    # terminal result is never overwritten by the loser's "already confirmed"
+    # error.
+    if not ops_store.claim(
+        db, operation_id,
+        from_state=CancellationState.APPROVED.value,
+        to_state=CancellationState.EXECUTING.value,
+    ):
+        return ops_store.get(db, operation_id)  # type: ignore[return-value]
+
     quote = CancellationQuote.model_validate(op.quote_json or {})
     duffel = (duffel_factory or duffel_for_ops)()
     if duffel is None:
+        # Release the claim so an operator can retry once a token is configured.
+        ops_store.update(db, operation_id, state=CancellationState.APPROVED.value)
         raise TicketOpError("No Duffel sandbox token is configured.", status=503)
 
     cancellation_id = quote.provider_cancellation_id
     if not cancellation_id:
+        ops_store.update(db, operation_id, state=CancellationState.APPROVED.value)
         raise TicketOpError("The stored cancellation quote has no provider id; "
                             "re-run the eligibility check.")
 
@@ -261,8 +293,15 @@ def execute_cancellation(
     except DuffelOrderNotFound:
         result = CancellationResult(
             state=CancellationState.CANCELLATION_FAILED,
-            detail="The provider no longer recognises this order.",
+            detail="The provider no longer recognises this order. It may have "
+                   "been cancelled already, or purged - an operator must check.",
         )
+        updated = _persist_cancellation_result(db, op, result, idempotency_key)
+        _set_recovery(db, op.booking_id, "CANCELLATION_FAILED")
+        _audit(db, actor=actor, action="CANCELLATION_EXECUTION_FAILED",
+               target_id=operation_id, after={"state": updated.state},
+               note=result.detail)
+        return updated
     except (DuffelChangeError, DuffelConfigurationError, ProviderHttpError,
             TimeoutError, OSError) as e:
         result = CancellationResult(
@@ -324,12 +363,15 @@ def _persist_cancellation_result(
     return updated
 
 
-def _cancellation_quote_from_duffel(raw: dict) -> CancellationQuote:
+def _cancellation_quote_from_duffel(
+    raw: dict, *, order_paid: float | None = None,
+) -> CancellationQuote:
     return CancellationQuote(
         provider="duffel",
         provider_cancellation_id=raw.get("id"),
         currency=raw.get("refund_currency") or raw.get("total_currency") or "EUR",
         refund_amount=_f(raw.get("refund_amount")),
+        order_paid_amount=order_paid,
         penalty_amount=_f(raw.get("penalty_amount")) if raw.get("penalty_amount") else None,
         refund_to=raw.get("refund_to") or "",
         expires_at=_dt(raw.get("expires_at")),
@@ -377,7 +419,10 @@ def _cancellation_result_from_duffel(
             live_mode=raw.get("live_mode"),
         )
     paid = quote.order_paid_amount
-    partial = bool(paid and refund_amount + 0.01 < paid)
+    penalty = _f(raw.get("penalty_amount")) or quote.penalty_amount or 0.0
+    partial = bool(
+        (paid and refund_amount + 0.01 < paid) or penalty > 0.01
+    )
     return CancellationResult(
         state=(CancellationState.PARTIALLY_REFUNDED if partial
                else CancellationState.REFUNDED),
@@ -422,9 +467,10 @@ def check_change_capability(
     duffel = (duffel_factory or duffel_for_ops)()
     if duffel is None:
         return ops_store.update(
-            db, op.operation_id, state=ChangeState.NOT_SUPPORTED.value,
+            db, op.operation_id, state=ChangeState.CAPABILITY_UNKNOWN.value,
             quote={"capability": "UNKNOWN",
-                   "note": "No Duffel sandbox token is configured."},
+                   "note": "No Duffel sandbox token is configured — cannot "
+                           "determine whether this order can be changed."},
         )
     try:
         order = duffel.get_order(order_id)

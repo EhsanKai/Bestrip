@@ -219,7 +219,28 @@ def test_response_carries_original_and_new_for_comparison(client, base):
 
 
 # 12
+_MANAGED_PHASES = {
+    "awaiting_travelers", "awaiting_confirmation", "revalidating",
+    "reconfirm_required", "issuing", "complete", "partial_failure", "failed",
+    "price_inconsistent",
+}
+
+
 def test_reoptimized_journey_needs_a_fresh_revalidation_before_booking(client, base):
+    """After accepting a re-optimized journey the NEW journey must be
+    revalidated before it is booked, and no pre-edit intent/revalidation may
+    survive.
+
+    This is asserted on *durable observable state*, not on catching the
+    transient ``revalidating`` phase mid-flight:
+
+      * the booking intent is a brand-new id built from the NEW legs;
+      * once the managed run reaches a terminal state, every leg carries a
+        ``current_price`` — and the ONLY code that sets ``current_price`` is
+        ``_revalidate_item`` inside ``run_booking``. A run that "went straight
+        to a pass" without revalidating would leave every ``current_price``
+        ``None`` (``create_run_demo`` never sets it).
+    """
     j = _reopt(client, base, [
         {"op": "lock_city", "city": base["cities"][0]},
         {"op": "remove_city", "city": base["cities"][-1]},
@@ -227,8 +248,7 @@ def test_reoptimized_journey_needs_a_fresh_revalidation_before_booking(client, b
     if j["trip"] is None:
         pytest.skip("no alternative")
     new = j["trip"]
-    # book the NEW journey: a booking intent is created from the new legs and
-    # its confirm runs a full revalidation (phase passes through revalidating)
+
     legs = [{
         "origin": l["from"], "destination": l["to"], "departure": l["departure"],
         "arrival": l["arrival"], "carrier": (l["operator"] or "XX").split()[0],
@@ -239,21 +259,60 @@ def test_reoptimized_journey_needs_a_fresh_revalidation_before_booking(client, b
         "demo_legs": legs, "service_tier": "ALL_IN_ONE",
     }).json()
     bid = b["booking_id"]
-    assert b["route_cities"][1:-1] == new["cities"] or b["route_cities"] != base["cities"]
+    # a fresh intent, keyed by its own id, carrying the NEW journey — not the
+    # base one and not a resurrected pre-edit intent.
+    assert bid.startswith("bk_")
+    removed_city = base["cities"][-1]
+    kept_city = base["cities"][0]
+    booked_cities = b["route_cities"][1:-1]
+    assert booked_cities == new["cities"], (booked_cities, new["cities"])
+    assert kept_city in booked_cities, "the locked city must survive into the booking"
+    if removed_city not in new["cities"]:
+        assert removed_city not in booked_cities, "a removed city must not be booked"
+    assert len(b["items"]) == len(new["legs"])
+    assert all(it["current_price"] is None for it in b["items"]), (
+        "a just-created intent must not carry any revalidated price yet"
+    )
+    assert b["current_total"] is None
+
     client.post(f"/api/v1/booking-intents/{bid}/travelers", json={"travelers": [{
         "given_name": "Ed", "family_name": "I", "born_on": "1990-01-01",
         "email": "ed@example.com", "phone": "+15551234567"}]})
     r = client.post(f"/api/v1/booking-intents/{bid}/confirm", json={})
     assert r.status_code == 200
-    # the run went through revalidation (never straight to a pass)
-    seen = set()
-    for _ in range(40):
-        time.sleep(0.25)
+
+    # Wait for the async managed run to finish. This is a bounded wait on a
+    # terminal condition (pass_available), not a race for a transient phase.
+    seen: set[str] = set()
+    final = None
+    for _ in range(120):
         s = client.get(f"/api/v1/booking-intents/{bid}").json()
         seen.add(s["phase"])
         if s["pass_available"]:
+            final = s
             break
-    assert "revalidating" in seen
+        time.sleep(0.1)
+    assert final is not None, f"managed run never reached a terminal state; saw {seen}"
+
+    # every phase we observed belongs to the managed flow — the run did not
+    # jump to a state outside the revalidate/issue sequence.
+    assert seen <= _MANAGED_PHASES, f"unexpected phase(s): {seen - _MANAGED_PHASES}"
+
+    # Durable proof that a fresh revalidation ran on the NEW journey:
+    assert final["current_total"] is not None, (
+        "the booked journey has no revalidated total — run_booking did not "
+        "revalidate before issuing"
+    )
+    assert final["items"], "the run has no legs"
+    assert all(it["current_price"] is not None for it in final["items"]), (
+        "at least one NEW leg was issued without being revalidated first"
+    )
+
+    # the travel pass reflects the NEW, revalidated journey.
+    pass_r = client.get(f"/api/v1/booking-intents/{bid}/travel-pass")
+    assert pass_r.status_code == 200
+    tp = pass_r.json()
+    assert list(tp["route_cities"][1:-1]) == new["cities"]
 
 
 # 13

@@ -21,17 +21,29 @@ class FakeDuffel:
     """Scripts the Duffel endpoints the ticket-ops service touches."""
 
     def __init__(self, *, refund="20.00", confirm=True, order_changeable=True,
-                 cancel_unsupported=False):
+                 cancel_unsupported=False, confirm_status=None, confirm_delay=0.0):
         self.refund = refund
         self.confirm = confirm
         self.order_changeable = order_changeable
         self.cancel_unsupported = cancel_unsupported
+        self.confirm_status = confirm_status  # override the confirm HTTP status
+        self.confirm_delay = confirm_delay
+        self.confirm_calls = 0
         self.calls: list[str] = []
 
     def request(self, method, url, *, headers=None, params=None, body=None,
                 timeout=10.0):
         self.calls.append(f"{method} {url}")
         if "/air/order_cancellations/" in url and url.endswith("/actions/confirm"):
+            self.confirm_calls += 1
+            if self.confirm_delay:
+                import time as _t
+                _t.sleep(self.confirm_delay)
+            if self.confirm_status is not None:
+                return HttpResponse(
+                    status=self.confirm_status,
+                    body='{"errors":[{"title":"gone"}]}',
+                )
             if not self.confirm:
                 return HttpResponse(status=500, body='{"errors":[{"title":"boom"}]}')
             return HttpResponse(status=200, body=json.dumps({"data": {
@@ -77,7 +89,7 @@ def H(client):
     return {"Authorization": f"Bearer {tok}"}
 
 
-def _seed_sandbox_booking(client, monkeypatch, *, order_id="ord_abc"):
+def _seed_sandbox_booking(client, monkeypatch, *, order_id="ord_abc", fare=80.0):
     """Create a DEMO booking then force it to look sandbox-booked with a
     provider order id, so the ticket-ops path is exercised."""
     from detoura.services.booking_flow import booking_store, create_run_demo
@@ -91,7 +103,7 @@ def _seed_sandbox_booking(client, monkeypatch, *, order_id="ord_abc"):
         trip_label="Test", currency="EUR",
         legs=[{"origin": "CGN", "destination": "CDG",
                "departure": "2026-11-01T09:00:00Z", "arrival": "2026-11-01T10:10:00Z",
-               "carrier": "LH", "flight_number": "42", "price_per_person": 80.0}],
+               "carrier": "LH", "flight_number": "42", "price_per_person": fare}],
     )
     run.mode = PassMode.SANDBOX_BOOKED
     run.items[0].provider = "duffel"
@@ -193,6 +205,82 @@ def test_cancel_provider_failure_sets_recovery(client, H, monkeypatch):
     assert res["state"] == "CANCELLATION_FAILED"
     detail = client.get(f"/api/v1/ops/bookings/{bid}", headers=H).json()
     assert detail["recovery_state"] == "CANCELLATION_FAILED"
+
+
+def test_cancel_confirm_404_records_failed_not_500(client, H, monkeypatch):
+    # Duffel 404s on the confirm step (cancellation object expired / order
+    # purged). The operation must reach CANCELLATION_FAILED, not crash.
+    fake = FakeDuffel(confirm_status=404)
+    monkeypatch.setattr("detoura.services.ticket_operations.duffel_for_ops",
+                        _fake_factory(fake))
+    bid = _seed_sandbox_booking(client, monkeypatch)
+    op = client.post(f"/api/v1/ops/bookings/{bid}/tickets/1/cancellation/eligibility",
+                     headers=H).json()
+    op_id = op["operation_id"]
+    client.post(f"/api/v1/ops/operations/{op_id}/cancellation/approve", headers=H, json={})
+    r = client.post(f"/api/v1/ops/operations/{op_id}/cancellation/execute",
+                    headers=H, json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "CANCELLATION_FAILED"
+    detail = client.get(f"/api/v1/ops/bookings/{bid}", headers=H).json()
+    assert detail["recovery_state"] == "CANCELLATION_FAILED"
+
+
+def test_partial_refund_is_labelled_partially_refunded(client, H, monkeypatch):
+    # €80 paid, provider refunds €60 → a fee was retained → PARTIALLY_REFUNDED,
+    # never a full REFUNDED.
+    fake = FakeDuffel(refund="60.00")
+    monkeypatch.setattr("detoura.services.ticket_operations.duffel_for_ops",
+                        _fake_factory(fake))
+    bid = _seed_sandbox_booking(client, monkeypatch, fare=80.0)
+    op = client.post(f"/api/v1/ops/bookings/{bid}/tickets/1/cancellation/eligibility",
+                     headers=H).json()
+    assert op["quote"]["order_paid_amount"] == 80.0
+    op_id = op["operation_id"]
+    client.post(f"/api/v1/ops/operations/{op_id}/cancellation/approve", headers=H, json={})
+    res = client.post(f"/api/v1/ops/operations/{op_id}/cancellation/execute",
+                      headers=H, json={}).json()
+    assert res["state"] == "PARTIALLY_REFUNDED"
+    assert res["result"]["refund_status"] == "PARTIAL"
+    assert res["result"]["refund_amount"] == 60.0
+
+
+def test_concurrent_execute_calls_provider_once_and_keeps_good_result(client, H, monkeypatch):
+    # Two overlapping executes on the same approved operation (service layer,
+    # sharing the process DB): the provider confirm is called exactly once and
+    # the successful terminal result is not clobbered by the loser's
+    # "already confirmed" error.
+    import threading
+    from detoura.persistence import get_db
+    from detoura.services import ticket_operations as to
+
+    fake = FakeDuffel(refund="80.00", confirm_delay=0.5)
+    factory = _fake_factory(fake)
+    bid = _seed_sandbox_booking(client, monkeypatch)
+    db = get_db()
+    op = to.check_cancellation_eligibility(db, bid, 1, actor="t", duffel_factory=factory)
+    to.approve_cancellation(db, op.operation_id, actor="t")
+
+    out: list = []
+
+    def go():
+        try:
+            r = to.execute_cancellation(db, op.operation_id, actor="t",
+                                        idempotency_key="k-cc", duffel_factory=factory)
+            out.append(r.state)
+        except Exception as e:  # pragma: no cover
+            out.append(f"EXC:{e!r}")
+
+    ts = [threading.Thread(target=go) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+
+    assert fake.confirm_calls == 1, f"provider confirm called {fake.confirm_calls}x"
+    final = to.ops_store.get(db, op.operation_id)
+    assert final.state == "REFUNDED"
+    assert all(s in ("REFUNDED", "EXECUTING") for s in out), out
 
 
 def test_cancel_duplicate_execute_is_idempotent(client, H, monkeypatch):

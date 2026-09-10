@@ -54,6 +54,10 @@ class CancellationState(str, Enum):
     """The provider will not accept a cancellation through this channel."""
     APPROVED = "APPROVED"
     """An operator has explicitly approved executing the cancellation."""
+    EXECUTING = "EXECUTING"
+    """A claim: exactly one caller is confirming the cancellation at the
+    provider right now. A concurrent execute against this state returns the
+    in-flight operation rather than calling the provider a second time."""
 
     # --- terminal: what the provider did. CANCELLED != REFUNDED. ---
     CANCELLED = "CANCELLED"
@@ -232,6 +236,9 @@ class ChangeQuote(BaseModel):
 
 class ChangeState(str, Enum):
     PENDING_CAPABILITY = "PENDING_CAPABILITY"
+    CAPABILITY_UNKNOWN = "CAPABILITY_UNKNOWN"
+    """Could not determine whether the order is changeable (provider
+    unreachable, no token). Distinct from NOT_SUPPORTED - retry is meaningful."""
     NOT_SUPPORTED = "NOT_SUPPORTED"
     QUOTED = "QUOTED"
     APPROVED = "APPROVED"

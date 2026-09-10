@@ -91,6 +91,24 @@ def update(
     return get(db, operation_id)  # type: ignore[return-value]
 
 
+def claim(db: Database, operation_id: str, *, from_state: str, to_state: str) -> bool:
+    """Atomically move an operation ``from_state`` → ``to_state``. Returns True
+    only for the caller that actually made the transition.
+
+    Every write goes through the single serialised ``db.write()`` lock, so this
+    conditional UPDATE is the claim primitive: two concurrent executes race
+    here and exactly one wins, closing the check-then-act window before the
+    provider is called.
+    """
+    with db.write() as conn:
+        cur = conn.execute(
+            "UPDATE ticket_operations SET state = ?, updated_at = ? "
+            "WHERE operation_id = ? AND state = ?",
+            (to_state, _now(), operation_id, from_state),
+        )
+        return cur.rowcount == 1
+
+
 def get(db: Database, operation_id: str) -> TicketOperation | None:
     row = db.query_one(
         "SELECT * FROM ticket_operations WHERE operation_id = ?", (operation_id,)

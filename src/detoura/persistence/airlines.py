@@ -190,31 +190,53 @@ def airline_report(
 def _attach_operation_rates(db: Database, out: list[dict], dim: str,
                             clause: str, params: list) -> None:
     ops = db.query(
-        "SELECT o.kind, o.state, i.carrier, i.operating_carrier "
+        "SELECT o.operation_id, o.kind, o.state, o.sequence, o.booking_id "
         "FROM ticket_operations o "
-        "JOIN booking_items i ON i.booking_id = o.booking_id "
-        "AND (o.sequence = 0 OR o.sequence = i.sequence) "
         "JOIN bookings b ON b.booking_id = o.booking_id"
         f"{clause}",
         tuple(params),
     )
-    counts: dict[str, dict[str, int]] = {}
-    for r in ops:
+    # carrier(s) per booking, keyed by leg sequence, so an operation is
+    # attributed to exactly the carrier(s) it actually touched: a leg-scoped
+    # operation to that leg's carrier once; a whole-order operation
+    # (sequence 0) to each distinct carrier in the booking once - never once
+    # per leg row (the bug: a 3-leg order cancellation counted 3x).
+    legs = db.query(
+        "SELECT i.booking_id, i.sequence, i.carrier, i.operating_carrier "
+        "FROM booking_items i JOIN bookings b ON b.booking_id = i.booking_id"
+        f"{clause}",
+        tuple(params),
+    )
+    by_booking: dict[str, dict[int, str]] = {}
+    for l in legs:
         code = (
-            (r["operating_carrier"] or r["carrier"]) if dim == "operating"
-            else r["carrier"]
+            (l["operating_carrier"] or l["carrier"]) if dim == "operating"
+            else l["carrier"]
         ) or "??"
-        c = counts.setdefault(code.upper(), {"cancel": 0, "change": 0, "recovery": 0,
-                                             "cancel_ok": 0})
-        if r["kind"] == "CANCELLATION":
+        by_booking.setdefault(l["booking_id"], {})[l["sequence"]] = code.upper()
+
+    counts: dict[str, dict[str, int]] = {}
+
+    def _bump(code: str, kind: str, state: str) -> None:
+        c = counts.setdefault(code, {"cancel": 0, "change": 0, "recovery": 0,
+                                     "cancel_ok": 0})
+        if kind == "CANCELLATION":
             c["cancel"] += 1
-            if r["state"] in ("CANCELLED", "REFUNDED", "REFUND_PENDING",
-                              "PARTIALLY_REFUNDED", "NON_REFUNDABLE"):
+            if state in ("CANCELLED", "REFUNDED", "REFUND_PENDING",
+                         "PARTIALLY_REFUNDED", "NON_REFUNDABLE"):
                 c["cancel_ok"] += 1
-        elif r["kind"] == "CHANGE":
+        elif kind == "CHANGE":
             c["change"] += 1
-        elif r["kind"] == "RECOVERY":
+        elif kind == "RECOVERY":
             c["recovery"] += 1
+
+    for r in ops:
+        booking_legs = by_booking.get(r["booking_id"], {})
+        if r["sequence"] and r["sequence"] in booking_legs:
+            _bump(booking_legs[r["sequence"]], r["kind"], r["state"])
+        else:  # whole-order op: each distinct carrier once
+            for code in set(booking_legs.values()):
+                _bump(code, r["kind"], r["state"])
     for row in out:
         c = counts.get(row["iata_code"], {})
         tickets = row["tickets_total"] or 1

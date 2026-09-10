@@ -43,6 +43,9 @@ class BookingItemRecord(BaseModel):
     arrival: datetime | None = None
     carrier: str = ""
     flight_number: str = ""
+    operating_carrier: str = ""
+    operating_flight_number: str = ""
+    carrier_name: str = ""
     offer_id: str = ""
     provider: str = ""
     quoted_price: float = 0.0
@@ -122,17 +125,20 @@ def upsert(db: Database, rec: BookingRecord) -> None:
                 "INSERT INTO booking_items ("
                 " booking_id, sequence, origin_city, origin_airport,"
                 " destination_city, destination_airport, departure, arrival,"
-                " carrier, flight_number, offer_id, provider,"
+                " carrier, flight_number, operating_carrier,"
+                " operating_flight_number, carrier_name, offer_id, provider,"
                 " quoted_price_minor, current_price_minor, booked_price_minor,"
                 " currency, cabin_baggage, checked_baggage, required, state,"
                 " detail, provider_order_id, updated_at"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     rec.booking_id, it.sequence, it.origin_city, it.origin_airport,
                     it.destination_city, it.destination_airport,
                     it.departure.isoformat() if it.departure else None,
                     it.arrival.isoformat() if it.arrival else None,
-                    it.carrier, it.flight_number, it.offer_id, it.provider,
+                    it.carrier, it.flight_number, it.operating_carrier,
+                    it.operating_flight_number, it.carrier_name,
+                    it.offer_id, it.provider,
                     to_minor_units(it.quoted_price), _mn(it.current_price),
                     _mn(it.booked_price), it.currency, it.cabin_baggage,
                     it.checked_baggage, 1 if it.required else 0, it.state,
@@ -238,6 +244,16 @@ def _record(row, item_rows) -> BookingRecord:
                 destination_airport=r["destination_airport"],
                 departure=_dt(r["departure"]), arrival=_dt(r["arrival"]),
                 carrier=r["carrier"], flight_number=r["flight_number"],
+                operating_carrier=(
+                    r["operating_carrier"] if "operating_carrier" in r.keys() else ""
+                ),
+                operating_flight_number=(
+                    r["operating_flight_number"]
+                    if "operating_flight_number" in r.keys() else ""
+                ),
+                carrier_name=(
+                    r["carrier_name"] if "carrier_name" in r.keys() else ""
+                ),
                 offer_id=r["offer_id"], provider=r["provider"],
                 quoted_price=from_minor_units(r["quoted_price_minor"]),
                 current_price=_fm(r["current_price_minor"]),

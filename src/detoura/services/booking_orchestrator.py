@@ -88,6 +88,13 @@ class ItemProgress:
     travelers: int
     quoted_price: float
     currency: str
+    #: Carrier identity, marketing/operating kept apart (V8.5 C3). ``carrier``
+    #: is the marketing (ticketed) code; ``operating_carrier`` is the carrier
+    #: that actually flies it, "" when the provider did not say or it is the
+    #: same. ``carrier_name`` is the marketing carrier's name where known.
+    carrier_name: str = ""
+    operating_carrier: str = ""
+    operating_flight_number: str = ""
     cabin_baggage: str = "unknown"
     checked_baggage: str = "unknown"
     required: bool = True
@@ -366,6 +373,14 @@ def _revalidate_item(
         parts = current.operator.split()
         item.carrier = parts[0] if parts else ""
         item.flight_number = parts[1] if len(parts) > 1 else ""
+    ref = current.provider_ref
+    if ref is not None:
+        # Marketing / operating carrier, kept apart. Never merge them.
+        if getattr(ref, "marketing_carrier", None):
+            item.carrier = ref.marketing_carrier or item.carrier
+        item.carrier_name = getattr(ref, "marketing_carrier_name", "") or item.carrier_name
+        item.operating_carrier = getattr(ref, "operating_carrier", "") or ""
+        item.operating_flight_number = getattr(ref, "operating_flight_number", "") or ""
     delta = item.current_price - item.quoted_price
     if abs(delta) < 0.01:
         return True, ""

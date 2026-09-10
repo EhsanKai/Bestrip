@@ -111,10 +111,12 @@ def test_inspector_lists_and_details_a_booking(monkeypatch, tmp_path):
     d = client.get(f"/api/v1/ops/bookings/{bid}", headers=h).json()
     assert len(d["items"]) == 2
     assert d["items"][0]["provider"] == "synthetic"
-    # every enumerated ticket action is present; only VIEW is enabled
-    actions = {a["action"]: a["enabled"] for a in d["items"][0]["actions"]}
-    assert actions["VIEW"] is True
-    assert actions["CANCEL"] is False and actions["CHANGE_DATE"] is False
+    # a synthetic (demo) ticket created no provider order, so every provider
+    # action stays visibly disabled with a truthful reason (C3).
+    actions = {a["action"]: a for a in d["items"][0]["actions"]}
+    assert actions["VIEW_PROVIDER_DETAILS"]["enabled"] is False
+    assert "no provider order" in actions["CANCEL"]["reason"].lower()
+    assert actions["CHECK_CHANGE_CAPABILITY"]["enabled"] is False
     # terminal -> economics ledger row is present
     assert d["phase"] == "complete"
     assert d["economics"]["supplier_cost"] == 215.0

@@ -55,6 +55,9 @@ def _record(run: BookingRun) -> bookings.BookingRecord:
             destination_airport=i.destination_airport,
             departure=i.departure, arrival=i.arrival,
             carrier=i.carrier, flight_number=i.flight_number,
+            operating_carrier=i.operating_carrier,
+            operating_flight_number=i.operating_flight_number,
+            carrier_name=i.carrier_name,
             offer_id=i.offer_id, provider=i.provider,
             quoted_price=i.quoted_price, current_price=i.current_price,
             booked_price=(

@@ -42,6 +42,9 @@ class OpsBookingItemDTO(BaseModel):
     arrival: datetime | None = None
     carrier: str = ""
     flight_number: str = ""
+    carrier_name: str = ""
+    operating_carrier: str = ""
+    operating_flight_number: str = ""
     offer_id: str = ""
     provider: str = ""
     duffel_order_id: str | None = None
@@ -101,11 +104,92 @@ class OpsEconomicsDTO(BaseModel):
     has_unknown_costs: bool = True
 
 
+class TicketOperationDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    operation_id: str
+    booking_id: str
+    sequence: int
+    kind: str
+    state: str
+    provider: str = "duffel"
+    provider_order_id: str | None = None
+    reason: str = ""
+    actor: str = ""
+    created_at: datetime
+    updated_at: datetime
+    quote: dict | None = None
+    result: dict | None = None
+    is_terminal: bool = False
+
+
 class OpsBookingDetailDTO(OpsBookingSummaryDTO):
     reconfirm_note: str = ""
     items: list[OpsBookingItemDTO] = Field(default_factory=list)
     economics: OpsEconomicsDTO | None = None
     audit: list["OpsAuditEventDTO"] = Field(default_factory=list)
+    operations: list[TicketOperationDTO] = Field(default_factory=list)
+
+
+class TicketOpRequest(BaseModel):
+    """Body for a ticket-operation step. The server owns every monetary value
+    and provider id; the client may only pass a free-text reason and an
+    idempotency key."""
+
+    model_config = ConfigDict(frozen=True)
+    reason: str = Field(default="", max_length=500)
+    idempotency_key: str = Field(default="", max_length=64)
+
+
+class RecoveryCandidateRequest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    reason: str = Field(default="", max_length=500)
+    idempotency_key: str = Field(default="", max_length=64)
+    # A proposed replacement for operator comparison. Display-only: never a
+    # priced authority the server trusts.
+    summary: str = Field(default="", max_length=300)
+    old_route: str = Field(default="", max_length=200)
+    new_route: str = Field(default="", max_length=200)
+    new_departure: str = Field(default="", max_length=40)
+    new_arrival: str = Field(default="", max_length=40)
+    carrier: str = Field(default="", max_length=8)
+    flight_number: str = Field(default="", max_length=12)
+    supplier_fare: float | None = Field(default=None, ge=0.0)
+    currency: str = Field(default="EUR", min_length=3, max_length=3)
+    cabin_baggage: str = Field(default="", max_length=20)
+    checked_baggage: str = Field(default="", max_length=20)
+    connection_note: str = Field(default="", max_length=200)
+    transit_minutes: int | None = Field(default=None, ge=0)
+
+
+class AirlineStatDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    iata_code: str
+    name: str
+    logo_key: str = ""
+    tickets_total: int = 0
+    tickets_issued: int = 0
+    tickets_failed: int = 0
+    bookings: int = 0
+    supplier_spend: float = 0.0
+    avg_fare: float | None = None
+    issuance_failure_rate: float | None = None
+    detoura_revenue_gross: float = 0.0
+    detoura_margin_known: float | None = None
+    margin_bookings: int = 0
+    cancellations: int = 0
+    changes: int = 0
+    recoveries: int = 0
+    cancellation_rate: float = 0.0
+    change_rate: float = 0.0
+    currency: str = "EUR"
+
+
+class AirlineReportDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    dimension: str
+    test_data: bool = True
+    window: dict
+    airlines: list[AirlineStatDTO]
 
 
 class OpsAuditEventDTO(BaseModel):

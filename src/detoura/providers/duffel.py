@@ -61,6 +61,10 @@ DEFAULT_HOST = "https://api.duffel.com"
 OFFER_REQUEST_PATH = "/air/offer_requests"
 OFFER_PATH = "/air/offers"
 ORDER_PATH = "/air/orders"
+ORDER_CANCELLATION_PATH = "/air/order_cancellations"
+ORDER_CHANGE_REQUEST_PATH = "/air/order_change_requests"
+ORDER_CHANGE_OFFER_PATH = "/air/order_change_offers"
+ORDER_CHANGE_PATH = "/air/order_changes"
 DUFFEL_API_VERSION = "v2"
 
 #: A Duffel offer id, validated before it is ever substituted into a URL. The
@@ -69,6 +73,16 @@ DUFFEL_API_VERSION = "v2"
 #: - a defence against path traversal and against a mistyped id becoming a
 #: request to some other Duffel resource.
 OFFER_ID_RE = re.compile(r"^off_[A-Za-z0-9]+$")
+
+#: Duffel resource ids taken back from a client (an ops action carries them) and
+#: substituted into a URL. Validated to their documented shape before any
+#: request is built - the same path-traversal / wrong-resource defence as
+#: ``OFFER_ID_RE``.
+ORDER_ID_RE = re.compile(r"^ord_[A-Za-z0-9]+$")
+ORDER_CANCELLATION_ID_RE = re.compile(r"^ore_[A-Za-z0-9]+$")
+ORDER_CHANGE_REQUEST_ID_RE = re.compile(r"^ocr_[A-Za-z0-9]+$")
+ORDER_CHANGE_OFFER_ID_RE = re.compile(r"^oco_[A-Za-z0-9]+$")
+ORDER_CHANGE_ID_RE = re.compile(r"^och_[A-Za-z0-9]+$")
 
 #: The only token prefix this adapter will transmit.
 TEST_TOKEN_PREFIX = "duffel_test_"
@@ -115,6 +129,35 @@ class DuffelOrderError(ProviderHttpError):
     def __init__(self, message: str, *, status: int | None = None, code: str | None = None) -> None:
         super().__init__(message, status=status)
         self.code = code
+
+
+class DuffelOrderNotFound(ProviderHttpError):
+    """An order id we hold no longer resolves at Duffel (404/410)."""
+
+    def __init__(self, order_id: str, *, status: int | None = None) -> None:
+        super().__init__(f"Duffel order {order_id} not found ({status})", status=status)
+        self.order_id = order_id
+
+
+class DuffelChangeError(ProviderHttpError):
+    """A post-booking cancellation or change action failed at the provider.
+
+    Carries Duffel's error code where there is one. The order may be untouched
+    or partially actioned - the caller must treat the outcome as unknown, not
+    as "it worked" and not as "nothing happened".
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, code: str | None = None) -> None:
+        super().__init__(message, status=status)
+        self.code = code
+
+
+class DuffelChangeUnsupported(DuffelChangeError):
+    """The provider/order does not support the requested change at all.
+
+    Distinct from :class:`DuffelChangeError`: this is a definitive "cannot",
+    surfaced to ops as NOT SUPPORTED rather than a failure to retry.
+    """
 
 
 class DuffelLiveModeError(DuffelConfigurationError):
@@ -586,6 +629,161 @@ class DuffelTransportProvider:
         return order
 
     # ------------------------------------------------------------------
+    # Post-booking operations (V8.5 C3) - cancellation and change.
+    #
+    # Every method here fails closed unless the token is a test token, counts
+    # against the same hard ``max_calls`` ceiling, validates any id taken from
+    # a client before it reaches a URL, and proves ``live_mode is False`` on
+    # the response before returning it. None of them is reachable for a
+    # DEMO_ONLY booking - the service layer never calls them without a real
+    # ``ord_...`` id.
+    # ------------------------------------------------------------------
+    def _guard_mutation(self, what: str) -> None:
+        if not is_test_token(self._token):
+            raise DuffelConfigurationError(
+                f"refusing to {what}: the configured token is not a test-mode token"
+            )
+        if self.search_calls >= self.max_calls:
+            raise ProviderCallBudgetExceeded(
+                f"refusing to {what}: hard ceiling of {self.max_calls} provider "
+                "calls is spent."
+            )
+        self.search_calls += 1
+
+    def _request_json(self, method: str, path: str, *, body: dict | None = None,
+                      params: dict | None = None) -> dict:
+        response = self.http.request(
+            method, f"{self.host}{path}", headers=self._headers(),
+            body=json.dumps(body) if body is not None else None,
+            params=params, timeout=self.timeout,
+        )
+        if response.status in (401, 403):
+            raise DuffelAuthError(
+                f"Duffel rejected the credentials with {response.status}",
+                status=response.status,
+            )
+        try:
+            payload = response.json()
+        except Exception as error:
+            raise DuffelChangeError(
+                f"Duffel response was not JSON: {error}", status=response.status
+            ) from error
+        if response.status in (404, 410):
+            raise DuffelOrderNotFound(path.rsplit("/", 1)[-1], status=response.status)
+        if response.status == 422:
+            errors = (payload.get("errors") or [{}])
+            code = errors[0].get("code")
+            title = errors[0].get("title") or "unprocessable"
+            # A 422 on a change endpoint usually means "this order can't be
+            # changed that way" - a definitive cannot, not a transient failure.
+            raise DuffelChangeUnsupported(
+                f"Duffel will not action this request: {title}",
+                status=response.status, code=code,
+            )
+        if not response.ok:
+            errors = (payload.get("errors") or [{}])
+            raise DuffelChangeError(
+                f"Duffel returned {response.status}: "
+                f"{errors[0].get('title') or 'request failed'}",
+                status=response.status, code=errors[0].get("code"),
+            )
+        assert_test_mode(payload)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise DuffelChangeError("Duffel returned no data object",
+                                    status=response.status)
+        return data
+
+    def get_order(self, order_id: str) -> dict:
+        """Fetch one order by id. The read path for every ops inspection."""
+        if not ORDER_ID_RE.match(order_id or ""):
+            raise DuffelConfigurationError("order id is not a Duffel order id")
+        self._guard_mutation("read an order")
+        return self._request_json("GET", f"{ORDER_PATH}/{order_id}")
+
+    def create_order_cancellation(self, order_id: str) -> dict:
+        """Step 1 of a cancellation: ask Duffel what cancelling would return.
+
+        This does **not** cancel anything - it creates a pending cancellation
+        object carrying the refund amount and currency Duffel would honour.
+        :meth:`confirm_order_cancellation` is the step that actually cancels.
+        """
+        if not ORDER_ID_RE.match(order_id or ""):
+            raise DuffelConfigurationError("order id is not a Duffel order id")
+        self._guard_mutation("quote a cancellation")
+        return self._request_json(
+            "POST", ORDER_CANCELLATION_PATH,
+            body={"data": {"order_id": order_id}},
+        )
+
+    def confirm_order_cancellation(self, cancellation_id: str) -> dict:
+        """Step 2: actually cancel. Irreversible at the provider."""
+        if not ORDER_CANCELLATION_ID_RE.match(cancellation_id or ""):
+            raise DuffelConfigurationError(
+                "cancellation id is not a Duffel order-cancellation id"
+            )
+        self._guard_mutation("confirm a cancellation")
+        return self._request_json(
+            "POST",
+            f"{ORDER_CANCELLATION_PATH}/{cancellation_id}/actions/confirm",
+        )
+
+    def create_order_change_request(
+        self, order_id: str, *, slices: dict
+    ) -> dict:
+        """Step 1 of a change: ask Duffel for change offers against an order.
+
+        ``slices`` is Duffel's own ``{"add": [...], "remove": [...]}`` shape,
+        built by the caller from the order's existing slices and the desired
+        new dates/flights. The response carries any ``order_change_offers``.
+        A 422 here (raised as :class:`DuffelChangeUnsupported`) means the order
+        cannot be changed this way.
+        """
+        if not ORDER_ID_RE.match(order_id or ""):
+            raise DuffelConfigurationError("order id is not a Duffel order id")
+        self._guard_mutation("request an order change")
+        return self._request_json(
+            "POST", ORDER_CHANGE_REQUEST_PATH,
+            body={"data": {"order_id": order_id, "slices": slices}},
+        )
+
+    def get_order_change_offer(self, change_offer_id: str) -> dict:
+        if not ORDER_CHANGE_OFFER_ID_RE.match(change_offer_id or ""):
+            raise DuffelConfigurationError(
+                "change offer id is not a Duffel order-change-offer id"
+            )
+        self._guard_mutation("read a change offer")
+        return self._request_json(
+            "GET", f"{ORDER_CHANGE_OFFER_PATH}/{change_offer_id}"
+        )
+
+    def create_and_confirm_order_change(self, change_offer_id: str) -> dict:
+        """Step 2 of a change: create the order change from a selected offer
+        and confirm it. Payment is against the test balance, like an order."""
+        if not ORDER_CHANGE_OFFER_ID_RE.match(change_offer_id or ""):
+            raise DuffelConfigurationError(
+                "change offer id is not a Duffel order-change-offer id"
+            )
+        self._guard_mutation("create an order change")
+        created = self._request_json(
+            "POST", ORDER_CHANGE_PATH,
+            body={"data": {"selected_order_change_offer": change_offer_id}},
+        )
+        change_id = created.get("id")
+        pending = str(created.get("change_total_amount") or "")
+        currency = created.get("change_total_currency") or self.currency
+        if not ORDER_CHANGE_ID_RE.match(change_id or ""):
+            raise DuffelChangeError("Duffel returned no order-change id")
+        payments = []
+        if pending and float(pending or 0) > 0:
+            payments = [{"type": "balance", "amount": pending, "currency": currency}]
+        self._guard_mutation("confirm an order change")
+        return self._request_json(
+            "POST", f"{ORDER_CHANGE_PATH}/{change_id}/actions/confirm",
+            body={"data": {"payment": payments[0]}} if payments else {"data": {}},
+        )
+
+    # ------------------------------------------------------------------
     # Parsing - the whole Duffel vocabulary stops here
     # ------------------------------------------------------------------
     def parse_offers(
@@ -801,6 +999,10 @@ class DuffelTransportProvider:
         instant = payment.get("requires_instant_payment")
         raw_amount = offer.get("total_amount")
         raw_currency = offer.get("total_currency")
+        first = segments[0] if segments else {}
+        mk = first.get("marketing_carrier") or {}
+        op = first.get("operating_carrier") or {}
+        op_code = op.get("iata_code")
         return ProviderOfferReference(
             provider="duffel",
             offer_id=offer_id,
@@ -812,6 +1014,14 @@ class DuffelTransportProvider:
             hold_supported=(not instant) if isinstance(instant, bool) else None,
             hold_until=_parse_dt(payment.get("payment_required_by")),
             owner_iata=(offer.get("owner") or {}).get("iata_code"),
+            marketing_carrier=mk.get("iata_code"),
+            operating_carrier=op_code if op_code and op_code != mk.get("iata_code") else None,
+            marketing_carrier_name=mk.get("name") or "",
+            operating_carrier_name=(
+                op.get("name") or "" if op_code and op_code != mk.get("iata_code") else ""
+            ),
+            marketing_flight_number=str(first.get("marketing_carrier_flight_number") or ""),
+            operating_flight_number=str(first.get("operating_carrier_flight_number") or ""),
             raw_segments=tuple(
                 {
                     "id": s.get("id"),

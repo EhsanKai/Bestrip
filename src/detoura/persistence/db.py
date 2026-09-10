@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -145,6 +145,33 @@ CREATE INDEX IF NOT EXISTS ix_events_ts ON analytics_events (ts);
 CREATE INDEX IF NOT EXISTS ix_events_event ON analytics_events (event);
 CREATE INDEX IF NOT EXISTS ix_events_visitor ON analytics_events (visitor_key);
 
+-- Post-booking ticket operations (V8.5 C3): cancellation, change, recovery.
+-- One row per operation, with a server-issued operation_id that doubles as an
+-- idempotency key: a repeated execute against a terminal row returns the
+-- stored result and never re-calls the provider. No document/PII data here -
+-- only ids, money, states and a free-text operator reason.
+CREATE TABLE IF NOT EXISTS ticket_operations (
+    operation_id      TEXT PRIMARY KEY,
+    booking_id        TEXT NOT NULL,
+    sequence          INTEGER NOT NULL DEFAULT 0,
+    kind              TEXT NOT NULL,
+    state             TEXT NOT NULL,
+    provider          TEXT NOT NULL DEFAULT 'duffel',
+    provider_order_id TEXT,
+    reason            TEXT NOT NULL DEFAULT '',
+    actor             TEXT NOT NULL DEFAULT '',
+    idempotency_key   TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    quote_json        TEXT,
+    result_json       TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_ticketops_booking ON ticket_operations (booking_id);
+CREATE INDEX IF NOT EXISTS ix_ticketops_state ON ticket_operations (state);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_ticketops_idem
+    ON ticket_operations (idempotency_key)
+    WHERE idempotency_key != '';
+
 CREATE TABLE IF NOT EXISTS booking_items (
     booking_id          TEXT NOT NULL,
     sequence            INTEGER NOT NULL,
@@ -156,6 +183,9 @@ CREATE TABLE IF NOT EXISTS booking_items (
     arrival             TEXT,
     carrier             TEXT NOT NULL DEFAULT '',
     flight_number       TEXT NOT NULL DEFAULT '',
+    operating_carrier   TEXT NOT NULL DEFAULT '',
+    operating_flight_number TEXT NOT NULL DEFAULT '',
+    carrier_name        TEXT NOT NULL DEFAULT '',
     offer_id            TEXT NOT NULL DEFAULT '',
     provider            TEXT NOT NULL DEFAULT '',
     quoted_price_minor  INTEGER NOT NULL DEFAULT 0,
@@ -189,9 +219,30 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._migrate()
 
+    #: Columns added to existing tables after their first release. The
+    #: ``CREATE TABLE IF NOT EXISTS`` DDL only creates *new* tables; a column
+    #: added to a table that already exists on an older deployment needs an
+    #: explicit, idempotent ALTER. Each entry is (table, column, DDL fragment).
+    _ADD_COLUMNS = (
+        ("booking_items", "operating_carrier", "TEXT NOT NULL DEFAULT ''"),
+        ("booking_items", "operating_flight_number", "TEXT NOT NULL DEFAULT ''"),
+        ("booking_items", "carrier_name", "TEXT NOT NULL DEFAULT ''"),
+    )
+
     def _migrate(self) -> None:
         with self._lock:
             self._conn.executescript(_DDL)
+            for table, column, ddl in self._ADD_COLUMNS:
+                cols = {
+                    r["name"]
+                    for r in self._conn.execute(
+                        f"PRAGMA table_info({table})"
+                    ).fetchall()
+                }
+                if column not in cols:
+                    self._conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"
+                    )
             row = self._conn.execute(
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
@@ -201,8 +252,7 @@ class Database:
                     (SCHEMA_VERSION,),
                 )
             elif row["version"] < SCHEMA_VERSION:
-                # The IF NOT EXISTS DDL above already added the new tables; just
-                # record that we are current.
+                # New tables + columns are handled above; record we are current.
                 self._conn.execute(
                     "UPDATE schema_version SET version = ?", (SCHEMA_VERSION,)
                 )

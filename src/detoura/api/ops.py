@@ -14,8 +14,11 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
+from ..models.airline import airline_for
 from ..models.commercial import ServiceTier
 from ..models.promo import PromoCode, PromoKind, PromoTarget
+from ..models.ticket_ops import OperationKind
+from ..persistence import airlines as airlines_store
 from ..persistence import analytics as analytics_store
 from ..persistence import audit as audit_store
 from ..persistence import bookings as bookings_store
@@ -23,6 +26,8 @@ from ..persistence import economics as economics_store
 from ..persistence import get_db
 from ..persistence import policies as policies_store
 from ..persistence import promos as promos_store
+from ..persistence import ticket_ops as ticket_ops_store
+from ..services import ticket_operations as ticket_ops
 from ..services.commercial import CommercialPricingService
 from .ops_auth import (
     create_session,
@@ -32,6 +37,8 @@ from .ops_auth import (
     verify_shared_token,
 )
 from .ops_contracts import (
+    AirlineReportDTO,
+    AirlineStatDTO,
     CreateMarkupPolicyRequest,
     MarkupPolicyConfigDTO,
     MarkupPolicyDTO,
@@ -51,6 +58,9 @@ from .ops_contracts import (
     OpsPromoRedemptionDTO,
     OpsRecoveryPage,
     OpsSessionResponse,
+    RecoveryCandidateRequest,
+    TicketOpRequest,
+    TicketOperationDTO,
     UpsertPromoRequest,
 )
 
@@ -68,18 +78,67 @@ _PHASE_LABEL = {
     "guided_booking": "Guided booking (Basic — traveller books each ticket)",
 }
 
-# Ticket-level actions the spec enumerates. Only VIEW is real in Phase B; the
-# rest are declared unavailable rather than faked (Phase C: ticket operations).
-_PENDING = "Ticket operations arrive in a later phase (Phase C)."
+# Ticket-level actions the console exposes (V8.5 C3). Availability is real:
+# an action a provider/order does not support stays visibly disabled with a
+# truthful reason, and there are no fake-success demo controls.
 _TICKET_ACTIONS = (
-    ("VIEW", True, ""),
-    ("REVALIDATE", False, _PENDING),
-    ("CANCEL", False, _PENDING),
-    ("REQUEST_CHANGE", False, _PENDING),
-    ("CHANGE_DATE", False, _PENDING),
-    ("REBOOK_REPLACE_LEG", False, _PENDING),
-    ("RETRY_SAFE_OPERATION", False, _PENDING),
+    "VIEW_PROVIDER_DETAILS",
+    "CHECK_CANCELLATION_ELIGIBILITY",
+    "CANCEL",
+    "CHECK_CHANGE_CAPABILITY",
+    "FIND_REPLACEMENT",
+    "START_RECOVERY",
 )
+_NO_ORDER = (
+    "This booking created no provider order (demo / not issued); a real "
+    "provider operation cannot be performed."
+)
+_NEEDS_CANCEL_QUOTE = "Check cancellation eligibility first."
+_NEEDS_CHANGE_CHECK = "Check change capability first."
+
+
+def _ticket_actions_for(
+    it: bookings_store.BookingItemRecord,
+    rec: bookings_store.BookingRecord,
+    ops_by_seq: dict[int, list],
+) -> list:
+    from .ops_contracts import OpsActionDTO
+
+    has_order = it.provider == "duffel" and bool(it.provider_order_id)
+    cancel_ops = [
+        o for o in ops_by_seq.get(it.sequence, [])
+        if o.kind is OperationKind.CANCELLATION
+    ]
+    change_ops = [
+        o for o in ops_by_seq.get(it.sequence, [])
+        if o.kind is OperationKind.CHANGE
+    ]
+    cancel_ready = any(o.state == "ELIGIBLE" for o in cancel_ops)
+    already_cancelled = any(
+        o.state in ("CANCELLED", "REFUNDED", "REFUND_PENDING",
+                    "PARTIALLY_REFUNDED", "NON_REFUNDABLE")
+        for o in cancel_ops
+    )
+
+    def one(action: str) -> "OpsActionDTO":
+        if action == "VIEW_PROVIDER_DETAILS":
+            return OpsActionDTO(action=action, enabled=has_order,
+                                reason="" if has_order else _NO_ORDER)
+        if not has_order:
+            return OpsActionDTO(action=action, enabled=False, reason=_NO_ORDER)
+        if already_cancelled and action in ("CHECK_CANCELLATION_ELIGIBILITY",
+                                            "CANCEL", "CHECK_CHANGE_CAPABILITY"):
+            return OpsActionDTO(action=action, enabled=False,
+                                reason="This ticket is already cancelled.")
+        if action == "CANCEL":
+            return OpsActionDTO(
+                action=action, enabled=cancel_ready,
+                reason="" if cancel_ready else _NEEDS_CANCEL_QUOTE,
+            )
+        # eligibility / capability / find-replacement / start-recovery
+        return OpsActionDTO(action=action, enabled=True, reason="")
+
+    return [one(a) for a in _TICKET_ACTIONS]
 
 
 def _summary(rec: bookings_store.BookingRecord) -> OpsBookingSummaryDTO:
@@ -109,9 +168,12 @@ def _summary(rec: bookings_store.BookingRecord) -> OpsBookingSummaryDTO:
     )
 
 
-def _item_dto(it: bookings_store.BookingItemRecord) -> OpsBookingItemDTO:
-    from .ops_contracts import OpsActionDTO
-
+def _item_dto(
+    it: bookings_store.BookingItemRecord,
+    rec: bookings_store.BookingRecord,
+    ops_by_seq: dict[int, list],
+) -> OpsBookingItemDTO:
+    name = it.carrier_name or airline_for(it.carrier).display_name
     return OpsBookingItemDTO(
         sequence=it.sequence,
         origin_city=it.origin_city, origin_airport=it.origin_airport,
@@ -119,16 +181,28 @@ def _item_dto(it: bookings_store.BookingItemRecord) -> OpsBookingItemDTO:
         destination_airport=it.destination_airport,
         departure=it.departure, arrival=it.arrival,
         carrier=it.carrier, flight_number=it.flight_number,
+        carrier_name=name,
+        operating_carrier=it.operating_carrier,
+        operating_flight_number=it.operating_flight_number,
         offer_id=it.offer_id, provider=it.provider,
         duffel_order_id=it.provider_order_id,
         quoted_price=it.quoted_price, current_price=it.current_price,
         booked_price=it.booked_price, currency=it.currency,
         cabin_baggage=it.cabin_baggage, checked_baggage=it.checked_baggage,
         required=it.required, state=it.state, detail=it.detail,
-        actions=[
-            OpsActionDTO(action=a, enabled=e, reason=r)
-            for (a, e, r) in _TICKET_ACTIONS
-        ],
+        actions=_ticket_actions_for(it, rec, ops_by_seq),
+    )
+
+
+def _operation_dto(op) -> TicketOperationDTO:
+    return TicketOperationDTO(
+        operation_id=op.operation_id, booking_id=op.booking_id,
+        sequence=op.sequence, kind=op.kind.value, state=op.state,
+        provider=op.provider, provider_order_id=op.provider_order_id,
+        reason=op.reason, actor=op.actor,
+        created_at=op.created_at, updated_at=op.updated_at,
+        quote=op.quote_json, result=op.result_json,
+        is_terminal=op.is_terminal,
     )
 
 
@@ -237,16 +311,24 @@ def ops_booking_detail(
         raise HTTPException(status_code=404, detail={
             "message": "No such booking.",
         })
+    db = get_db()
     base = _summary(rec).model_dump()
+    all_ops = ticket_ops_store.for_booking(db, booking_id)
+    ops_by_seq: dict[int, list] = {}
+    for op in all_ops:
+        ops_by_seq.setdefault(op.sequence, []).append(op)
+    op_ids = {op.operation_id for op in all_ops}
     return OpsBookingDetailDTO(
         **base,
         reconfirm_note=rec.reconfirm_note,
-        items=[_item_dto(i) for i in rec.items],
+        items=[_item_dto(i, rec, ops_by_seq) for i in rec.items],
         economics=_economics_dto(booking_id),
+        operations=[_operation_dto(op) for op in all_ops],
         audit=[
             _audit_dto(e)
-            for e in audit_store.recent(get_db(), limit=100)
+            for e in audit_store.recent(db, limit=200)
             if e.target_id in (booking_id, rec.journey_reference)
+            or e.target_id in op_ids
         ],
     )
 
@@ -549,3 +631,166 @@ def ops_analytics_events(
     limit: int = Query(default=100, ge=1, le=1000),
 ) -> list[dict]:
     return analytics_store.recent_events(get_db(), limit=limit)
+
+
+# ======================================================================
+# V8.5 C3 — ticket operations (cancellation, change, recovery) + airline report
+# ======================================================================
+def _op_guard(fn, *args, **kwargs):
+    """Run a ticket_operations call, mapping its typed errors to HTTP."""
+    try:
+        return fn(*args, **kwargs)
+    except ticket_ops.TicketOpError as e:
+        raise HTTPException(status_code=e.status, detail={
+            "message": str(e), "code": e.code,
+        })
+
+
+@router.post("/bookings/{booking_id}/tickets/{sequence}/cancellation/eligibility",
+             response_model=TicketOperationDTO)
+def ops_cancellation_eligibility(
+    booking_id: str, sequence: int, actor: str = Depends(require_ops)
+) -> TicketOperationDTO:
+    op = _op_guard(ticket_ops.check_cancellation_eligibility,
+                   get_db(), booking_id, sequence, actor=actor)
+    return _operation_dto(op)
+
+
+@router.post("/operations/{operation_id}/cancellation/approve",
+             response_model=TicketOperationDTO)
+def ops_cancellation_approve(
+    operation_id: str, body: TicketOpRequest, actor: str = Depends(require_ops)
+) -> TicketOperationDTO:
+    op = _op_guard(ticket_ops.approve_cancellation, get_db(), operation_id,
+                   actor=actor, reason=body.reason)
+    return _operation_dto(op)
+
+
+@router.post("/operations/{operation_id}/cancellation/execute",
+             response_model=TicketOperationDTO)
+def ops_cancellation_execute(
+    operation_id: str, body: TicketOpRequest, actor: str = Depends(require_ops)
+) -> TicketOperationDTO:
+    op = _op_guard(ticket_ops.execute_cancellation, get_db(), operation_id,
+                   actor=actor, idempotency_key=body.idempotency_key)
+    return _operation_dto(op)
+
+
+@router.post("/bookings/{booking_id}/tickets/{sequence}/change/capability",
+             response_model=TicketOperationDTO)
+def ops_change_capability(
+    booking_id: str, sequence: int, actor: str = Depends(require_ops)
+) -> TicketOperationDTO:
+    op = _op_guard(ticket_ops.check_change_capability, get_db(), booking_id,
+                   sequence, actor=actor)
+    return _operation_dto(op)
+
+
+@router.post("/operations/{operation_id}/change/approve",
+             response_model=TicketOperationDTO)
+def ops_change_approve(
+    operation_id: str, body: TicketOpRequest, actor: str = Depends(require_ops)
+) -> TicketOperationDTO:
+    op = _op_guard(ticket_ops.approve_change, get_db(), operation_id,
+                   actor=actor, reason=body.reason)
+    return _operation_dto(op)
+
+
+@router.post("/operations/{operation_id}/change/execute",
+             response_model=TicketOperationDTO)
+def ops_change_execute(
+    operation_id: str, body: TicketOpRequest, actor: str = Depends(require_ops)
+) -> TicketOperationDTO:
+    op = _op_guard(ticket_ops.execute_change, get_db(), operation_id,
+                   actor=actor, idempotency_key=body.idempotency_key)
+    return _operation_dto(op)
+
+
+@router.post("/bookings/{booking_id}/tickets/{sequence}/recovery",
+             response_model=TicketOperationDTO)
+def ops_recovery_start(
+    booking_id: str, sequence: int, body: TicketOpRequest,
+    actor: str = Depends(require_ops),
+) -> TicketOperationDTO:
+    op = _op_guard(ticket_ops.start_recovery, get_db(), booking_id, sequence,
+                   actor=actor, reason=body.reason or "operator-initiated recovery")
+    return _operation_dto(op)
+
+
+@router.post("/operations/{operation_id}/recovery/candidate",
+             response_model=TicketOperationDTO)
+def ops_recovery_candidate(
+    operation_id: str, body: RecoveryCandidateRequest,
+    actor: str = Depends(require_ops),
+) -> TicketOperationDTO:
+    candidate = {
+        "summary": body.summary, "old_route": body.old_route,
+        "new_route": body.new_route, "new_departure": body.new_departure,
+        "new_arrival": body.new_arrival, "carrier": body.carrier,
+        "flight_number": body.flight_number, "supplier_fare": body.supplier_fare,
+        "currency": body.currency, "cabin_baggage": body.cabin_baggage,
+        "checked_baggage": body.checked_baggage,
+        "connection_note": body.connection_note,
+        "transit_minutes": body.transit_minutes,
+    }
+    op = _op_guard(ticket_ops.record_recovery_candidate, get_db(), operation_id,
+                   actor=actor, candidate=candidate)
+    return _operation_dto(op)
+
+
+@router.post("/operations/{operation_id}/recovery/approve",
+             response_model=TicketOperationDTO)
+def ops_recovery_approve(
+    operation_id: str, body: TicketOpRequest, actor: str = Depends(require_ops)
+) -> TicketOperationDTO:
+    op = _op_guard(ticket_ops.approve_recovery, get_db(), operation_id,
+                   actor=actor, reason=body.reason)
+    return _operation_dto(op)
+
+
+@router.post("/operations/{operation_id}/recovery/execute",
+             response_model=TicketOperationDTO)
+def ops_recovery_execute(
+    operation_id: str, body: TicketOpRequest, actor: str = Depends(require_ops)
+) -> TicketOperationDTO:
+    op = _op_guard(ticket_ops.execute_recovery, get_db(), operation_id,
+                   actor=actor, idempotency_key=body.idempotency_key)
+    return _operation_dto(op)
+
+
+@router.post("/operations/{operation_id}/recovery/abandon",
+             response_model=TicketOperationDTO)
+def ops_recovery_abandon(
+    operation_id: str, body: TicketOpRequest, actor: str = Depends(require_ops)
+) -> TicketOperationDTO:
+    op = _op_guard(ticket_ops.abandon_recovery, get_db(), operation_id,
+                   actor=actor, reason=body.reason or "abandoned by operator")
+    return _operation_dto(op)
+
+
+@router.get("/operations/{operation_id}", response_model=TicketOperationDTO)
+def ops_operation_detail(
+    operation_id: str, actor: str = Depends(require_ops)
+) -> TicketOperationDTO:
+    op = ticket_ops_store.get(get_db(), operation_id)
+    if op is None:
+        raise HTTPException(status_code=404, detail={"message": "No such operation."})
+    return _operation_dto(op)
+
+
+@router.get("/airlines", response_model=AirlineReportDTO)
+def ops_airline_report(
+    actor: str = Depends(require_ops),
+    dimension: str = Query(default="marketing", pattern="^(marketing|operating)$"),
+    since: str | None = None,
+    until: str | None = None,
+) -> AirlineReportDTO:
+    db = get_db()
+    report = airlines_store.airline_report(
+        db, dimension=dimension, since=_parse_when(since), until=_parse_when(until),
+    )
+    return AirlineReportDTO(
+        dimension=report["dimension"], test_data=True,
+        window=report["window"],
+        airlines=[AirlineStatDTO(**a) for a in report["airlines"]],
+    )

@@ -82,6 +82,17 @@ class ProviderOfferReference(BaseModel):
 
     owner_iata: str | None = None
     """The airline that owns the fare, for display and for booking rules."""
+
+    # Carrier identity, kept marketing/operating apart (V8.5 C3). The code on
+    # the ticket is the marketing carrier; the aircraft may be operated by
+    # another. ``None``/"" where the provider did not say - never merged.
+    marketing_carrier: str | None = None
+    operating_carrier: str | None = None
+    marketing_carrier_name: str = ""
+    operating_carrier_name: str = ""
+    marketing_flight_number: str = ""
+    operating_flight_number: str = ""
+
     raw_segments: tuple[dict, ...] = ()
     """Provider-shaped segment detail, kept opaque.
 

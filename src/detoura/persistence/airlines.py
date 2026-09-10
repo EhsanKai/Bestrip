@@ -155,7 +155,7 @@ def airline_report(
         issued = a["tickets_issued"]
         attempted = issued + a["tickets_failed"]
         out.append({
-            "iata_code": code,
+            "iata_code": meta.iata_code,
             "name": meta.display_name,
             "logo_key": meta.logo_key,
             "tickets_total": a["tickets_total"],

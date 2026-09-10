@@ -222,6 +222,7 @@ export default function App() {
             // intent, offer or revalidation from the previous journey survives.
             key={selected.id}
             trip={selected}
+            travelers={search.request?.travelers ?? 1}
             onBack={() => setScreen("results")}
             onViewDetails={() => setScreen("detail")}
           />

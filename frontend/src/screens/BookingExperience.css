@@ -94,6 +94,14 @@
 .booking__tickets--tight dl{grid-template-columns:repeat(3,1fr);padding:0 16px 14px}
 
 .booking__pricebox{display:grid;gap:14px;margin:20px 0}
+.booking__traveller{border:1px solid var(--border);border-radius:16px;padding:16px;margin:14px 0;background:var(--bg)}
+.booking__traveller-h{font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--text-subtle);margin:0 0 12px}
+.booking__doc{margin-top:12px;border-top:1px dashed var(--border);padding-top:10px}
+.booking__doc summary{font-size:13px;font-weight:700;cursor:pointer}
+.booking__doc .booking__grid{margin-top:14px}
+.booking__breakdown--estimate{background:var(--bg-sunken);border-style:dashed;margin-top:10px}
+.booking__breakdown--estimate dd{font-weight:600;color:var(--text-muted)}
+.booking__estimate-h{grid-column:1/-1;font-size:12px;font-weight:700;color:var(--text-muted);margin:0 0 4px;line-height:1.4}
 .booking__progressbar{margin:18px 0 6px;font-size:1.05rem}
 .booking__progressbar b{font-weight:800}
 

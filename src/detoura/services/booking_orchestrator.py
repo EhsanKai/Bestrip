@@ -64,6 +64,10 @@ class BookingPhase(str, Enum):
     #: guides the traveller through booking each ticket. No managed
     #: orchestration runs and Detoura creates no Duffel Order in this flow.
     GUIDED_BOOKING = "guided_booking"
+    #: The priced supplier transport does not reconcile with the sum of the
+    #: bookable ticket fares. Confirmation is refused - a truthful stop rather
+    #: than charging against a figure that cannot be explained.
+    PRICE_INCONSISTENT = "price_inconsistent"
 
 
 @dataclass(slots=True)
@@ -128,8 +132,17 @@ class BookingRun:
     route_cities: tuple[str, ...]
     currency: str
     discovered_total: float
+    """The **bookable supplier transport subtotal**, whole party, at discovery.
+    This is the flights Detoura can actually book - NOT the optimizer's
+    whole-trip estimate (which also models accommodation and transfers). It is
+    the base the Detoura fee is computed on and the base a revalidated price is
+    compared against."""
     tolerance: PriceTolerance
     items: list[ItemProgress]
+    #: Display-only optimizer figures: what the whole trip is estimated to cost
+    #: including things Detoura is not booking (accommodation, transfers). Never
+    #: used in the commercial calculation.
+    trip_estimate: dict = field(default_factory=dict)
     selection_id: str | None = None
     party: TravelerParty | None = None
     phase: BookingPhase = BookingPhase.AWAITING_TRAVELERS
@@ -162,11 +175,31 @@ class BookingRun:
         )
 
     @property
-    def current_total(self) -> float | None:
+    def supplier_transport_at_discovery(self) -> float:
+        """Party subtotal of the quoted per-person leg fares."""
+        return round(
+            sum(i.quoted_price * max(i.travelers, 1) for i in self.items), 2
+        )
+
+    @property
+    def supplier_transport_current(self) -> float | None:
+        """Party subtotal at the revalidated per-person fares, or ``None`` if a
+        leg has not been re-checked."""
         if any(i.current_price is None for i in self.items):
             return None
-        delta = sum((i.current_price - i.quoted_price) for i in self.items)
-        return round(self.discovered_total + delta, 2)
+        return round(
+            sum(
+                (i.current_price if i.current_price is not None else i.quoted_price)
+                * max(i.travelers, 1)
+                for i in self.items
+            ),
+            2,
+        )
+
+    @property
+    def current_total(self) -> float | None:
+        """The revalidated bookable supplier transport subtotal (party)."""
+        return self.supplier_transport_current
 
 
 def item_from_selected(seq: int, offer: SelectedOffer) -> ItemProgress:
@@ -179,7 +212,13 @@ def item_from_selected(seq: int, offer: SelectedOffer) -> ItemProgress:
         carrier="", flight_number="",
         offer_id=offer.offer_id, provider=offer.provider,
         travelers=offer.travelers,
-        quoted_price=offer.discovered_amount, currency=offer.discovered_currency,
+        # `discovered_amount` is the party amount for the leg; store it
+        # per person, so `quoted_price * travelers` is the leg's party total
+        # and nothing multiplies the party size in twice.
+        quoted_price=round(
+            offer.discovered_amount / max(offer.travelers, 1), 2
+        ),
+        currency=offer.discovered_currency,
         cabin_baggage=(offer.discovered_baggage_cabin.value
                        if offer.discovered_baggage_cabin else "unknown"),
         checked_baggage=(offer.discovered_baggage_checked.value
@@ -320,7 +359,9 @@ def _revalidate_item(
     ref = current.provider_ref
     if ref and ref.is_expired_at():
         return False, "the fare expired before it could be booked"
-    item.current_price = round(current.price_per_person * max(item.travelers, 1), 2)
+    # Per person, like `quoted_price` - the party total is always
+    # ``price * travelers`` and nothing multiplies it in twice.
+    item.current_price = round(current.price_per_person, 2)
     if item.carrier == "" and current.operator:
         parts = current.operator.split()
         item.carrier = parts[0] if parts else ""

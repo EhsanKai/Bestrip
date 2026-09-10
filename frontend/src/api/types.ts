@@ -491,13 +491,20 @@ export interface ReoptimizeResponse {
   warnings: string[];
 }
 
+export interface TripEstimateInput {
+  total: number;
+  transport: number;
+  accommodation: number;
+  transfer: number;
+}
+
 export interface CreateBookingIntentRequest {
   selection_id?: string | null;
   demo_trip_label?: string;
   demo_currency?: string;
-  demo_total?: number;
   demo_travelers?: number;
   demo_legs?: DemoLegInput[];
+  demo_trip_estimate?: TripEstimateInput;
   service_tier?: ServiceTier;
   promo_code?: string | null;
 }
@@ -520,6 +527,8 @@ export interface PriceBreakdown {
   discount: number;
   tax: number;
   customer_total: number;
+  bookable_ticket_subtotal: number;
+  reconciled: boolean;
   explanation: string[];
 }
 
@@ -618,6 +627,10 @@ export interface TravelerInput {
   title?: string | null;
   gender?: string | null;
   nationality?: string | null;
+  passport_number?: string | null;
+  passport_issuing_country?: string | null;
+  passport_expiry?: string | null;
+  document_type?: string | null;
 }
 
 export interface BookingItemStateDTO {
@@ -650,8 +663,17 @@ export interface BookingIntent {
   currency: string;
   discovered_total: number;
   current_total: number | null;
+  trip_estimate: {
+    total?: number;
+    transport?: number;
+    accommodation?: number;
+    transfer?: number;
+  };
+  price_reconciled: boolean;
+  price_issue: string;
   reconfirm_note: string;
   party_size: number;
+  requested_travelers: number;
   travelers_submitted: boolean;
   service_flow: "self_service" | "managed";
   items: BookingItemStateDTO[];

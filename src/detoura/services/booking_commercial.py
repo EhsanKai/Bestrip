@@ -32,10 +32,47 @@ _TERMINAL = {
 }
 
 
+from ..models.price_provenance import LegPrice, PriceReconciliation, reconcile
+
+
 def _supplier_transport(run: BookingRun) -> float:
-    """The run already computed its discovered total correctly for both the
-    selection and demo paths; that is the supplier transport cost."""
-    return float(run.discovered_total)
+    """The bookable supplier transport subtotal for the whole party - the
+    revalidated fares if every leg has been re-checked, otherwise the ones
+    shown at discovery. This is the ONLY thing the Detoura fee is computed on;
+    the whole-trip estimate (which models accommodation) is never used here."""
+    current = run.supplier_transport_current
+    return float(current if current is not None else run.supplier_transport_at_discovery)
+
+
+def _leg_prices(run: BookingRun) -> list[LegPrice]:
+    return [
+        LegPrice(
+            sequence=idx,
+            label=f"{i.origin_city} → {i.destination_city}",
+            per_person=(
+                i.current_price if i.current_price is not None else i.quoted_price
+            ),
+            travelers=max(i.travelers, 1),
+            revalidated=i.current_price is not None,
+        )
+        for idx, i in enumerate(run.items, start=1)
+    ]
+
+
+def reconcile_run_price(run: BookingRun) -> PriceReconciliation:
+    """Check the priced supplier transport against the sum of the bookable
+    ticket fares. Called before confirmation; a failure blocks it."""
+    priced = (
+        run.quote.breakdown.supplier_transport
+        if run.quote is not None
+        else _supplier_transport(run)
+    )
+    return reconcile(
+        currency=run.currency,
+        legs=_leg_prices(run),
+        priced_supplier_transport=priced,
+        trip_estimate=run.trip_estimate,
+    )
 
 
 def price_run(

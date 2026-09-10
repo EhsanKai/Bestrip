@@ -475,7 +475,7 @@ def _booking_or_404(booking_id: str):
     return run
 
 
-def _breakdown_dto(bd) -> PriceBreakdownDTO:
+def _breakdown_dto(bd, *, bookable: float = 0.0, reconciled: bool = True) -> PriceBreakdownDTO:
     return PriceBreakdownDTO(
         currency=bd.currency,
         supplier_transport=bd.supplier_transport,
@@ -488,6 +488,8 @@ def _breakdown_dto(bd) -> PriceBreakdownDTO:
         discount=bd.discount,
         tax=bd.tax,
         customer_total=bd.customer_total,
+        bookable_ticket_subtotal=bookable or bd.supplier_transport,
+        reconciled=reconciled,
         explanation=list(bd.explanation),
     )
 
@@ -560,9 +562,12 @@ def _commercial_dto(run) -> CommercialSummaryDTO | None:
     from ..services.commercial import CommercialPricingService
 
     db = get_db()
+    from ..services.booking_commercial import _supplier_transport, reconcile_run_price
+
+    supplier = _supplier_transport(run)
     service = CommercialPricingService(db)
     options = _tier_option_dto(
-        service, supplier_total=float(run.discovered_total), currency=run.currency,
+        service, supplier_total=supplier, currency=run.currency,
         ticket_count=len(run.items), promo_code=run.requested_promo,
         user_key=run.user_key, selected_tier=run.service_tier,
     )
@@ -573,7 +578,7 @@ def _commercial_dto(run) -> CommercialSummaryDTO | None:
     if run.requested_promo and not q.promo_code:
         # requested but not applied - say why, from a fresh evaluation
         res = service.quote(
-            supplier_transport=float(run.discovered_total), currency=run.currency,
+            supplier_transport=supplier, currency=run.currency,
             ticket_count=len(run.items), service_tier=run.service_tier,
             promo_code=run.requested_promo, user_key=run.user_key,
         )
@@ -581,10 +586,13 @@ def _commercial_dto(run) -> CommercialSummaryDTO | None:
     elif q.promo_code:
         promo_msg = f"{q.promo_code} applied: -{q.promo_discount:.2f} {run.currency}"
 
+    rec = reconcile_run_price(run)
     return CommercialSummaryDTO(
         service_tier=run.service_tier,
         service_tier_label=run.service_tier.label,
-        breakdown=_breakdown_dto(q.breakdown),
+        breakdown=_breakdown_dto(
+            q.breakdown, bookable=rec.bookable_ticket_subtotal, reconciled=rec.ok
+        ),
         markup_policy=str(q.markup_policy),
         promo_code=q.promo_code or (run.requested_promo or None),
         promo_accepted=promo_ok,
@@ -653,6 +661,10 @@ def _finalize_if_terminal(run) -> None:
 def _intent_dto(run) -> BookingIntentResponse:
     _finalize_if_terminal(run)
     persist_run(run, get_db())
+    from ..services.booking_commercial import reconcile_run_price
+
+    rec = reconcile_run_price(run)
+    requested = max((i.travelers for i in run.items), default=1)
     return BookingIntentResponse(
         booking_id=run.booking_id,
         journey_reference=run.journey_reference,
@@ -663,8 +675,12 @@ def _intent_dto(run) -> BookingIntentResponse:
         currency=run.currency,
         discovered_total=run.discovered_total,
         current_total=run.current_total,
+        trip_estimate=dict(run.trip_estimate or {}),
+        price_reconciled=rec.ok,
+        price_issue=rec.reason,
         reconfirm_note=run.reconfirm_note,
-        party_size=run.party.size if run.party else max((i.travelers for i in run.items), default=1),
+        party_size=run.party.size if run.party else requested,
+        requested_travelers=requested,
         travelers_submitted=run.party is not None,
         service_flow=(
             "self_service" if run.service_tier is ServiceTier.BASIC else "managed"
@@ -737,11 +753,17 @@ def create_booking_intent(body: CreateBookingIntentRequest) -> BookingIntentResp
             })
         run = create_run_from_selection(selection)
     elif body.demo_legs:
+        est = body.demo_trip_estimate
         run = create_run_demo(
             trip_label=body.demo_trip_label or "Detoura journey",
             currency=body.demo_currency,
-            discovered_total=body.demo_total or sum(
-                leg.price_per_person * body.demo_travelers for leg in body.demo_legs
+            trip_estimate=(
+                {
+                    "total": est.total, "transport": est.transport,
+                    "accommodation": est.accommodation, "transfer": est.transfer,
+                }
+                if est is not None
+                else {}
             ),
             legs=[
                 {
@@ -811,17 +833,45 @@ def submit_travelers(booking_id: str, body: SubmitTravelersRequest) -> BookingIn
     run = _booking_or_404(booking_id)
     if run.phase not in (BookingPhase.AWAITING_TRAVELERS, BookingPhase.AWAITING_CONFIRMATION):
         raise HTTPException(status_code=409, detail={"message": "This booking is past the traveller step."})
+
+    needed = max((i.travelers for i in run.items), default=1)
+    if len(body.travelers) != needed:
+        raise HTTPException(status_code=422, detail={
+            "message": (
+                f"This journey is for {needed} traveller"
+                f"{'s' if needed != 1 else ''}; {len(body.travelers)} "
+                f"provided. Enter each traveller once."
+            ),
+            "requested_travelers": needed,
+            "provided": len(body.travelers),
+        })
     try:
-        party = TravelerParty(travelers=tuple(
+        travelers = tuple(
             Traveler(
                 given_name=t.given_name, family_name=t.family_name,
                 born_on=t.born_on, email=t.email, phone=t.phone,
                 title=_TITLES.get((t.title or "").lower()),
                 gender=_GENDERS.get((t.gender or "").lower()),
                 nationality=t.nationality,
+                passport_number=t.passport_number,
+                passport_issuing_country=t.passport_issuing_country,
+                passport_expiry=t.passport_expiry,
+                document_type=t.document_type,
             )
             for t in body.travelers
-        ))
+        )
+        # No two passengers may share a document number - never one identity
+        # copied across the party.
+        docs = [d.passport_number for d in travelers if d.passport_number]
+        if len(docs) != len(set(docs)):
+            raise ValueError("two travellers cannot share a document number")
+        party = TravelerParty(travelers=travelers)
+        # Assert the authoritative count: the party must not be short a
+        # passenger, and a missing one is never manufactured by copying another.
+        if party.size != needed:
+            raise ValueError(
+                f"this journey needs {needed} distinct travellers, got {party.size}"
+            )
         attach_travelers(run, party)
     except (ValueError, TypeError) as error:
         raise HTTPException(status_code=422, detail={"message": str(error)}) from error
@@ -847,6 +897,27 @@ def confirm_booking(booking_id: str, body: ConfirmBookingRequest) -> BookingInte
         price_run(run, get_db())
     except Exception:
         pass
+
+    # Price provenance: the priced supplier transport must reconcile with the
+    # bookable ticket fares. If it does not, refuse - never charge against a
+    # number that cannot be explained.
+    from ..services.booking_commercial import reconcile_run_price
+
+    rec = reconcile_run_price(run)
+    if not rec.ok:
+        with run._lock:
+            run.phase = BookingPhase.PRICE_INCONSISTENT
+        raise HTTPException(status_code=409, detail={
+            "message": (
+                "We can't confirm this journey: the ticket prices don't add up "
+                "to what we were about to charge. Nothing has been booked."
+            ),
+            "phase": BookingPhase.PRICE_INCONSISTENT.value,
+            "reason": rec.reason,
+            "bookable_ticket_subtotal": rec.bookable_ticket_subtotal,
+            "priced_supplier_transport": rec.priced_supplier_transport,
+        })
+
     try:
         if run.service_tier is ServiceTier.BASIC:
             from ..services.guided_booking import prepare_journey

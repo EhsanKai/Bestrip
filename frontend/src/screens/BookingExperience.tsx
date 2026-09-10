@@ -37,6 +37,10 @@ interface TravelerDraft {
   born_on: string;
   email: string;
   phone: string;
+  nationality: string;
+  passport_number: string;
+  passport_issuing_country: string;
+  passport_expiry: string;
 }
 
 const EMPTY: TravelerDraft = {
@@ -45,6 +49,10 @@ const EMPTY: TravelerDraft = {
   born_on: "",
   email: "",
   phone: "",
+  nationality: "",
+  passport_number: "",
+  passport_issuing_country: "",
+  passport_expiry: "",
 };
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -61,6 +69,10 @@ function draftErrors(d: TravelerDraft): Partial<Record<keyof TravelerDraft, stri
   }
   if (!EMAIL_RE.test(d.email.trim())) e.email = "Enter a valid email";
   if (!PHONE_RE.test(d.phone.trim())) e.phone = "Enter a valid phone number";
+  // Passport is optional in this test flow (nothing is issued); if a number is
+  // given, an expiry must come with it.
+  if (d.passport_number.trim() && !d.passport_expiry)
+    e.passport_expiry = "Add the expiry date";
   return e;
 }
 
@@ -89,14 +101,18 @@ function stepIndex(phase: Phase, flow: Flow): number {
 
 export function BookingExperience({
   trip,
+  travelers = 1,
   onBack,
   onViewDetails,
 }: {
   trip: TripRecommendation;
+  travelers?: number;
   onBack: () => void;
   onViewDetails: () => void;
 }) {
-  const partySize = 1;
+  // The journey's authoritative traveller count — one form per traveller, one
+  // TravelerParty for the journey. Never derived from anything editable here.
+  const partySize = Math.max(1, Math.round(travelers));
   const [phase, setPhase] = useState<Phase>("tier");
   const [drafts, setDrafts] = useState<TravelerDraft[]>(() =>
     Array.from({ length: partySize }, () => ({ ...EMPTY })),
@@ -122,8 +138,15 @@ export function BookingExperience({
       const created = await api.createBookingIntent({
         demo_trip_label: trip.route,
         demo_currency: trip.currency,
-        demo_total: trip.total_price,
         demo_travelers: partySize,
+        // The whole-trip estimate — for display only. The server prices the
+        // supplier transport from the legs, never from this.
+        demo_trip_estimate: {
+          total: trip.total_price,
+          transport: trip.costs.transport,
+          accommodation: trip.costs.accommodation,
+          transfer: trip.costs.ground_transfer,
+        },
         demo_legs: legs.map((l) => {
           const [carrier, ...rest] = (l.operator || "").split(" ");
           return {
@@ -236,6 +259,12 @@ export function BookingExperience({
         born_on: d.born_on,
         email: d.email.trim(),
         phone: d.phone.trim(),
+        nationality: d.nationality.trim().toUpperCase() || null,
+        passport_number: d.passport_number.trim() || null,
+        passport_issuing_country:
+          d.passport_issuing_country.trim().toUpperCase() || null,
+        passport_expiry: d.passport_expiry || null,
+        document_type: d.passport_number.trim() ? "passport" : null,
       }));
       const next = await api.submitTravelers(id, travelers);
       setIntent(next);
@@ -511,14 +540,19 @@ function TravelerStep({
     setDrafts(next);
   };
 
+  const many = drafts.length > 1;
   return (
     <>
       <span className="eyebrow">Traveller details</span>
-      <h2>Who’s taking this journey?</h2>
+      <h2>
+        {many
+          ? `Who’s taking this journey? (${drafts.length} travellers)`
+          : "Who’s taking this journey?"}
+      </h2>
       <p className="muted">
-        Entered <b>once</b> for the whole journey — every ticket, both service
-        options. Your details are not stored in this browser and never appear
-        in a link.
+        Enter each traveller <b>once</b> — the details are reused for every
+        ticket on the journey. They’re not stored in this browser and never
+        appear in a link.
         {flow === "self_service" &&
           " An airline site may still ask you to enter them there; that's its requirement, not Detoura's."}
       </p>
@@ -526,55 +560,105 @@ function TravelerStep({
       {drafts.map((d, i) => {
         const errs = showErrors ? draftErrors(d) : {};
         return (
-          <div className="booking__grid" key={i}>
-            <label>
-              First name
-              <input
-                value={d.given_name}
-                onChange={(e) => update(i, "given_name", e.target.value)}
-                autoComplete="given-name"
-              />
-              {errs.given_name && <em>{errs.given_name}</em>}
-            </label>
-            <label>
-              Last name
-              <input
-                value={d.family_name}
-                onChange={(e) => update(i, "family_name", e.target.value)}
-                autoComplete="family-name"
-              />
-              {errs.family_name && <em>{errs.family_name}</em>}
-            </label>
-            <label>
-              Date of birth
-              <input
-                type="date"
-                value={d.born_on}
-                onChange={(e) => update(i, "born_on", e.target.value)}
-              />
-              {errs.born_on && <em>{errs.born_on}</em>}
-            </label>
-            <label>
-              Email
-              <input
-                type="email"
-                value={d.email}
-                onChange={(e) => update(i, "email", e.target.value)}
-                autoComplete="email"
-              />
-              {errs.email && <em>{errs.email}</em>}
-            </label>
-            <label>
-              Phone
-              <input
-                type="tel"
-                value={d.phone}
-                onChange={(e) => update(i, "phone", e.target.value)}
-                autoComplete="tel"
-                placeholder="+49 170 1234567"
-              />
-              {errs.phone && <em>{errs.phone}</em>}
-            </label>
+          <div className="booking__traveller" key={i}>
+            {many && (
+              <h3 className="booking__traveller-h">Traveller {i + 1} of {drafts.length}</h3>
+            )}
+            <div className="booking__grid">
+              <label>
+                First name
+                <input
+                  value={d.given_name}
+                  onChange={(e) => update(i, "given_name", e.target.value)}
+                  autoComplete={i === 0 ? "given-name" : "off"}
+                />
+                {errs.given_name && <em>{errs.given_name}</em>}
+              </label>
+              <label>
+                Last name
+                <input
+                  value={d.family_name}
+                  onChange={(e) => update(i, "family_name", e.target.value)}
+                  autoComplete={i === 0 ? "family-name" : "off"}
+                />
+                {errs.family_name && <em>{errs.family_name}</em>}
+              </label>
+              <label>
+                Date of birth
+                <input
+                  type="date"
+                  value={d.born_on}
+                  onChange={(e) => update(i, "born_on", e.target.value)}
+                />
+                {errs.born_on && <em>{errs.born_on}</em>}
+              </label>
+              <label>
+                Email
+                <input
+                  type="email"
+                  value={d.email}
+                  onChange={(e) => update(i, "email", e.target.value)}
+                  autoComplete={i === 0 ? "email" : "off"}
+                />
+                {errs.email && <em>{errs.email}</em>}
+              </label>
+              <label>
+                Phone
+                <input
+                  type="tel"
+                  value={d.phone}
+                  onChange={(e) => update(i, "phone", e.target.value)}
+                  autoComplete={i === 0 ? "tel" : "off"}
+                  placeholder="+49 170 1234567"
+                />
+                {errs.phone && <em>{errs.phone}</em>}
+              </label>
+            </div>
+            <details className="booking__doc">
+              <summary>
+                Travel document
+                <span className="subtle"> — optional for this test; required for international ticketing</span>
+              </summary>
+              <div className="booking__grid">
+                <label>
+                  Nationality (2-letter)
+                  <input
+                    value={d.nationality}
+                    maxLength={2}
+                    placeholder="DE"
+                    onChange={(e) => update(i, "nationality", e.target.value)}
+                  />
+                </label>
+                <label>
+                  Passport / document number
+                  <input
+                    value={d.passport_number}
+                    onChange={(e) => update(i, "passport_number", e.target.value)}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  Issuing country (2-letter)
+                  <input
+                    value={d.passport_issuing_country}
+                    maxLength={2}
+                    placeholder="DE"
+                    onChange={(e) =>
+                      update(i, "passport_issuing_country", e.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  Expiry date
+                  <input
+                    type="date"
+                    value={d.passport_expiry}
+                    onChange={(e) => update(i, "passport_expiry", e.target.value)}
+                  />
+                  {errs.passport_expiry && <em>{errs.passport_expiry}</em>}
+                </label>
+              </div>
+            </details>
           </div>
         );
       })}
@@ -696,6 +780,8 @@ function ReviewStep({
         <PriceSummary
           commercial={c}
           currency={intent.currency}
+          estimate={intent.trip_estimate}
+          travellers={intent.party_size}
           busy={busy}
           promoInput={promoInput}
           setPromoInput={setPromoInput}
@@ -704,9 +790,17 @@ function ReviewStep({
       ) : (
         <div className="booking__summary">
           <div>
-            <span>Trip total</span>
+            <span>Tickets</span>
             <strong>{money(intent.discovered_total, intent.currency)}</strong>
           </div>
+        </div>
+      )}
+
+      {!intent.price_reconciled && (
+        <div className="booking__error">
+          We can’t take payment for this journey: the ticket prices don’t add up
+          to what we were about to charge. Nothing has been booked.
+          {intent.price_issue ? ` (${intent.price_issue})` : ""}
         </div>
       )}
 
@@ -726,7 +820,11 @@ function ReviewStep({
         <Button variant="secondary" onClick={onBack} disabled={busy}>
           Back
         </Button>
-        <Button size="lg" onClick={onConfirm} disabled={busy}>
+        <Button
+          size="lg"
+          onClick={onConfirm}
+          disabled={busy || !intent.price_reconciled}
+        >
           {busy
             ? "Working…"
             : flow === "self_service"
@@ -741,6 +839,8 @@ function ReviewStep({
 function PriceSummary({
   commercial,
   currency,
+  estimate,
+  travellers,
   busy,
   promoInput,
   setPromoInput,
@@ -748,6 +848,8 @@ function PriceSummary({
 }: {
   commercial: CommercialSummary;
   currency: string;
+  estimate: BookingIntent["trip_estimate"];
+  travellers: number;
   busy: boolean;
   promoInput: string;
   setPromoInput: (v: string) => void;
@@ -755,11 +857,15 @@ function PriceSummary({
 }) {
   const b = commercial.breakdown;
   const applied = commercial.promo_accepted;
+  const accom = estimate?.accommodation ?? 0;
+  const transfer = estimate?.transfer ?? 0;
   return (
     <div className="booking__pricebox">
       <dl className="booking__breakdown">
         <div>
-          <dt>Flights</dt>
+          <dt>
+            Tickets{travellers > 1 ? ` (${travellers} travellers)` : ""}
+          </dt>
           <dd className="numeric">{money2(b.supplier_total, currency)}</dd>
         </div>
         <div>
@@ -779,10 +885,30 @@ function PriceSummary({
           </div>
         )}
         <div className="booking__breakdown-total">
-          <dt>Total</dt>
+          <dt>Pay now</dt>
           <dd className="numeric">{money2(b.customer_total, currency)}</dd>
         </div>
       </dl>
+
+      {(accom > 0 || transfer > 0) && (
+        <dl className="booking__breakdown booking__breakdown--estimate">
+          <p className="booking__estimate-h">
+            Not booked by Detoura — estimated, you arrange and pay separately
+          </p>
+          {accom > 0 && (
+            <div>
+              <dt>Estimated accommodation</dt>
+              <dd className="numeric">{money2(accom, currency)}</dd>
+            </div>
+          )}
+          {transfer > 0 && (
+            <div>
+              <dt>Estimated airport transfers</dt>
+              <dd className="numeric">{money2(transfer, currency)}</dd>
+            </div>
+          )}
+        </dl>
+      )}
 
       <div className="booking__promo">
         <div className="booking__promo-row">
@@ -825,7 +951,9 @@ function PriceSummary({
       </div>
 
       <p className="booking__breakdown-note">
-        The airline fare is shown exactly as quoted. Detoura's fee is separate.
+        “Tickets” is the current bookable fare for the flights, exactly as
+        quoted. Detoura’s fee is separate. Accommodation is an estimate only —
+        Detoura is not booking it.
         {commercial.test_mode ? " Sandbox / test mode — no payment is taken." : ""}
       </p>
     </div>

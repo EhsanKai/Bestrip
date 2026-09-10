@@ -54,8 +54,49 @@ _AIRPORT_CITY = {
 }
 
 
+#: Airport -> ISO country, for deciding whether a route needs a travel
+#: document. Only the airports the synthetic catalog uses.
+_AIRPORT_COUNTRY = {
+    "CGN": "DE", "DUS": "DE", "FRA": "DE", "BER": "DE", "MUC": "DE",
+    "AMS": "NL", "EIN": "NL", "VIE": "AT", "PRG": "CZ", "BCN": "ES",
+    "MAD": "ES", "LHR": "GB", "CDG": "FR", "MXP": "IT", "FCO": "IT",
+    "DUB": "IE", "CPH": "DK", "BUD": "HU", "ZRH": "CH", "BRU": "BE",
+}
+
+
 def _city(code: str) -> str:
     return _AIRPORT_CITY.get(code, code)
+
+
+def route_is_international(run) -> bool:
+    """True when any leg crosses a border (best effort from the airport map)."""
+    for item in run.items:
+        o = _AIRPORT_COUNTRY.get(item.origin_airport)
+        d = _AIRPORT_COUNTRY.get(item.destination_airport)
+        if o and d and o != d:
+            return True
+    return False
+
+
+def documents_required(run) -> bool:
+    """A travel document is required for issuance when Detoura is creating real
+    provider Orders on an international route. The demo flow issues nothing, so
+    it never requires one."""
+    from ..models.travel_pass import PassMode
+
+    return run.mode is PassMode.SANDBOX_BOOKED and route_is_international(run)
+
+
+def travellers_missing_documents(run) -> list[int]:
+    """1-based indices of party members without a document, when one is
+    required. Empty when none is required."""
+    if run.party is None or not documents_required(run):
+        return []
+    return [
+        idx
+        for idx, t in enumerate(run.party.travelers, start=1)
+        if not t.has_travel_document()
+    ]
 
 
 class BookingStore:
@@ -127,6 +168,11 @@ def create_run_from_selection(
     for it in items:
         it.origin_city = _city(it.origin_airport)
         it.destination_city = _city(it.destination_airport)
+    # The bookable supplier transport subtotal, from the offers themselves -
+    # not any pre-summed figure that might have drifted.
+    supplier_transport = round(
+        sum(i.quoted_price * max(i.travelers, 1) for i in items), 2
+    )
     run = BookingRun(
         booking_id="bk_" + secrets.token_urlsafe(15),
         journey_reference=new_journey_reference(),
@@ -134,7 +180,7 @@ def create_run_from_selection(
         trip_label=selection.trip_label,
         route_cities=_route_cities(items),
         currency=selection.currency,
-        discovered_total=selection.discovered_total,
+        discovered_total=supplier_transport,
         tolerance=tolerance or PriceTolerance(),
         items=items,
         selection_id=selection.selection_id,
@@ -147,15 +193,25 @@ def create_run_demo(
     *,
     trip_label: str,
     currency: str,
-    discovered_total: float,
     legs: list[dict],
+    trip_estimate: dict | None = None,
     tolerance: PriceTolerance | None = None,
+    discovered_total: float | None = None,  # accepted, ignored - see below
 ) -> BookingRun:
     """A DEMO_ONLY run from a synthetic trip - no Duffel offer ids, no Order.
 
     ``legs`` are plain dicts: origin, destination (IATA or city), departure,
     arrival, carrier, flight_number, price_per_person, travelers, cabin, checked.
+
+    The run's ``discovered_total`` is the **bookable supplier transport
+    subtotal** - the sum of the per-person leg fares times the party size. Any
+    whole-trip estimate the client passes (which includes accommodation and
+    transfers Detoura is not booking) is kept separately in ``trip_estimate``
+    for display and is never priced. A ``discovered_total`` argument is
+    accepted for older callers but ignored - the run computes the truth from
+    the legs.
     """
+    _ = discovered_total
     items: list[ItemProgress] = []
     for i, leg in enumerate(legs, start=1):
         o, d = str(leg["origin"]), str(leg["destination"])
@@ -167,11 +223,14 @@ def create_run_demo(
             carrier=leg.get("carrier", ""), flight_number=leg.get("flight_number", ""),
             offer_id=f"demo-{i}", provider="synthetic",
             travelers=int(leg.get("travelers", 1)),
-            quoted_price=float(leg["price_per_person"]),
+            quoted_price=round(float(leg["price_per_person"]), 2),
             currency=currency,
             cabin_baggage=leg.get("cabin", "unknown"),
             checked_baggage=leg.get("checked", "unknown"),
         ))
+    supplier_transport = round(
+        sum(i.quoted_price * max(i.travelers, 1) for i in items), 2
+    )
     return BookingRun(
         booking_id="bk_" + secrets.token_urlsafe(15),
         journey_reference=new_journey_reference(),
@@ -179,9 +238,10 @@ def create_run_demo(
         trip_label=trip_label,
         route_cities=_route_cities(items),
         currency=currency,
-        discovered_total=discovered_total,
+        discovered_total=supplier_transport,
         tolerance=tolerance or PriceTolerance(),
         items=items,
+        trip_estimate=dict(trip_estimate or {}),
         session_ref="sess_" + secrets.token_urlsafe(8),
     )
 
@@ -222,6 +282,13 @@ def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -
         raise ValueError("Basic bookings are not orchestrated; prepare an itinerary")
     if run.party is None:
         raise ValueError("traveller details are required before confirmation")
+    missing = travellers_missing_documents(run)
+    if missing:
+        raise ValueError(
+            "a travel document is required to issue tickets on this route for "
+            f"traveller{'s' if len(missing) != 1 else ''} "
+            + ", ".join(str(i) for i in missing)
+        )
     if run.phase not in (BookingPhase.AWAITING_CONFIRMATION, BookingPhase.RECONFIRM_REQUIRED):
         raise ValueError(f"cannot confirm from phase {run.phase.value}")
 

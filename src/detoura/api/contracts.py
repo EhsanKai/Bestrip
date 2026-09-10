@@ -1095,12 +1095,27 @@ class DemoLegInput(BaseModel):
     checked: str = "unknown"
 
 
+class TripEstimateInput(BaseModel):
+    """The optimizer's whole-trip estimate for display only. It includes costs
+    Detoura is not booking (accommodation, transfers) and is NEVER priced or
+    charged - the server computes the supplier transport subtotal from the
+    legs."""
+
+    model_config = ConfigDict(frozen=True)
+    total: float = Field(default=0.0, ge=0.0, le=10_000_000.0)
+    transport: float = Field(default=0.0, ge=0.0, le=10_000_000.0)
+    accommodation: float = Field(default=0.0, ge=0.0, le=10_000_000.0)
+    transfer: float = Field(default=0.0, ge=0.0, le=10_000_000.0)
+
+
 class CreateBookingIntentRequest(BaseModel):
     """Start a booking from a server-issued selection, or a demo trip.
 
     ``service_tier`` and ``promo_code`` are the customer's *choice*, not a
-    price. The server computes every amount; a price, fee, markup or discount
-    in this body is ignored because there is no field for one.
+    price. The server computes every amount - the bookable supplier transport
+    subtotal from ``demo_legs`` and ``demo_travelers``, the Detoura fee from
+    that. A price, fee, markup, discount or ``demo_total`` in this body is
+    ignored: there is no field the client can put an authoritative price in.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -1108,9 +1123,9 @@ class CreateBookingIntentRequest(BaseModel):
     selection_id: str | None = Field(default=None, max_length=200)
     demo_trip_label: str | None = Field(default=None, max_length=120)
     demo_currency: str = Field(default="EUR", max_length=3)
-    demo_total: float = Field(default=0.0, ge=0.0, le=1_000_000.0)
     demo_travelers: int = Field(default=1, ge=1, le=9)
     demo_legs: list[DemoLegInput] = Field(default_factory=list, max_length=8)
+    demo_trip_estimate: TripEstimateInput | None = None
     service_tier: ServiceTier = ServiceTier.BASIC
     promo_code: str | None = Field(default=None, max_length=40)
 
@@ -1127,9 +1142,9 @@ class SetCommercialOptionsRequest(BaseModel):
 
 
 class PriceBreakdownDTO(BaseModel):
-    """A transparent, itemised price. Every unavoidable Detoura amount is here
-    and consistent with what search showed - the supplier figure is never
-    quietly inflated."""
+    """A transparent, itemised price. ``supplier_transport`` is the bookable
+    ticket subtotal (whole party) - the whole-trip estimate never leaks in
+    here."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -1144,6 +1159,10 @@ class PriceBreakdownDTO(BaseModel):
     discount: float
     tax: float
     customer_total: float
+    bookable_ticket_subtotal: float = 0.0
+    """Recomputed straight from the per-leg fares; must equal
+    ``supplier_transport`` within rounding tolerance or confirmation is refused."""
+    reconciled: bool = True
     explanation: list[str] = Field(default_factory=list)
 
 
@@ -1228,6 +1247,13 @@ class TravelerInput(BaseModel):
     title: str | None = Field(default=None, max_length=8)
     gender: str | None = Field(default=None, max_length=1)
     nationality: str | None = Field(default=None, max_length=2)
+    # Travel document. Collected per traveller; required only when the route /
+    # provider needs one for issuance. Never reused across passengers; excluded
+    # from analytics, logs, ops metrics, error telemetry and search traces.
+    passport_number: str | None = Field(default=None, max_length=20)
+    passport_issuing_country: str | None = Field(default=None, max_length=2)
+    passport_expiry: date | None = None
+    document_type: str | None = Field(default=None, max_length=16)
 
 
 class SubmitTravelersRequest(BaseModel):
@@ -1275,9 +1301,22 @@ class BookingIntentResponse(BaseModel):
     route_cities: list[str]
     currency: str
     discovered_total: float
+    """The bookable supplier transport subtotal at discovery (whole party) -
+    the flights Detoura can book, NOT the whole-trip estimate."""
     current_total: float | None = None
+    """The bookable supplier transport subtotal at the revalidated fares."""
+    trip_estimate: dict = Field(default_factory=dict)
+    """Display-only: the optimizer's whole-trip estimate and its components
+    (accommodation, transfers) that Detoura is not booking."""
+    price_reconciled: bool = True
+    price_issue: str = ""
+    """Non-empty when the priced supplier transport does not reconcile with the
+    ticket fares; confirmation is refused while it is set."""
     reconfirm_note: str = ""
     party_size: int
+    requested_travelers: int = 1
+    """The journey's authoritative traveller count - the number of distinct
+    Traveler records the booking must carry."""
     travelers_submitted: bool
     service_flow: str = "managed"
     """"self_service" for Basic (traveller books the tickets; no orchestration,

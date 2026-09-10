@@ -77,7 +77,11 @@ export function JourneyEditor({
   const removed = trip.cities.filter((c) => choices[c] === "remove");
   const replaced = trip.cities.filter((c) => choices[c] === "replace");
   const hasEdits = kept.length + removed.length + replaced.length > 0;
-  const canReoptimize = removed.length + replaced.length > 0;
+  // Removing every city would ask for a trip to nowhere; a single-city trip
+  // can only be replaced.
+  const wouldEmpty = removed.length >= trip.cities.length && replaced.length === 0;
+  const canReoptimize = (removed.length + replaced.length > 0) && !wouldEmpty;
+  const removeDisabled = trip.cities.length === 1;
 
   const setChoice = (city: string, choice: CityChoice) => {
     setChoices((c) => ({ ...c, [city]: choice }));
@@ -183,6 +187,12 @@ export function JourneyEditor({
                   <button
                     key={opt}
                     className={`jed__btn${ch === opt ? " is-on" : ""}`}
+                    disabled={opt === "remove" && removeDisabled}
+                    title={
+                      opt === "remove" && removeDisabled
+                        ? "Removing the only stop would leave an empty trip — use Replace"
+                        : undefined
+                    }
                     onClick={() => setChoice(city, ch === opt ? "open" : opt)}
                   >
                     {opt === "keep" ? "Keep" : opt === "remove" ? "Remove" : "Replace"}

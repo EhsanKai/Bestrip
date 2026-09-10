@@ -87,12 +87,18 @@ class Traveler(BaseModel):
     email: str = Field(max_length=120)
     phone: str = Field(max_length=20)
 
-    # Collected only when the tested provider flow needs them.
+    # Collected only when the tested provider flow needs them. Sensitive
+    # document fields never enter analytics, logs, ops metrics, error telemetry
+    # or a search trace - see `public_summary` and `safe_summary`.
     title: TravelerTitle | None = None
     gender: TravelerGender | None = None
     nationality: str | None = Field(default=None, description="ISO 3166-1 alpha-2")
     passport_number: str | None = Field(default=None, max_length=20)
+    passport_issuing_country: str | None = Field(
+        default=None, description="ISO 3166-1 alpha-2"
+    )
     passport_expiry: date | None = None
+    document_type: str | None = Field(default=None, max_length=16)
 
     @field_validator("given_name", "family_name")
     @classmethod
@@ -118,14 +124,14 @@ class Traveler(BaseModel):
             raise ValueError("that does not look like a phone number")
         return value
 
-    @field_validator("nationality")
+    @field_validator("nationality", "passport_issuing_country")
     @classmethod
-    def _nationality_shape(cls, value: str | None) -> str | None:
+    def _country_shape(cls, value: str | None) -> str | None:
         if value is None:
             return None
         value = value.strip().upper()
         if not _IATA2_RE.match(value):
-            raise ValueError("nationality must be a two-letter country code")
+            raise ValueError("country must be a two-letter code")
         return value
 
     @field_validator("born_on", "passport_expiry")
@@ -144,6 +150,18 @@ class Traveler(BaseModel):
     def public_summary(self) -> dict[str, str]:
         """Only what a pass or a progress screen may show. No DOB, no document."""
         return {"name": self.full_name}
+
+    def has_travel_document(self) -> bool:
+        return bool(self.passport_number and self.passport_expiry)
+
+    def safe_summary(self) -> dict[str, object]:
+        """What ops may see for identification: name, email, and *whether* a
+        document is on file - never the number, expiry or DOB."""
+        return {
+            "name": self.full_name,
+            "email": self.email,
+            "has_travel_document": self.has_travel_document(),
+        }
 
 
 class TravelerParty(BaseModel):

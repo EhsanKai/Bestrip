@@ -54,8 +54,10 @@ export function TripDetail({
   // Part 12 wants the full loop - Cologne to Munich to Vienna and home again -
   // not just the destinations. A route that does not return is not a trip.
   const loop = origin ? [origin, ...trip.cities, origin] : trip.cities;
+  // Discoverable on every trip that came from a search: a one-city trip can
+  // still be "replace this city", a multi-city one can keep/remove/replace.
   const canEdit =
-    Boolean(searchRequest) && Boolean(onReoptimized) && trip.cities.length >= 2;
+    Boolean(searchRequest) && Boolean(onReoptimized) && trip.cities.length >= 1;
   return (
     <div className="detail">
       <div className="container">

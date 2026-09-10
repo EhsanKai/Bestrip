@@ -49,6 +49,7 @@ from ..services.acquisition import (
     ProviderCallBudget,
     acquire,
     build_plan,
+    rank_candidates,
 )
 
 #: IATA codes that are already airports rather than catalog cities - the origin
@@ -149,6 +150,7 @@ def acquire_real_supply(
     budget: ProviderCallBudget | None = None,
     cache: ExpiringProviderCache | None = None,
     now: Callable[[], datetime] | None = None,
+    recorder=None,
 ) -> RealSupplyResult:
     """Run one bounded acquisition pass against real Duffel Test Mode.
 
@@ -156,16 +158,46 @@ def acquire_real_supply(
     check and the HTTP client, so this function never sees a credential. The
     cache is injected too, so a caller can share one across a session or pass a
     fresh one per request; a fresh :class:`ExpiringProviderCache` is the default.
+
+    ``recorder`` (V9 Phase 1): an optional
+    :class:`~detoura.services.search_intel_recorder.SearchIntelRecorder`. When
+    given, it scores the candidate destinations against Price Memory and
+    classifies each EXPLOIT/EXPLORE *inside the same budget* (it never raises
+    the ceiling), and every provider call is recorded. It changes which calls
+    are made, never how many.
     """
     clock = now or (lambda: datetime.now(timezone.utc))
+    _budget = budget or ProviderCallBudget()
+    city_airports = city_airport_table(destinations)
+    used_airports = tuple(sorted(airports)[: _budget.max_airport_variants])
+    used_days = tuple(sorted(days)[: _budget.max_date_variants])
+
+    preselected = None
+    if recorder is not None and getattr(recorder, "enabled", False) and used_days:
+        ranked, _ = rank_candidates(
+            destinations, request, limit=_budget.max_destinations,
+            exploration_share=_budget.exploration_share,
+        )
+        # keep a slightly wider pool for the scorer to choose from
+        wide, _ = rank_candidates(
+            destinations, request,
+            limit=min(len(destinations), _budget.max_destinations * 2),
+            exploration_share=_budget.exploration_share,
+        )
+        chosen = recorder.plan_candidates(
+            wide, city_airports=city_airports, origin_airports=used_airports,
+            departure_date=used_days[0], slots=_budget.max_destinations,
+        )
+        preselected = [d.id for d in chosen]
+
     plan = build_plan(
         request,
         destinations=destinations,
         airports=airports,
         days=days,
         budget=budget,
+        preselected=preselected,
     )
-    city_airports = city_airport_table(destinations)
     cache = cache if cache is not None else ExpiringProviderCache()
     metrics = RealSupplyMetrics(edges_planned=plan.planned_request_count)
     unresolved: set[str] = set()
@@ -209,7 +241,20 @@ def acquire_real_supply(
             for option in options
         ]
 
-    snapshot = acquire(plan, fetch, now=clock)
+    active_fetch = fetch
+    if recorder is not None and getattr(recorder, "enabled", False):
+        def _cache_probe(edge: AcquisitionEdge) -> bool:
+            o = resolve_airport(edge.origin, city_airports)
+            d = resolve_airport(edge.destination, city_airports)
+            if not o or not d:
+                return False
+            return cache.contains((o, d, edge.day, edge.travelers))
+        active_fetch = recorder.wrap_fetch(
+            fetch, cache_probe=_cache_probe,
+            resolve=lambda node: resolve_airport(node, city_airports),
+        )
+
+    snapshot = acquire(plan, active_fetch, now=clock)
 
     metrics.cache_hits = cache.stats.hits
     metrics.cache_misses = cache.stats.misses

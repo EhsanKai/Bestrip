@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -171,6 +171,89 @@ CREATE INDEX IF NOT EXISTS ix_ticketops_state ON ticket_operations (state);
 CREATE UNIQUE INDEX IF NOT EXISTS ix_ticketops_idem
     ON ticket_operations (idempotency_key)
     WHERE idempotency_key != '';
+
+-- ==================================================================
+-- V9 Phase 1: Search Intelligence — persistent market observation.
+--
+-- price_observations is HISTORICAL MARKET DATA, not a price cache and never a
+-- live quote. It survives cache expiry and process restarts; it is read only
+-- by acquisition scoring and analytics, never by checkout/revalidation. Money
+-- is integer minor units + explicit currency. Retention-pruned by age
+-- (PRICE_MEMORY_RETENTION_DAYS); booking_economics and audit_events are never
+-- touched by that prune.
+-- ==================================================================
+CREATE TABLE IF NOT EXISTS price_observations (
+    observation_id        TEXT PRIMARY KEY,
+    observed_at           TEXT NOT NULL,
+    provider              TEXT NOT NULL,
+    origin                TEXT NOT NULL,
+    destination           TEXT NOT NULL,
+    departure_date        TEXT NOT NULL,
+    return_date           TEXT,
+    trip_shape            TEXT NOT NULL DEFAULT 'ONE_WAY',
+    travelers             INTEGER NOT NULL DEFAULT 1,
+    travelers_bucket      TEXT NOT NULL DEFAULT '1',
+    total_amount_minor    INTEGER NOT NULL,
+    per_person_minor      INTEGER NOT NULL,
+    currency              TEXT NOT NULL,
+    direct                INTEGER,
+    stops                 INTEGER,
+    marketing_carrier     TEXT,
+    operating_carrier     TEXT,
+    cabin                 TEXT,
+    baggage_cabin         TEXT,
+    baggage_checked       TEXT,
+    offer_count_for_edge  INTEGER,
+    search_id             TEXT NOT NULL,
+    acquisition_call_id   TEXT NOT NULL,
+    search_mode           TEXT NOT NULL DEFAULT 'UNKNOWN',
+    candidate_reason      TEXT NOT NULL DEFAULT '',
+    exploration           INTEGER NOT NULL DEFAULT 0,
+    candidate_rank        INTEGER,
+    provider_call_ordinal INTEGER,
+    provider_call_budget  INTEGER,
+    normalized_ok         INTEGER NOT NULL DEFAULT 1,
+    retained_after_limits INTEGER NOT NULL DEFAULT 1,
+    entered_candidate_set INTEGER NOT NULL DEFAULT 0,
+    contributed_to_top_k  INTEGER NOT NULL DEFAULT 0,
+    contributed_to_winner INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_priceobs_market
+    ON price_observations (provider, origin, destination, departure_date, travelers_bucket);
+CREATE INDEX IF NOT EXISTS ix_priceobs_observed ON price_observations (observed_at);
+CREATE INDEX IF NOT EXISTS ix_priceobs_search ON price_observations (search_id);
+CREATE INDEX IF NOT EXISTS ix_priceobs_call ON price_observations (acquisition_call_id);
+
+-- One row per real-supply search. The trace body (candidate decisions, per-call
+-- outcomes, economics) is a JSON blob; the promoted columns are what the Ops
+-- coverage/economics queries filter and aggregate on. No traveller PII.
+CREATE TABLE IF NOT EXISTS search_traces (
+    search_id             TEXT PRIMARY KEY,
+    started_at            TEXT NOT NULL,
+    finished_at           TEXT,
+    provider              TEXT NOT NULL DEFAULT 'duffel',
+    origin                TEXT NOT NULL,
+    date_from             TEXT NOT NULL,
+    date_to               TEXT NOT NULL,
+    search_mode           TEXT NOT NULL DEFAULT 'UNKNOWN',
+    travelers             INTEGER NOT NULL DEFAULT 1,
+    provider_call_budget  INTEGER NOT NULL DEFAULT 0,
+    provider_calls_used   INTEGER NOT NULL DEFAULT 0,
+    provider_calls_failed INTEGER NOT NULL DEFAULT 0,
+    cache_hits            INTEGER NOT NULL DEFAULT 0,
+    cache_misses          INTEGER NOT NULL DEFAULT 0,
+    calls_explore         INTEGER NOT NULL DEFAULT 0,
+    calls_exploit         INTEGER NOT NULL DEFAULT 0,
+    recommendations_produced INTEGER NOT NULL DEFAULT 0,
+    useful_call_rate      REAL,
+    top_k_contribution_rate REAL,
+    winner_contribution_rate REAL,
+    excess_search_cost_minor INTEGER,
+    economics_configured  INTEGER NOT NULL DEFAULT 0,
+    trace_json            TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS ix_searchtrace_started ON search_traces (started_at);
+CREATE INDEX IF NOT EXISTS ix_searchtrace_origin ON search_traces (origin);
 
 CREATE TABLE IF NOT EXISTS booking_items (
     booking_id          TEXT NOT NULL,

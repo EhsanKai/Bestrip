@@ -115,6 +115,30 @@ class ProviderAcquisitionPlan:
         return self.dropped_edges > 0 or bool(self.dropped_destinations)
 
 
+def preference_affinity(
+    destinations: Sequence[Destination], request: TripRequest,
+) -> dict[str, float]:
+    """``destination id -> preference affinity in ~[0, 1]``.
+
+    The same signal :func:`rank_candidates` ranks on, exposed so the V9
+    search-intelligence layer can feed it into acquisition scoring without
+    re-deriving it. Preference only — no historical price, no protected
+    attribute.
+    """
+    weights = request.preferences.experience_weights()
+    out: dict[str, float] = {}
+    for d in destinations:
+        profile = d.experience_vector()
+        if weights:
+            total = sum(weights.values())
+            score = sum(profile[n] * w for n, w in weights.items())
+            score = score / total if total else 0.0
+        else:
+            score = d.richness
+        out[d.id] = round(max(0.0, min(1.0, score)), 4)
+    return out
+
+
 def rank_candidates(
     destinations: Sequence[Destination],
     request: TripRequest,
@@ -245,15 +269,27 @@ def build_plan(
     airports: Sequence[str],
     days: Sequence[date],
     budget: ProviderCallBudget | None = None,
+    preselected: Sequence[str] | None = None,
 ) -> ProviderAcquisitionPlan:
-    """Decide the whole question set up front, inside the budget."""
+    """Decide the whole question set up front, inside the budget.
+
+    ``preselected`` (V9): a caller that has already chosen which destination
+    ids to acquire — e.g. the search-intelligence recorder after explore/exploit
+    allocation — passes them here, in order, and the internal preference
+    ranking is skipped. The budget's other ceilings still bind.
+    """
     budget = budget or ProviderCallBudget()
-    chosen, dropped = rank_candidates(
-        destinations,
-        request,
-        limit=budget.max_destinations,
-        exploration_share=budget.exploration_share,
-    )
+    if preselected is not None:
+        by_id = {d.id: d for d in destinations}
+        chosen = [by_id[i] for i in preselected if i in by_id][: budget.max_destinations]
+        dropped = [d for d in destinations if d.id not in {c.id for c in chosen}]
+    else:
+        chosen, dropped = rank_candidates(
+            destinations,
+            request,
+            limit=budget.max_destinations,
+            exploration_share=budget.exploration_share,
+        )
     travelers = max(request.travelers, 1)
     used_airports = tuple(sorted(airports)[: budget.max_airport_variants])
     used_days = tuple(sorted(days)[: budget.max_date_variants])

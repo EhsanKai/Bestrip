@@ -297,6 +297,13 @@ class ExpiringProviderCache(Generic[K, V]):
         self._store(key, value, now, expires_at)
         return value
 
+    def contains(self, key: K) -> bool:
+        """Whether a *live* (unexpired) entry exists for ``key``. Read-only —
+        does not touch stats or LRU order. Used by observability to tell a
+        provider call from a cache hit before the call is made."""
+        entry = self._entries.get(key)
+        return entry is not None and entry.expires_at > self._clock()
+
     def _store(
         self, key: K, value: V, now: datetime, provider_expiry: datetime | None
     ) -> None:

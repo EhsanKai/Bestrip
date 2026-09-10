@@ -38,6 +38,9 @@ class LiveSearchResult:
     supply: RealSupplyResult
     selection_ids: dict[str, str]
     """recommendation id -> selection id, for the ones that could be recorded."""
+    search_trace: object | None = None
+    """The persisted :class:`SearchIntelligenceTrace` when a recorder was
+    supplied (V9 Phase 1), else ``None``."""
 
 
 def _selected_offers_for(trip: Itinerary, travelers: int) -> list[SelectedOffer] | None:
@@ -84,11 +87,19 @@ def live_search(
     budget: ProviderCallBudget | None = None,
     cache: ExpiringProviderCache | None = None,
     config: PlannerConfig | None = None,
+    recorder=None,
 ) -> LiveSearchResult:
-    """Run a real Duffel-backed search and record each recommendation's offers."""
+    """Run a real Duffel-backed search and record each recommendation's offers.
+
+    ``recorder`` (V9 Phase 1): an optional ``SearchIntelRecorder``. When given,
+    the search teaches Detoura something — candidate scoring, per-call
+    observation, contribution attribution and a persisted trace — without
+    changing ranking, pricing or the zero-network-beam invariant.
+    """
     supply = acquire_real_supply(
         request, duffel=duffel, destinations=destinations,
         airports=airports, days=days, budget=budget, cache=cache,
+        recorder=recorder,
     )
     served = SnapshotTransportProvider(supply.snapshot, travelers=max(request.travelers, 1))
     planner = TravelPlanner(
@@ -96,6 +107,16 @@ def live_search(
         transport_provider=served,
     )
     result = planner.plan(request)
+
+    trace = None
+    if recorder is not None and getattr(recorder, "enabled", False):
+        recorder.attribute(result.recommendations)
+        m = supply.metrics
+        trace = recorder.finalize(
+            cache_hits=m.cache_hits, cache_misses=m.cache_misses,
+            provider_calls_used=m.provider_calls,
+            recommendations_produced=len(result.recommendations),
+        )
 
     selection_ids: dict[str, str] = {}
     for rank, trip in enumerate(result.recommendations):
@@ -115,4 +136,5 @@ def live_search(
         recommendations=list(result.recommendations),
         supply=supply,
         selection_ids=selection_ids,
+        search_trace=trace,
     )

@@ -73,6 +73,16 @@ class TransportOption(BaseModel):
     as a stale price and must never be rendered as a fresh one.
     """
 
+    acquisition_call_id: str = ""
+    """Stable provenance id of the acquisition call that produced this option
+    (V9 Phase 1). Set by :mod:`detoura.services.real_supply` during acquisition
+    and carried untouched through the optimizer into ``Itinerary.legs``, so the
+    search-intelligence recorder can attribute an optimizer result back to the
+    exact provider call. ``""`` for synthetic supply and for options that never
+    went through instrumented acquisition. Purely observational - it changes no
+    pricing or booking behaviour.
+    """
+
     def has_seats_for(self, travelers: int) -> bool:
         """Whether the whole party can still be seated on this leg (V4)."""
         if self.seats_available is None:

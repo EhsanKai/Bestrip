@@ -54,8 +54,9 @@ export function RecoveryView({ onExpire }: { onExpire: () => void }) {
       <h2>Recovery Center</h2>
       <p className="ops-muted">
         Journeys that stopped short of a clean booking. None of these appears to
-        a customer as “booked”. Operator recovery actions arrive in a later
-        phase — this queue is inspect-only for now.
+        a customer as “booked”. Open one to run the recovery workflow on a
+        ticket — inspect → revalidate → find replacement → compare → approve →
+        execute. Executing records the approved decision; it never auto-books.
       </p>
       {error && <p className="ops-error">{error}</p>}
 

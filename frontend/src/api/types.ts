@@ -643,6 +643,11 @@ export interface BookingItemStateDTO {
   arrival: string;
   carrier: string;
   flight_number: string;
+  carrier_name?: string;
+  carrier_logo_key?: string;
+  operating_carrier?: string;
+  operating_carrier_name?: string;
+  operating_flight_number?: string;
   cabin_baggage: string;
   checked_baggage: string;
   price_per_person: number;

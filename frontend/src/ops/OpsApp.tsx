@@ -13,6 +13,7 @@ import { CommercialView } from "./OpsCommercial";
 import { PromosView } from "./OpsPromos";
 import { FinanceView } from "./OpsFinance";
 import { AnalyticsView } from "./OpsAnalytics";
+import { AirlinesView } from "./OpsAirlines";
 import "./ops.css";
 
 type View =
@@ -22,6 +23,7 @@ type View =
   | "promos"
   | "finance"
   | "analytics"
+  | "airlines"
   | "audit";
 
 const NAV: { id: View; label: string }[] = [
@@ -31,6 +33,7 @@ const NAV: { id: View; label: string }[] = [
   { id: "promos", label: "Promos" },
   { id: "finance", label: "Finance" },
   { id: "analytics", label: "Analytics" },
+  { id: "airlines", label: "Airlines" },
   { id: "audit", label: "Audit log" },
 ];
 
@@ -135,6 +138,7 @@ export function OpsApp() {
         {view === "promos" && <PromosView onExpire={() => setAuthed(false)} />}
         {view === "finance" && <FinanceView onExpire={() => setAuthed(false)} />}
         {view === "analytics" && <AnalyticsView onExpire={() => setAuthed(false)} />}
+        {view === "airlines" && <AirlinesView onExpire={() => setAuthed(false)} />}
         {view === "audit" && <AuditView onExpire={() => setAuthed(false)} />}
       </main>
     </div>

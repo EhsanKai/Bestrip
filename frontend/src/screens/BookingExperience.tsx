@@ -20,6 +20,49 @@ import { money, signedMoney, clockTime, dayMonth } from "../lib/format";
 import { funnel } from "../lib/funnel";
 import "./BookingExperience.css";
 
+/**
+ * [airline badge] Airline Name · Flight Number, with a graceful fallback to
+ * [generic badge] Carrier Code · Flight Number when we don't have the name.
+ * A missing logo/name never hides the ticket. No airline names or logos are
+ * hardcoded here — the server resolves them from centralized AirlineMetadata.
+ */
+function AirlineTag({
+  code,
+  name,
+  flightNumber,
+  operatingCode,
+  operatingName,
+}: {
+  code?: string;
+  name?: string;
+  flightNumber?: string;
+  operatingCode?: string;
+  operatingName?: string;
+}) {
+  const label = name || code || "—";
+  const known = Boolean(name && name !== code);
+  return (
+    <span className="airline-tag">
+      <span
+        className={`airline-tag__badge${known ? "" : " airline-tag__badge--generic"}`}
+        aria-hidden="true"
+      >
+        {(code || "?").slice(0, 2)}
+      </span>
+      <span>
+        {label}
+        {flightNumber ? ` · ${code || ""}${flightNumber}` : ""}
+        {operatingCode && operatingCode !== code ? (
+          <span className="airline-tag__op">
+            {" "}
+            operated by {operatingName || operatingCode}
+          </span>
+        ) : null}
+      </span>
+    </span>
+  );
+}
+
 type Phase =
   | "tier"
   | "traveler"
@@ -751,7 +794,7 @@ function ReviewStep({
                 </b>
                 <span className="booking__ticket-meta">
                   {dayMonth(it.departure)} · {clockTime(it.departure)}–
-                  {clockTime(it.arrival)} · {it.carrier || leg?.operator || "—"}
+                  {clockTime(it.arrival)}
                 </span>
                 <span className="numeric">{money2(it.price_per_person, it.currency)}</span>
               </summary>
@@ -767,7 +810,13 @@ function ReviewStep({
                 <div>
                   <dt>Flight</dt>
                   <dd>
-                    {it.carrier || "—"} {it.flight_number}
+                    <AirlineTag
+                      code={it.carrier || leg?.operator?.split(" ")[0]}
+                      name={it.carrier_name}
+                      flightNumber={it.flight_number}
+                      operatingCode={it.operating_carrier}
+                      operatingName={it.operating_carrier_name}
+                    />
                   </dd>
                 </div>
               </dl>

@@ -557,3 +557,124 @@
     background: #0d1420;
   }
 }
+
+/* --- C3: ticket operations, airline report --- */
+.ops-tops {
+  margin-top: 12px;
+  border-top: 1px dashed var(--ops-border);
+  padding-top: 10px;
+  display: grid;
+  gap: 12px;
+}
+.ops-tops__block h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ops-muted);
+}
+.ops-tops__quote,
+.ops-tops__result {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--ops-border);
+  background: var(--ops-surface);
+  font-size: 12px;
+}
+.ops-tops__result.is-ok {
+  border-left: 3px solid #2e9e5b;
+}
+.ops-tops__result.is-bad {
+  border-left: 3px solid #d1453b;
+}
+.ops-tops__ae {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+}
+.ops-tops__ae .ops-search {
+  flex: 1;
+  min-width: 200px;
+}
+.ops-action--warn {
+  border-color: #c9922e;
+  color: #a9741a;
+}
+.ops-action--danger {
+  background: #d1453b;
+  color: #fff;
+  border-color: #d1453b;
+}
+.ops-tops__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px 12px;
+  margin: 8px 0;
+}
+.ops-tops__grid label {
+  display: grid;
+  gap: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ops-muted);
+}
+.ops-tops__grid input {
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--ops-border);
+  background: var(--ops-bg);
+  color: var(--ops-text);
+}
+.ops-tops__compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 8px 0;
+}
+.ops-tops__compare > div {
+  border: 1px solid var(--ops-border);
+  padding: 8px;
+  font-size: 12px;
+}
+.ops-tops__compare b {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ops-muted);
+}
+.ops-seg {
+  display: inline-flex;
+  border: 1px solid var(--ops-border);
+}
+.ops-seg button {
+  background: var(--ops-surface);
+  color: var(--ops-muted);
+  border: 0;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+.ops-seg button.is-on {
+  background: var(--ops-accent);
+  color: #fff;
+}
+.ops-airline {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.ops-airline__code {
+  font-family: ui-monospace, monospace;
+  font-weight: 800;
+  background: var(--ops-surface);
+  border: 1px solid var(--ops-border);
+  padding: 1px 5px;
+  font-size: 10px;
+}

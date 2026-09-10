@@ -36,6 +36,7 @@ from ..providers.failures import FailureLog, ProviderFailureKind
 from ..search_modes import MODE_SETTINGS, SearchMode, apply_mode
 from ..services.budget_sensitivity import analyze_budget_sensitivity
 from ..services.feedback import record_feedback
+from ..models.airline import airline_for
 from ..models.booking import BookingState, PriceTolerance
 from ..models.traveler import Traveler, TravelerGender, TravelerParty, TravelerTitle
 from ..providers.duffel import DuffelTransportProvider, is_test_token
@@ -693,6 +694,14 @@ def _intent_dto(run) -> BookingIntentResponse:
                 destination_city=i.destination_city, destination_airport=i.destination_airport,
                 departure=i.departure, arrival=i.arrival,
                 carrier=i.carrier, flight_number=i.flight_number,
+                carrier_name=airline_for(i.carrier, name=i.carrier_name).display_name,
+                carrier_logo_key=airline_for(i.carrier, name=i.carrier_name).logo_key,
+                operating_carrier=i.operating_carrier,
+                operating_carrier_name=(
+                    airline_for(i.operating_carrier).display_name
+                    if i.operating_carrier else ""
+                ),
+                operating_flight_number=i.operating_flight_number,
                 cabin_baggage=i.cabin_baggage, checked_baggage=i.checked_baggage,
                 price_per_person=i.quoted_price, current_price=i.current_price,
                 currency=i.currency, state=i.state, detail=i.detail,

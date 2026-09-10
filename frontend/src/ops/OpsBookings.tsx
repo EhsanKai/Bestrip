@@ -13,6 +13,7 @@ import {
   unknownOrMoney,
   when,
 } from "./opsFormat";
+import { TicketOpsPanel } from "./TicketOps";
 
 const PHASES = [
   "",
@@ -226,7 +227,21 @@ export function BookingDetailPanel({
             <dl className="ops-kv ops-kv--tight">
               <div><dt>Departs</dt><dd>{when(it.departure)}</dd></div>
               <div><dt>Arrives</dt><dd>{when(it.arrival)}</dd></div>
-              <div><dt>Carrier</dt><dd>{it.carrier || "—"} {it.flight_number}</dd></div>
+              <div>
+                <dt>Marketing carrier</dt>
+                <dd>
+                  {it.carrier_name || it.carrier || "—"}{" "}
+                  {it.carrier && `(${it.carrier})`} {it.flight_number}
+                </dd>
+              </div>
+              <div>
+                <dt>Operating carrier</dt>
+                <dd>
+                  {it.operating_carrier
+                    ? `${it.operating_carrier} ${it.operating_flight_number}`.trim()
+                    : "same as marketing"}
+                </dd>
+              </div>
               <div><dt>Provider</dt><dd>{it.provider || "—"}</dd></div>
               <div><dt>Offer id</dt><dd className="ops-mono ops-ellipsis">{it.offer_id || "—"}</dd></div>
               <div><dt>Duffel order</dt><dd className="ops-mono">{it.duffel_order_id || "—"}</dd></div>
@@ -237,19 +252,12 @@ export function BookingDetailPanel({
               <div><dt>Checked bag</dt><dd>{it.checked_baggage}</dd></div>
             </dl>
             {it.detail && <p className="ops-ticket__detail">{it.detail}</p>}
-            <div className="ops-actions">
-              {it.actions.map((a) => (
-                <button
-                  key={a.action}
-                  className="ops-action"
-                  disabled={!a.enabled}
-                  title={a.reason || undefined}
-                >
-                  {a.action.replace(/_/g, " ")}
-                  {!a.enabled && <span className="ops-action__na">not implemented</span>}
-                </button>
-              ))}
-            </div>
+            <TicketOpsPanel
+              booking={d}
+              item={it}
+              onChanged={load}
+              onExpire={onExpire}
+            />
           </div>
         ))}
       </div>

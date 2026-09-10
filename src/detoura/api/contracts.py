@@ -1278,6 +1278,11 @@ class BookingItemStateDTO(BaseModel):
     arrival: datetime
     carrier: str = ""
     flight_number: str = ""
+    carrier_name: str = ""
+    carrier_logo_key: str = ""
+    operating_carrier: str = ""
+    operating_carrier_name: str = ""
+    operating_flight_number: str = ""
     cabin_baggage: str = "unknown"
     checked_baggage: str = "unknown"
     price_per_person: float

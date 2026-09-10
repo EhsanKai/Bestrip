@@ -84,6 +84,9 @@ export interface OpsBookingItem {
   arrival: string | null;
   carrier: string;
   flight_number: string;
+  carrier_name: string;
+  operating_carrier: string;
+  operating_flight_number: string;
   offer_id: string;
   provider: string;
   duffel_order_id: string | null;
@@ -153,11 +156,58 @@ export interface OpsAuditEvent {
   note: string;
 }
 
+export interface TicketOperation {
+  operation_id: string;
+  booking_id: string;
+  sequence: number;
+  kind: "CANCELLATION" | "CHANGE" | "RECOVERY";
+  state: string;
+  provider: string;
+  provider_order_id: string | null;
+  reason: string;
+  actor: string;
+  created_at: string;
+  updated_at: string;
+  quote: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
+  is_terminal: boolean;
+}
+
 export interface OpsBookingDetail extends OpsBookingSummary {
   reconfirm_note: string;
   items: OpsBookingItem[];
   economics: OpsEconomics | null;
   audit: OpsAuditEvent[];
+  operations: TicketOperation[];
+}
+
+export interface AirlineStat {
+  iata_code: string;
+  name: string;
+  logo_key: string;
+  tickets_total: number;
+  tickets_issued: number;
+  tickets_failed: number;
+  bookings: number;
+  supplier_spend: number;
+  avg_fare: number | null;
+  issuance_failure_rate: number | null;
+  detoura_revenue_gross: number;
+  detoura_margin_known: number | null;
+  margin_bookings: number;
+  cancellations: number;
+  changes: number;
+  recoveries: number;
+  cancellation_rate: number;
+  change_rate: number;
+  currency: string;
+}
+
+export interface AirlineReport {
+  dimension: "marketing" | "operating";
+  test_data: boolean;
+  window: { since: string | null; until: string | null };
+  airlines: AirlineStat[];
 }
 
 export interface OpsBookingsPage {
@@ -384,6 +434,47 @@ export const opsApi = {
       `/promos/${encodeURIComponent(code)}/${enabled ? "enable" : "disable"}`,
       { method: "POST" },
     ),
+
+  // --- C3: ticket operations (cancellation / change / recovery) ---
+  ticketOp: {
+    cancellationEligibility: (bookingId: string, seq: number) =>
+      req<TicketOperation>(
+        `/bookings/${encodeURIComponent(bookingId)}/tickets/${seq}/cancellation/eligibility`,
+        { method: "POST" },
+      ),
+    changeCapability: (bookingId: string, seq: number) =>
+      req<TicketOperation>(
+        `/bookings/${encodeURIComponent(bookingId)}/tickets/${seq}/change/capability`,
+        { method: "POST" },
+      ),
+    startRecovery: (bookingId: string, seq: number, reason: string) =>
+      req<TicketOperation>(
+        `/bookings/${encodeURIComponent(bookingId)}/tickets/${seq}/recovery`,
+        { method: "POST", body: JSON.stringify({ reason }) },
+      ),
+    step: (
+      operationId: string,
+      kind: "cancellation" | "change" | "recovery",
+      step: "approve" | "execute" | "candidate" | "abandon",
+      body: Record<string, unknown> = {},
+    ) =>
+      req<TicketOperation>(
+        `/operations/${encodeURIComponent(operationId)}/${kind}/${step}`,
+        { method: "POST", body: JSON.stringify(body) },
+      ),
+    get: (operationId: string) =>
+      req<TicketOperation>(`/operations/${encodeURIComponent(operationId)}`),
+  },
+  airlines: (
+    params: { dimension?: "marketing" | "operating"; since?: string; until?: string } = {},
+  ) => {
+    const q = new URLSearchParams();
+    if (params.dimension) q.set("dimension", params.dimension);
+    if (params.since) q.set("since", params.since);
+    if (params.until) q.set("until", params.until);
+    const s = q.toString();
+    return req<AirlineReport>(`/airlines${s ? `?${s}` : ""}`);
+  },
 
   finance: (win: { since?: string; until?: string } = {}) => {
     const q = new URLSearchParams();

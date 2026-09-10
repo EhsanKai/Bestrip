@@ -67,6 +67,11 @@ from ..providers.http import (
 
 DEMO_STATE = "NOT_SUPPORTED_IN_DEMO"
 
+#: An EXECUTING claim older than this is treated as abandoned (the claiming
+#: process died mid-execute) and may be reclaimed for a retry. Longer than any
+#: plausible provider round-trip plus the retry ceiling.
+_EXECUTING_STALE_SECONDS = 120
+
 
 class TicketOpError(Exception):
     """A workflow-level problem (wrong state, unknown target, provider refusal).
@@ -249,7 +254,18 @@ def execute_cancellation(
     if op.state in CANCELLATION_TERMINAL or op.state == DEMO_STATE:
         return op  # already done; do not call the provider again
     if op.state == CancellationState.EXECUTING.value:
-        return op  # a concurrent execute holds the claim; in flight
+        # A claim is held. If it is fresh, a concurrent execute is in flight -
+        # return the in-flight op. If it is stale (the claiming process died
+        # between the provider call and the result write), reclaim it so an
+        # operator can retry rather than facing a permanently wedged row.
+        age = (datetime.now(timezone.utc) - op.updated_at).total_seconds()
+        if age < _EXECUTING_STALE_SECONDS or not ops_store.claim(
+            db, operation_id,
+            from_state=CancellationState.EXECUTING.value,
+            to_state=CancellationState.APPROVED.value,
+        ):
+            return op
+        op = ops_store.get(db, operation_id)  # type: ignore[assignment]
     if op.state != CancellationState.APPROVED.value:
         raise TicketOpError(
             f"A cancellation must be approved before it is executed "

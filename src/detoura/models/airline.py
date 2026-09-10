@@ -22,7 +22,13 @@ hides a ticket.
 
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, ConfigDict, Field
+
+#: A plausible IATA airline designator: two or three letters/digits. Anything
+#: else (a synthetic label, a full name, empty) resolves to the unknown code.
+_IATA_RE = re.compile(r"^[A-Z0-9]{2,3}$")
 
 
 class AirlineMetadata(BaseModel):
@@ -98,12 +104,16 @@ def airline_for(iata_code: str | None, *, name: str | None = None,
     """Resolve a carrier. Provider-supplied ``name``/``icao`` win over the
     catalogue; the catalogue fills the gaps; an unknown code still yields a
     usable object (code as name, empty logo key)."""
-    code = (iata_code or "").strip().upper() or "??"
+    raw = (iata_code or "").strip().upper()
+    code = raw if _IATA_RE.match(raw) else "??"
     cat = _CATALOGUE.get(code)
     cat_name, cat_icao, logo_key = cat if cat else ("", None, "")
+    # A non-IATA carrier string (e.g. a synthetic label) is not a name either -
+    # keep it out of display unless a real name was supplied.
+    fallback_name = raw if (raw and code == "??" and " " in raw) else ""
     return AirlineMetadata(
-        iata_code=code if len(code) >= 2 else "??",
-        name=(name or "").strip() or cat_name,
+        iata_code=code,
+        name=(name or "").strip() or cat_name or fallback_name,
         icao_code=(icao or "").strip().upper() or cat_icao,
         logo_key=logo_key,
         provider_ref=provider_ref,

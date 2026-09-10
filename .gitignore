@@ -29,9 +29,13 @@ htmlcov/
 .agents/
 .claude/
 .claude-flow/
+.codex/
 .swarm/
 .mcp.json
 ruvector.db
 detoura.db
 *.db-shm
 *.db-wal
+
+# Local build artifact — a 26MB zip of the client bundle, not a source input.
+frontend.zip

@@ -15,6 +15,8 @@ import {
   type BookingIntent,
   type BudgetSensitivityResponse,
   type CreateBookingIntentRequest,
+  type ReoptimizeRequest,
+  type ReoptimizeResponse,
   type DestinationSummary,
   type OriginResponse,
   type CommercialPreviewResponse,
@@ -106,6 +108,13 @@ export const api = {
 
   /** Re-price a saved trip. The trip travels with the request because saved
    *  trips live in this browser and the server stores nothing. */
+  reoptimize(body: ReoptimizeRequest) {
+    return request<ReoptimizeResponse>("/trips/reoptimize", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
   recheck(body: TripRecheckRequest, signal?: AbortSignal) {
     return request<TripRecheckResponse>("/trips/recheck", {
       method: "POST",

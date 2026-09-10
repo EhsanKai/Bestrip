@@ -121,6 +121,17 @@ export default function App() {
     funnel("TRIP_OPEN", { props: { rank: trip.rank } });
   }, []);
 
+  // Accepting a re-optimized journey replaces the selection. The old journey
+  // is still in `search.response.recommendations` (Keep original just returns
+  // there); the new one becomes the thing that gets booked, and because its id
+  // differs, the booking flow remounts clean.
+  const acceptReoptimized = useCallback((next: TripRecommendation) => {
+    setComparing([]);
+    setSelected(next);
+    window.scrollTo({ top: 0 });
+    track("result_viewed", { trip_id: next.id, rank: next.rank });
+  }, []);
+
   const comparedTrips = (search.response?.recommendations ?? []).filter((trip) =>
     comparing.includes(trip.id),
   );
@@ -196,14 +207,20 @@ export default function App() {
             trip={selected}
             saved={saved.ids.includes(selected.id)}
             origin={search.response?.origin ?? search.request?.origin}
+            searchRequest={search.request ?? undefined}
             onBack={() => setScreen("results")}
             onSave={toggleSaved}
             onBook={() => setScreen("booking")}
+            onReoptimized={acceptReoptimized}
           />
         )}
 
         {screen === "booking" && selected && (
           <BookingExperience
+            // Keyed by trip id: accepting a re-optimized journey swaps
+            // `selected`, which fully remounts the booking flow so no stale
+            // intent, offer or revalidation from the previous journey survives.
+            key={selected.id}
             trip={selected}
             onBack={() => setScreen("results")}
             onViewDetails={() => setScreen("detail")}

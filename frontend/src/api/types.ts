@@ -419,6 +419,78 @@ export interface DemoLegInput {
 
 export type ServiceTier = "BASIC" | "ALL_IN_ONE";
 
+/* --- Interactive journey re-optimization (V7 Phase 2 backend) --- */
+export type CityEditOp = "lock_city" | "remove_city" | "replace_city";
+
+export interface TripEditOperation {
+  op: CityEditOp;
+  city: string;
+  replacement?: string | null;
+}
+
+export interface ReoptimizeRequest {
+  trip_id: string;
+  search: TripSearchRequest;
+  trip: SelectedTripPayload;
+  patch: { operations: TripEditOperation[] };
+}
+
+export interface SelectedTripPayload {
+  cities: string[];
+  origin_airport: string;
+  return_airport: string;
+  departure: string;
+  arrival: string;
+  duration_days: number;
+  total_price: number;
+  intercity_minutes: number;
+  transfer_minutes: number;
+  usable_minutes: number;
+  experience_score: number;
+  preference_match: number;
+  accommodation_score: number;
+  legs: {
+    from: string;
+    to: string;
+    departure: string;
+    operator: string;
+    price_per_person: number;
+  }[];
+  stays: {
+    city: string;
+    arrival: string;
+    departure: string;
+    cost: number;
+    name?: string | null;
+  }[];
+}
+
+export interface ChangeDiff {
+  requested: string[];
+  cities_kept: string[];
+  cities_removed: string[];
+  cities_added: string[];
+  order_preserved: boolean;
+  price_delta: number;
+  transit_delta_hours: number;
+  usable_delta_hours: number;
+  improvements: string[];
+  costs: string[];
+  summary: string;
+}
+
+export interface ReoptimizeResponse {
+  trip_id: string;
+  trip: TripRecommendation | null;
+  alternatives: TripRecommendation[];
+  diff: ChangeDiff | null;
+  locked: string[];
+  excluded: string[];
+  unsupported_operations: string[];
+  considered: number;
+  warnings: string[];
+}
+
 export interface CreateBookingIntentRequest {
   selection_id?: string | null;
   demo_trip_label?: string;

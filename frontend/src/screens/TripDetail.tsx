@@ -1,4 +1,6 @@
-import type { TripRecommendation } from "../api/types";
+import { useState } from "react";
+import type { TripRecommendation, TripSearchRequest } from "../api/types";
+import { JourneyEditor } from "./JourneyEditor";
 import { RouteMap } from "../components/trip/RouteMap";
 import { Timeline } from "../components/trip/Timeline";
 import {
@@ -21,9 +23,13 @@ interface Props {
   saved: boolean;
   /** The traveller's own city, so the map can draw the whole loop. */
   origin?: string;
+  /** The search this trip came from — needed to re-optimize an edit of it. */
+  searchRequest?: TripSearchRequest;
   onBack: () => void;
   onSave: (trip: TripRecommendation) => void;
   onBook: () => void;
+  /** Replace the selected journey with an accepted re-optimized one. */
+  onReoptimized?: (next: TripRecommendation) => void;
 }
 
 /**
@@ -34,16 +40,43 @@ interface Props {
  * in reading order — map, summary, itinerary — because a timeline is what you
  * scroll and a map is what you glance at.
  */
-export function TripDetail({ trip, saved, origin, onBack, onSave, onBook }: Props) {
+export function TripDetail({
+  trip,
+  saved,
+  origin,
+  searchRequest,
+  onBack,
+  onSave,
+  onBook,
+  onReoptimized,
+}: Props) {
+  const [editing, setEditing] = useState(false);
   // Part 12 wants the full loop - Cologne to Munich to Vienna and home again -
   // not just the destinations. A route that does not return is not a trip.
   const loop = origin ? [origin, ...trip.cities, origin] : trip.cities;
+  const canEdit =
+    Boolean(searchRequest) && Boolean(onReoptimized) && trip.cities.length >= 2;
   return (
     <div className="detail">
       <div className="container">
         <button className="detail__back" onClick={onBack}>
           <span aria-hidden="true">←</span> Back to results
         </button>
+
+        {editing && searchRequest && onReoptimized && (
+          <div className="detail__editor">
+            <JourneyEditor
+              trip={trip}
+              searchRequest={searchRequest}
+              originCity={origin}
+              onCancel={() => setEditing(false)}
+              onAccept={(next) => {
+                setEditing(false);
+                onReoptimized(next);
+              }}
+            />
+          </div>
+        )}
 
         <header className="detail__header">
           <div>
@@ -70,6 +103,22 @@ export function TripDetail({ trip, saved, origin, onBack, onSave, onBook }: Prop
           <AvailabilityBadge status={trip.availability} />
           <PriceFreshnessBadge status={trip.price_freshness} />
         </div>
+
+        {canEdit && !editing && (
+          <div className="detail__edit-cta">
+            <div>
+              <strong>Not quite right?</strong>
+              <span className="muted">
+                {" "}
+                Keep the stops you love, drop the ones you don’t, and let Detoura
+                re-optimize the rest.
+              </span>
+            </div>
+            <Button variant="secondary" onClick={() => setEditing(true)}>
+              Edit journey
+            </Button>
+          </div>
+        )}
 
         <div className="detail__layout">
           <div className="detail__timeline">

@@ -47,6 +47,25 @@
   margin-block: var(--space-4) var(--space-6);
 }
 
+.detail__editor {
+  margin-bottom: var(--space-6);
+}
+
+.detail__edit-cta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-4) var(--space-5);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-6);
+}
+.detail__edit-cta strong {
+  font-weight: var(--weight-bold);
+}
+
 /* Itinerary | map | summary. The map is centre because it is the anchor both
  * other columns refer to. */
 .detail__layout {

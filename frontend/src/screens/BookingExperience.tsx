@@ -17,6 +17,7 @@ import { Button } from "../components/ui/Button";
 import { JourneyPoster } from "../components/trip/JourneyPoster";
 import { TravelPass } from "../components/booking/TravelPass";
 import { money, signedMoney, clockTime, dayMonth } from "../lib/format";
+import { funnel } from "../lib/funnel";
 import "./BookingExperience.css";
 
 type Phase =
@@ -162,6 +163,12 @@ export function BookingExperience({
         const next = await api.setCommercialOptions(bookingId, body);
         setIntent(next);
         if (next.commercial) setTier(next.commercial.service_tier);
+        if (body.promo_code && next.commercial?.promo_accepted) {
+          funnel("PROMO_APPLIED", {
+            tier: next.commercial.service_tier,
+            props: { promo_code: next.commercial.promo_code ?? "" },
+          });
+        }
       } catch (e) {
         setError(
           e instanceof DetouraApiError ? e.message : "Could not update the price.",
@@ -174,6 +181,7 @@ export function BookingExperience({
   );
 
   const chooseTier = async (next: ServiceTier) => {
+    if (next !== tier) funnel("TIER_SWITCHED", { tier: next });
     setTier(next);
     if (bookingId) await changeCommercial({ service_tier: next });
   };
@@ -195,6 +203,10 @@ export function BookingExperience({
           const tp = await api.getTravelPass(bookingId);
           if (cancelled) return;
           setPass(tp);
+          funnel(tp.status === "ready" ? "BOOKED" : "FAILED", {
+            tier,
+            props: { outcome: tp.status },
+          });
           setPhase("pass");
           return;
         }
@@ -209,7 +221,7 @@ export function BookingExperience({
       cancelled = true;
       if (pollRef.current) window.clearTimeout(pollRef.current);
     };
-  }, [phase, bookingId]);
+  }, [phase, bookingId, tier]);
 
   const submitTravelers = async () => {
     setShowErrors(true);
@@ -227,6 +239,7 @@ export function BookingExperience({
       }));
       const next = await api.submitTravelers(id, travelers);
       setIntent(next);
+      funnel("REVIEW", { tier });
       setPhase("review");
     } catch (e) {
       setError(e instanceof DetouraApiError ? e.message : "Could not save traveller details.");
@@ -239,17 +252,20 @@ export function BookingExperience({
     if (!bookingId) return;
     setBusy(true);
     setError(null);
+    funnel("CONFIRM", { tier });
     try {
       const next = await api.confirmBooking(bookingId, { tolerance_absolute: toleranceAbsolute });
       setIntent(next);
       if (next.service_flow === "self_service") {
         const it = await api.getItinerary(bookingId);
         setItinerary(it);
+        funnel("BOOKED", { tier, props: { outcome: "itinerary_ready" } });
         setPhase("guided");
       } else {
         setPhase("working");
       }
     } catch (e) {
+      funnel("FAILED", { tier });
       setError(e instanceof DetouraApiError ? e.message : "Could not confirm the journey.");
     } finally {
       setBusy(false);
@@ -314,7 +330,10 @@ export function BookingExperience({
               currency={trip.currency}
               busy={busy}
               onSelect={chooseTier}
-              onContinue={() => setPhase("traveler")}
+              onContinue={() => {
+                funnel("TIER_SELECTED", { tier });
+                setPhase("traveler");
+              }}
             />
           )}
 

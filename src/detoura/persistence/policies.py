@@ -149,3 +149,87 @@ def next_version(db: Database, policy_id: str) -> int:
         (policy_id,),
     )
     return int(row["v"] + 1) if row and row["v"] is not None else 1
+
+
+def set_active(
+    db: Database, policy_id: str, version: int, *, actor: str
+) -> DynamicMarkupPolicy:
+    """Make one stored version the active one. A historical booking still
+    points at whatever version it was priced with - this only changes what new
+    bookings use."""
+    policy = get_policy(db, policy_id, version)
+    if policy is None:
+        raise KeyError((policy_id, version))
+    before = _active_row(db, policy_id)
+    with db.write() as conn:
+        conn.execute(
+            "UPDATE markup_policies SET active = 0 WHERE policy_id = ?",
+            (policy_id,),
+        )
+        conn.execute(
+            "UPDATE markup_policies SET active = 1 "
+            "WHERE policy_id = ? AND version = ?",
+            (policy_id, version),
+        )
+    audit.record(
+        db, actor=actor, action="MARKUP_POLICY_ACTIVATED",
+        target_type="markup_policy", target_id=f"{policy_id}@v{version}",
+        before={"active_version": before["version"] if before else None},
+        after={"active_version": version},
+    )
+    return policy
+
+
+def build_policy(
+    *,
+    policy_id: str,
+    version: int,
+    label: str,
+    basic_percentage: float,
+    basic_fixed_fee: float,
+    all_in_one_percentage: float,
+    all_in_one_fixed_fee: float,
+    max_percentage: float,
+    max_fixed_fee: float,
+    min_total_fee: float,
+    max_total_fee: float,
+) -> DynamicMarkupPolicy:
+    """Turn the small set of numbers an operator configures into a full
+    two-rule policy. The server builds this; a client never supplies a
+    computed fee."""
+    return DynamicMarkupPolicy(
+        policy_id=policy_id,
+        version=version,
+        label=label or f"ops policy v{version}",
+        rules=(
+            MarkupRule(
+                label="All-in-One", when_tier=ServiceTier.ALL_IN_ONE,
+                percentage=all_in_one_percentage, fixed_fee=all_in_one_fixed_fee,
+            ),
+            MarkupRule(
+                label="Basic / self-service", when_tier=ServiceTier.BASIC,
+                percentage=basic_percentage, fixed_fee=basic_fixed_fee,
+            ),
+        ),
+        bounds=MarkupBounds(
+            max_percentage=max_percentage, max_fixed_fee=max_fixed_fee,
+            min_total_fee=min_total_fee, max_total_fee=max_total_fee,
+        ),
+    )
+
+
+def policy_config(policy: DynamicMarkupPolicy) -> dict:
+    """The operator-facing view of a stored policy: just the tunable numbers."""
+    by_tier = {r.when_tier: r for r in policy.rules if r.when_tier is not None}
+    basic = by_tier.get(ServiceTier.BASIC)
+    aio = by_tier.get(ServiceTier.ALL_IN_ONE)
+    return {
+        "basic_percentage": basic.percentage if basic else 0.0,
+        "basic_fixed_fee": basic.fixed_fee if basic else 0.0,
+        "all_in_one_percentage": aio.percentage if aio else 0.0,
+        "all_in_one_fixed_fee": aio.fixed_fee if aio else 0.0,
+        "max_percentage": policy.bounds.max_percentage,
+        "max_fixed_fee": policy.bounds.max_fixed_fee,
+        "min_total_fee": policy.bounds.min_total_fee,
+        "max_total_fee": policy.bounds.max_total_fee,
+    }

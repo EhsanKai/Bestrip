@@ -52,6 +52,7 @@ from ..services.booking_commercial import finalize_economics, price_run
 from ..services.booking_persistence import persist_run
 from ..services.booking_orchestrator import BookingPhase
 from ..models.commercial import ServiceTier
+from ..persistence import analytics as analytics_store
 from ..persistence import get_db
 from ..models.travel_pass import PassMode, PassStatus
 from ..services.planner import TravelPlanner
@@ -82,6 +83,7 @@ from .contracts import (
     RevalidatedOfferDTO,
     REVALIDATION_MESSAGES,
     SubmitTravelersRequest,
+    TrackEventsRequest,
     TravelPassResponse,
     TravelPassTicketDTO,
     SimilarityDTO,
@@ -687,6 +689,20 @@ def _intent_dto(run) -> BookingIntentResponse:
         ),
         itinerary_available=run.phase is BookingPhase.GUIDED_BOOKING,
     )
+
+
+@router.post("/events")
+def track_events(body: TrackEventsRequest) -> dict:
+    """Anonymous product-funnel events from the web client. No auth (it is the
+    public site) and no PII - the store keeps only whitelisted event names and
+    prop keys and drops anything that looks like personal data."""
+    kept = analytics_store.record_many(
+        get_db(),
+        [{"event": e.event, "tier": e.tier, "props": e.props} for e in body.events],
+        session_key=body.session_key,
+        visitor_key=body.visitor_key,
+    )
+    return {"kept": kept}
 
 
 @router.post("/commercial/preview", response_model=CommercialPreviewResponse)

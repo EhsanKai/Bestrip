@@ -144,3 +144,128 @@ class OpsOverviewDTO(BaseModel):
 
 
 OpsBookingDetailDTO.model_rebuild()
+
+
+# --- V8.5 Phase C2: commercial + promo management, finance, analytics ------
+
+class MarkupPolicyConfigDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    basic_percentage: float
+    basic_fixed_fee: float
+    all_in_one_percentage: float
+    all_in_one_fixed_fee: float
+    max_percentage: float
+    max_fixed_fee: float
+    min_total_fee: float
+    max_total_fee: float
+
+
+class MarkupPolicyDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    policy_id: str
+    version: int
+    label: str
+    active: bool
+    created_at: str = ""
+    config: MarkupPolicyConfigDTO | None = None
+    bookings_priced: int = 0
+
+
+class CreateMarkupPolicyRequest(BaseModel):
+    """The small set of numbers an operator tunes. The server builds the full
+    policy and assigns the next version; no computed fee is accepted here."""
+
+    model_config = ConfigDict(frozen=True)
+    label: str = Field(default="", max_length=120)
+    basic_percentage: float = Field(ge=0.0, le=1.0)
+    basic_fixed_fee: float = Field(ge=0.0, le=1_000.0)
+    all_in_one_percentage: float = Field(ge=0.0, le=1.0)
+    all_in_one_fixed_fee: float = Field(ge=0.0, le=1_000.0)
+    max_percentage: float = Field(default=0.15, ge=0.0, le=1.0)
+    max_fixed_fee: float = Field(default=25.0, ge=0.0, le=1_000.0)
+    min_total_fee: float = Field(default=0.0, ge=0.0, le=1_000.0)
+    max_total_fee: float = Field(default=120.0, ge=0.0, le=5_000.0)
+    activate: bool = True
+
+
+class MarkupPreviewRequest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    supplier_total: float = Field(gt=0.0, le=1_000_000.0)
+    ticket_count: int = Field(default=3, ge=1, le=12)
+    currency: str = Field(default="EUR", min_length=3, max_length=3)
+    # preview a stored version, or an unsaved draft
+    policy_id: str | None = None
+    version: int | None = None
+    draft: CreateMarkupPolicyRequest | None = None
+
+
+class MarkupPreviewLineDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    tier: str
+    supplier_total: float
+    detoura_service_fee: float
+    detoura_markup: float
+    detoura_fee_total: float
+    customer_total: float
+    bounded: bool
+    explanation: list[str]
+
+
+class MarkupPreviewDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    policy_ref: str
+    invariant_ok: bool
+    lines: list[MarkupPreviewLineDTO]
+
+
+class OpsPromoDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    code: str
+    label: str = ""
+    enabled: bool
+    kind: str
+    value: float
+    currency: str
+    target: str
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    global_limit: int | None = None
+    per_user_limit: int | None = None
+    min_order_value: float = 0.0
+    max_discount: float | None = None
+    eligible_tiers: list[str] = Field(default_factory=list)
+    # stats
+    redemptions: int = 0
+    discount_total: float = 0.0
+    revenue_impact: float = 0.0
+    bookings_with_code: int = 0
+
+
+class UpsertPromoRequest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    code: str = Field(min_length=3, max_length=40)
+    label: str = Field(default="", max_length=120)
+    enabled: bool = True
+    kind: str = Field(default="PERCENTAGE", pattern="^(PERCENTAGE|FIXED)$")
+    value: float = Field(gt=0.0, le=100_000.0)
+    currency: str = Field(default="EUR", min_length=3, max_length=3)
+    target: str = Field(default="DETOURA_FEE", pattern="^(DETOURA_FEE|ORDER_TOTAL)$")
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    global_limit: int | None = Field(default=None, ge=1)
+    per_user_limit: int | None = Field(default=None, ge=1)
+    min_order_value: float = Field(default=0.0, ge=0.0)
+    max_discount: float | None = Field(default=None, gt=0.0)
+    eligible_tiers: list[str] = Field(default_factory=list)
+
+
+class OpsPromoRedemptionDTO(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    booking_id: str
+    discount_amount: float
+    currency: str
+    redeemed_at: datetime
+
+
+class OpsPromoDetailDTO(OpsPromoDTO):
+    redemption_log: list[OpsPromoRedemptionDTO] = Field(default_factory=list)

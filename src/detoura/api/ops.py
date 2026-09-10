@@ -10,12 +10,20 @@ action is reported as not implemented rather than faked.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
+from ..models.commercial import ServiceTier
+from ..models.promo import PromoCode, PromoKind, PromoTarget
+from ..persistence import analytics as analytics_store
 from ..persistence import audit as audit_store
 from ..persistence import bookings as bookings_store
 from ..persistence import economics as economics_store
 from ..persistence import get_db
+from ..persistence import policies as policies_store
+from ..persistence import promos as promos_store
+from ..services.commercial import CommercialPricingService
 from .ops_auth import (
     create_session,
     ops_enabled,
@@ -24,6 +32,12 @@ from .ops_auth import (
     verify_shared_token,
 )
 from .ops_contracts import (
+    CreateMarkupPolicyRequest,
+    MarkupPolicyConfigDTO,
+    MarkupPolicyDTO,
+    MarkupPreviewDTO,
+    MarkupPreviewLineDTO,
+    MarkupPreviewRequest,
     OpsAuditEventDTO,
     OpsBookingDetailDTO,
     OpsBookingItemDTO,
@@ -32,8 +46,12 @@ from .ops_contracts import (
     OpsEconomicsDTO,
     OpsLoginRequest,
     OpsOverviewDTO,
+    OpsPromoDetailDTO,
+    OpsPromoDTO,
+    OpsPromoRedemptionDTO,
     OpsRecoveryPage,
     OpsSessionResponse,
+    UpsertPromoRequest,
 )
 
 router = APIRouter(prefix="/api/v1/ops", tags=["ops"])
@@ -253,3 +271,281 @@ def ops_audit(
         get_db(), limit=limit, target_type=target_type, target_id=target_id,
     )
     return [_audit_dto(e) for e in events]
+
+
+# ======================================================================
+# V8.5 Phase C2 — commercial + promo management, finance, analytics
+# ======================================================================
+def _parse_when(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=422, detail={"message": f"bad date: {value}"})
+
+
+# --- markup policy management ---------------------------------------
+def _policy_dto(db, policy_id: str, version: int, label: str, active: bool,
+                created_at: str) -> MarkupPolicyDTO:
+    policy = policies_store.get_policy(db, policy_id, version)
+    cfg = None
+    if policy is not None:
+        cfg = MarkupPolicyConfigDTO(**policies_store.policy_config(policy))
+    priced = db.query_one(
+        "SELECT COUNT(*) AS n FROM booking_economics "
+        "WHERE markup_policy_id = ? AND markup_policy_version = ?",
+        (policy_id, version),
+    )
+    return MarkupPolicyDTO(
+        policy_id=policy_id, version=version, label=label, active=active,
+        created_at=created_at, config=cfg,
+        bookings_priced=int(priced["n"]) if priced else 0,
+    )
+
+
+@router.get("/commercial/policies", response_model=list[MarkupPolicyDTO])
+def ops_list_policies(actor: str = Depends(require_ops)) -> list[MarkupPolicyDTO]:
+    db = get_db()
+    return [
+        _policy_dto(db, r["policy_id"], r["version"], r["label"],
+                    bool(r["active"]), r["created_at"])
+        for r in policies_store.list_policies(db)
+    ]
+
+
+@router.post("/commercial/policies", response_model=MarkupPolicyDTO)
+def ops_create_policy(
+    body: CreateMarkupPolicyRequest, actor: str = Depends(require_ops)
+) -> MarkupPolicyDTO:
+    db = get_db()
+    pid = policies_store.DEFAULT_POLICY_ID
+    version = policies_store.next_version(db, pid)
+    try:
+        policy = policies_store.build_policy(
+            policy_id=pid, version=version, label=body.label,
+            basic_percentage=body.basic_percentage,
+            basic_fixed_fee=body.basic_fixed_fee,
+            all_in_one_percentage=body.all_in_one_percentage,
+            all_in_one_fixed_fee=body.all_in_one_fixed_fee,
+            max_percentage=body.max_percentage,
+            max_fixed_fee=body.max_fixed_fee,
+            min_total_fee=body.min_total_fee,
+            max_total_fee=body.max_total_fee,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail={"message": str(e)})
+    policies_store.save_policy(db, policy, active=body.activate, actor=actor)
+    row = next(
+        r for r in policies_store.list_policies(db)
+        if r["policy_id"] == pid and r["version"] == version
+    )
+    return _policy_dto(db, pid, version, row["label"], bool(row["active"]),
+                       row["created_at"])
+
+
+@router.post(
+    "/commercial/policies/{policy_id}/{version}/activate",
+    response_model=MarkupPolicyDTO,
+)
+def ops_activate_policy(
+    policy_id: str, version: int, actor: str = Depends(require_ops)
+) -> MarkupPolicyDTO:
+    db = get_db()
+    try:
+        policies_store.set_active(db, policy_id, version, actor=actor)
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"message": "No such policy version."})
+    row = next(
+        r for r in policies_store.list_policies(db)
+        if r["policy_id"] == policy_id and r["version"] == version
+    )
+    return _policy_dto(db, policy_id, version, row["label"], True,
+                       row["created_at"])
+
+
+@router.post("/commercial/preview", response_model=MarkupPreviewDTO)
+def ops_preview_policy(
+    body: MarkupPreviewRequest, actor: str = Depends(require_ops)
+) -> MarkupPreviewDTO:
+    db = get_db()
+    policy = None
+    ref = "active policy"
+    if body.draft is not None:
+        d = body.draft
+        try:
+            policy = policies_store.build_policy(
+                policy_id="preview", version=1, label="draft preview",
+                basic_percentage=d.basic_percentage,
+                basic_fixed_fee=d.basic_fixed_fee,
+                all_in_one_percentage=d.all_in_one_percentage,
+                all_in_one_fixed_fee=d.all_in_one_fixed_fee,
+                max_percentage=d.max_percentage, max_fixed_fee=d.max_fixed_fee,
+                min_total_fee=d.min_total_fee, max_total_fee=d.max_total_fee,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail={"message": str(e)})
+        ref = "draft"
+    elif body.policy_id and body.version:
+        policy = policies_store.get_policy(db, body.policy_id, body.version)
+        if policy is None:
+            raise HTTPException(status_code=404, detail={"message": "No such policy version."})
+        ref = f"{body.policy_id}@v{body.version}"
+
+    svc = CommercialPricingService(db)
+    lines: list[MarkupPreviewLineDTO] = []
+    totals: dict[str, float] = {}
+    for tier in (ServiceTier.BASIC, ServiceTier.ALL_IN_ONE):
+        res = svc.quote(
+            supplier_transport=body.supplier_total, currency=body.currency.upper(),
+            ticket_count=body.ticket_count, service_tier=tier,
+            markup_policy=policy,
+        )
+        b = res.quote.breakdown
+        totals[tier.value] = b.customer_total
+        lines.append(MarkupPreviewLineDTO(
+            tier=tier.value, supplier_total=b.supplier_total,
+            detoura_service_fee=b.detoura_service_fee,
+            detoura_markup=b.detoura_markup,
+            detoura_fee_total=b.detoura_revenue_gross,
+            customer_total=b.customer_total,
+            bounded=res.markup.bounded,
+            explanation=list(res.markup.explanation),
+        ))
+    return MarkupPreviewDTO(
+        policy_ref=ref,
+        invariant_ok=totals["ALL_IN_ONE"] + 1e-6 >= totals["BASIC"],
+        lines=lines,
+    )
+
+
+# --- promo management ---------------------------------------------
+def _promo_dto(db, promo: PromoCode, *, detail: bool = False):
+    st = promos_store.promo_stats(db, promo.code)
+    base = dict(
+        code=promo.code, label=promo.label, enabled=promo.enabled,
+        kind=promo.kind.value, value=promo.value, currency=promo.currency,
+        target=promo.target.value, starts_at=promo.starts_at,
+        ends_at=promo.ends_at, global_limit=promo.global_limit,
+        per_user_limit=promo.per_user_limit,
+        min_order_value=promo.min_order_value, max_discount=promo.max_discount,
+        eligible_tiers=[t.value for t in promo.eligible_tiers],
+        redemptions=st["redemptions"], discount_total=st["discount_total"],
+        revenue_impact=st["revenue_impact"],
+        bookings_with_code=st["bookings_with_code"],
+    )
+    if not detail:
+        return OpsPromoDTO(**base)
+    return OpsPromoDetailDTO(**base, redemption_log=[
+        OpsPromoRedemptionDTO(
+            booking_id=r.booking_id, discount_amount=r.discount_amount,
+            currency=r.currency, redeemed_at=r.redeemed_at,
+        )
+        for r in promos_store.redemptions_for(db, promo.code)
+    ])
+
+
+@router.get("/promos", response_model=list[OpsPromoDTO])
+def ops_list_promos(actor: str = Depends(require_ops)) -> list[OpsPromoDTO]:
+    db = get_db()
+    return [_promo_dto(db, p) for p in promos_store.list_promos(db)]
+
+
+@router.get("/promos/{code}", response_model=OpsPromoDetailDTO)
+def ops_promo_detail(code: str, actor: str = Depends(require_ops)) -> OpsPromoDetailDTO:
+    db = get_db()
+    promo = promos_store.get_promo(db, code)
+    if promo is None:
+        raise HTTPException(status_code=404, detail={"message": "No such code."})
+    return _promo_dto(db, promo, detail=True)
+
+
+@router.post("/promos", response_model=OpsPromoDetailDTO)
+def ops_upsert_promo(
+    body: UpsertPromoRequest, actor: str = Depends(require_ops)
+) -> OpsPromoDetailDTO:
+    db = get_db()
+    try:
+        promo = PromoCode(
+            code=body.code, label=body.label, enabled=body.enabled,
+            kind=PromoKind(body.kind), value=body.value,
+            currency=body.currency.upper(), target=PromoTarget(body.target),
+            starts_at=body.starts_at, ends_at=body.ends_at,
+            global_limit=body.global_limit, per_user_limit=body.per_user_limit,
+            min_order_value=body.min_order_value, max_discount=body.max_discount,
+            eligible_tiers=tuple(
+                ServiceTier(t) for t in body.eligible_tiers
+                if t in ("BASIC", "ALL_IN_ONE")
+            ),
+        )
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=422, detail={"message": str(e)})
+    promos_store.save_promo(db, promo, actor=actor)
+    return _promo_dto(db, promo, detail=True)
+
+
+@router.post("/promos/{code}/enable", response_model=OpsPromoDetailDTO)
+def ops_enable_promo(code: str, actor: str = Depends(require_ops)) -> OpsPromoDetailDTO:
+    return _set_promo_enabled(code, True, actor)
+
+
+@router.post("/promos/{code}/disable", response_model=OpsPromoDetailDTO)
+def ops_disable_promo(code: str, actor: str = Depends(require_ops)) -> OpsPromoDetailDTO:
+    return _set_promo_enabled(code, False, actor)
+
+
+def _set_promo_enabled(code: str, enabled: bool, actor: str) -> OpsPromoDetailDTO:
+    db = get_db()
+    try:
+        promos_store.set_enabled(db, code, enabled, actor=actor)
+    except KeyError:
+        raise HTTPException(status_code=404, detail={"message": "No such code."})
+    return _promo_dto(db, promos_store.get_promo(db, code), detail=True)
+
+
+# --- finance ------------------------------------------------------
+@router.get("/finance")
+def ops_finance(
+    actor: str = Depends(require_ops),
+    since: str | None = None,
+    until: str | None = None,
+) -> dict:
+    db = get_db()
+    s, u = _parse_when(since), _parse_when(until)
+    summary = economics_store.finance_summary(db, since=s, until=u)
+    tiers = analytics_store.tier_selection(db, since=s, until=u)
+    for tier, block in summary["by_tier"].items():
+        block["conversion"] = tiers.get(tier, {}).get("conversion")
+        block["tier_selected"] = tiers.get(tier, {}).get("selected", 0)
+    summary["test_data"] = True
+    summary["window"] = {"since": since, "until": until}
+    return summary
+
+
+# --- analytics ---------------------------------------------------
+@router.get("/analytics")
+def ops_analytics(
+    actor: str = Depends(require_ops),
+    since: str | None = None,
+    until: str | None = None,
+) -> dict:
+    db = get_db()
+    s, u = _parse_when(since), _parse_when(until)
+    return {
+        "test_data": True,
+        "window": {"since": since, "until": until},
+        "event_counts": analytics_store.event_counts(db, since=s, until=u),
+        "funnel": analytics_store.funnel(db, since=s, until=u),
+        "tier_selection": analytics_store.tier_selection(db, since=s, until=u),
+        "promo_impact": analytics_store.promo_impact(db, since=s, until=u),
+        "repeat_search": analytics_store.repeat_search_rate(db, since=s, until=u),
+    }
+
+
+@router.get("/analytics/events")
+def ops_analytics_events(
+    actor: str = Depends(require_ops),
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> list[dict]:
+    return analytics_store.recent_events(get_db(), limit=limit)

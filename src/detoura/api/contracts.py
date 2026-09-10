@@ -1163,6 +1163,23 @@ class ServiceTierOptionDTO(BaseModel):
     not_included: list[str] = Field(default_factory=list)
 
 
+class TrackEvent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    event: str = Field(max_length=40)
+    tier: str = Field(default="", max_length=12)
+    props: dict = Field(default_factory=dict)
+
+
+class TrackEventsRequest(BaseModel):
+    """Anonymous product-funnel events. No traveller PII: the server strips
+    anything PII-shaped and only keeps a whitelisted set of keys and events."""
+
+    model_config = ConfigDict(frozen=True)
+    session_key: str = Field(default="", max_length=64)
+    visitor_key: str = Field(default="", max_length=64)
+    events: list[TrackEvent] = Field(default_factory=list, max_length=50)
+
+
 class CommercialPreviewRequest(BaseModel):
     """Price both tiers for a trip without starting a booking - used on the
     results and trip-detail screens so the customer sees real numbers before

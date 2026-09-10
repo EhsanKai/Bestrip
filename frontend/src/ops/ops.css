@@ -393,6 +393,151 @@
   font-size: 10px;
 }
 
+/* --- C2: forms, metric cards, funnel --- */
+.ops-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px 18px;
+  background: var(--ops-surface);
+  border: 1px solid var(--ops-border);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 10px 0 20px;
+  align-items: end;
+}
+.ops-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ops-form input,
+.ops-form select {
+  padding: 7px 9px;
+  border: 1px solid var(--ops-border);
+  border-radius: 6px;
+  font: inherit;
+  background: var(--ops-surface);
+  color: var(--ops-text);
+}
+.ops-form fieldset {
+  border: 1px solid var(--ops-border);
+  border-radius: 7px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+  grid-column: span 1;
+}
+.ops-form legend {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ops-muted);
+  padding: 0 4px;
+}
+.ops-check,
+.ops-check-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.ops-check-group {
+  grid-column: 1 / -1;
+}
+.ops-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin: 4px 0 10px;
+}
+.ops-inline input {
+  width: 100px;
+  padding: 6px 8px;
+  border: 1px solid var(--ops-border);
+  border-radius: 6px;
+  font: inherit;
+}
+.ops-row-active td {
+  background: color-mix(in srgb, var(--ops-ok) 8%, transparent);
+}
+
+.ops-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+  margin: 12px 0 22px;
+}
+.ops-metric {
+  background: var(--ops-surface);
+  border: 1px solid var(--ops-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 3px;
+}
+.ops-metric span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ops-muted);
+}
+.ops-metric b {
+  font-size: 1.4rem;
+  font-weight: 800;
+}
+.ops-metric small {
+  font-size: 11px;
+  color: var(--ops-muted);
+}
+
+.ops-chip.is-on {
+  background: var(--ops-navy);
+  color: #fff;
+  border-color: var(--ops-navy);
+  cursor: pointer;
+}
+.ops-chip {
+  cursor: pointer;
+}
+
+.ops-funnel {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 20px;
+}
+.ops-funnel__row {
+  display: grid;
+  grid-template-columns: 120px 1fr 46px 150px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.ops-funnel__label {
+  font-weight: 700;
+}
+.ops-funnel__bar {
+  background: var(--ops-border);
+  border-radius: 4px;
+  height: 16px;
+  overflow: hidden;
+}
+.ops-funnel__bar > span {
+  display: block;
+  height: 100%;
+  background: var(--ops-accent);
+}
+.ops-funnel__n {
+  text-align: right;
+  font-weight: 800;
+}
+.ops-funnel__drop {
+  color: var(--ops-muted);
+}
+
 @media (prefers-color-scheme: dark) {
   .ops {
     --ops-bg: #0d1420;

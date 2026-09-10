@@ -141,6 +141,40 @@ def redemptions_for(db: Database, code: str) -> list[PromoRedemption]:
     ]
 
 
+def promo_stats(db: Database, code: str) -> dict:
+    """Redemptions and revenue impact for one code. A promo only ever reduces
+    Detoura's own component, so ``discount_total`` is exactly the revenue given
+    up - the supplier is always paid in full."""
+    code = (code or "").strip().upper()
+    r = db.query_one(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(discount_minor), 0) AS d "
+        "FROM promo_redemptions WHERE code = ?",
+        (code,),
+    )
+    redemptions = int(r["n"]) if r else 0
+    discount_total = from_minor_units(int(r["d"])) if r else 0.0
+    # bookings priced with this code, from the immutable ledger
+    led = db.query_one(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(customer_price_minor), 0) AS gv, "
+        "  COALESCE(SUM(service_fee_minor + markup_minor), 0) AS rev "
+        "FROM booking_economics WHERE promo_code = ?",
+        (code,),
+    )
+    return {
+        "code": code,
+        "redemptions": redemptions,
+        "discount_total": discount_total,
+        "revenue_impact": -discount_total,
+        "bookings_with_code": int(led["n"]) if led else 0,
+        "gross_booking_value": from_minor_units(int(led["gv"])) if led else 0.0,
+        "detoura_revenue_gross": from_minor_units(int(led["rev"])) if led else 0.0,
+    }
+
+
+def all_stats(db: Database) -> dict[str, dict]:
+    return {p.code: promo_stats(db, p.code) for p in list_promos(db)}
+
+
 def _safe(promo: PromoCode | None) -> dict | None:
     if promo is None:
         return None

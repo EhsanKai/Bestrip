@@ -11,6 +11,7 @@ import { ErrorState } from "./components/search/ErrorState";
 import { Header } from "./components/shell/Header";
 import { MobileNav } from "./components/shell/MobileNav";
 import { track } from "./lib/analytics";
+import { funnel } from "./lib/funnel";
 import { Compare } from "./screens/Compare";
 import { Discover } from "./screens/Discover";
 import { Landing } from "./screens/Landing";
@@ -52,14 +53,25 @@ export default function App() {
   // transition the hook owns, and this maps it onto a screen.
   useEffect(() => {
     if (search.status === "searching") setScreen("searching");
-    else if (search.status === "done" && screen === "searching") setScreen("results");
-    else if (search.status === "failed" && screen === "searching") setScreen("results");
-  }, [search.status, screen]);
+    else if (search.status === "done" && screen === "searching") {
+      setScreen("results");
+      funnel("RESULT_VIEW", {
+        props: { result_count: search.response?.recommendations.length ?? 0 },
+      });
+    } else if (search.status === "failed" && screen === "searching") setScreen("results");
+  }, [search.status, screen, search.response]);
 
   const runSearch = useCallback(
     (request: TripSearchRequest) => {
       setSelected(null);
       setComparing([]);
+      funnel("SEARCH", {
+        props: {
+          search_mode: request.search_mode ?? "SMART",
+          profile: request.profile ?? "BEST_VALUE",
+          repeat: Boolean(search.request),
+        },
+      });
       void search.run(request);
     },
     [search],
@@ -106,6 +118,7 @@ export default function App() {
     setScreen("detail");
     window.scrollTo({ top: 0 });
     track("result_viewed", { trip_id: trip.id, rank: trip.rank });
+    funnel("TRIP_OPEN", { props: { rank: trip.rank } });
   }, []);
 
   const comparedTrips = (search.response?.recommendations ?? []).filter((trip) =>

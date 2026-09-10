@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -127,6 +127,23 @@ CREATE TABLE IF NOT EXISTS bookings (
 CREATE INDEX IF NOT EXISTS ix_bookings_phase ON bookings (phase);
 CREATE INDEX IF NOT EXISTS ix_bookings_recovery ON bookings (recovery_state);
 CREATE INDEX IF NOT EXISTS ix_bookings_updated ON bookings (updated_at);
+
+-- Product-funnel events (V8.5 Phase C2). Anonymous by construction: a random
+-- per-tab session key and a random per-browser visitor key, and a small
+-- props blob that the ingest endpoint strips of anything PII-shaped. No name,
+-- email, phone, DOB or free text ever lands here.
+CREATE TABLE IF NOT EXISTS analytics_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT NOT NULL,
+    event        TEXT NOT NULL,
+    session_key  TEXT NOT NULL DEFAULT '',
+    visitor_key  TEXT NOT NULL DEFAULT '',
+    tier         TEXT NOT NULL DEFAULT '',
+    props_json   TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS ix_events_ts ON analytics_events (ts);
+CREATE INDEX IF NOT EXISTS ix_events_event ON analytics_events (event);
+CREATE INDEX IF NOT EXISTS ix_events_visitor ON analytics_events (visitor_key);
 
 CREATE TABLE IF NOT EXISTS booking_items (
     booking_id          TEXT NOT NULL,

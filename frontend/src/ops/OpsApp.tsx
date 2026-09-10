@@ -9,9 +9,30 @@ import {
 import { BookingsView } from "./OpsBookings";
 import { RecoveryView } from "./OpsRecovery";
 import { AuditView } from "./OpsAudit";
+import { CommercialView } from "./OpsCommercial";
+import { PromosView } from "./OpsPromos";
+import { FinanceView } from "./OpsFinance";
+import { AnalyticsView } from "./OpsAnalytics";
 import "./ops.css";
 
-type View = "bookings" | "recovery" | "audit";
+type View =
+  | "bookings"
+  | "recovery"
+  | "commercial"
+  | "promos"
+  | "finance"
+  | "analytics"
+  | "audit";
+
+const NAV: { id: View; label: string }[] = [
+  { id: "bookings", label: "Bookings" },
+  { id: "recovery", label: "Recovery" },
+  { id: "commercial", label: "Commercial" },
+  { id: "promos", label: "Promos" },
+  { id: "finance", label: "Finance" },
+  { id: "analytics", label: "Analytics" },
+  { id: "audit", label: "Audit log" },
+];
 
 export function OpsApp() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -84,30 +105,23 @@ export function OpsApp() {
           <span className="ops-pill ops-pill--test">TEST / SANDBOX</span>
         </div>
         <nav className="ops-top__nav">
-          <button
-            className={view === "bookings" ? "is-on" : ""}
-            onClick={() => setView("bookings")}
-          >
-            Bookings
-            {overview ? <span className="ops-badge">{overview.total_bookings}</span> : null}
-          </button>
-          <button
-            className={view === "recovery" ? "is-on" : ""}
-            onClick={() => setView("recovery")}
-          >
-            Recovery Center
-            {overview && overview.recovery_count > 0 ? (
-              <span className="ops-badge ops-badge--warn">
-                {overview.recovery_count}
-              </span>
-            ) : null}
-          </button>
-          <button
-            className={view === "audit" ? "is-on" : ""}
-            onClick={() => setView("audit")}
-          >
-            Audit log
-          </button>
+          {NAV.map((n) => (
+            <button
+              key={n.id}
+              className={view === n.id ? "is-on" : ""}
+              onClick={() => setView(n.id)}
+            >
+              {n.label}
+              {n.id === "bookings" && overview ? (
+                <span className="ops-badge">{overview.total_bookings}</span>
+              ) : null}
+              {n.id === "recovery" && overview && overview.recovery_count > 0 ? (
+                <span className="ops-badge ops-badge--warn">
+                  {overview.recovery_count}
+                </span>
+              ) : null}
+            </button>
+          ))}
         </nav>
         <button className="ops-top__out" onClick={signOut}>
           Sign out
@@ -117,6 +131,10 @@ export function OpsApp() {
       <main className="ops-main">
         {view === "bookings" && <BookingsView onExpire={() => setAuthed(false)} />}
         {view === "recovery" && <RecoveryView onExpire={() => setAuthed(false)} />}
+        {view === "commercial" && <CommercialView onExpire={() => setAuthed(false)} />}
+        {view === "promos" && <PromosView onExpire={() => setAuthed(false)} />}
+        {view === "finance" && <FinanceView onExpire={() => setAuthed(false)} />}
+        {view === "analytics" && <AnalyticsView onExpire={() => setAuthed(false)} />}
         {view === "audit" && <AuditView onExpire={() => setAuthed(false)} />}
       </main>
     </div>

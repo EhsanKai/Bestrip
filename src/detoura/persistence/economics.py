@@ -209,6 +209,92 @@ def list_recent(db: Database, *, limit: int = 200) -> list[EconomicsRow]:
     return [_row(r) for r in rows]
 
 
+def finance_summary(
+    db: Database,
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> dict:
+    """Aggregate the ledger over a window.
+
+    Costs that are UNKNOWN for a booking stay out of the sums and are counted,
+    never treated as zero. Gross contribution and average margin are reported
+    only over the bookings where every attributable cost is known, with the
+    number excluded stated.
+    """
+    where, params = [], []
+    if since is not None:
+        where.append("created_at >= ?")
+        params.append(since.isoformat())
+    if until is not None:
+        where.append("created_at <= ?")
+        params.append(until.isoformat())
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    rows = [_row(r) for r in db.query(
+        f"SELECT * FROM booking_economics{clause} ORDER BY created_at DESC",
+        tuple(params),
+    )]
+
+    n = len(rows)
+    out: dict = {
+        "bookings": n,
+        "currency": rows[0].currency if rows else "EUR",
+        "gross_booking_value": round(sum(r.customer_price for r in rows), 2),
+        "supplier_cost": round(sum(r.supplier_cost for r in rows), 2),
+        "detoura_revenue_gross": round(
+            sum(r.service_fee + r.markup for r in rows), 2),
+        "promo_discounts": round(sum(r.discount for r in rows), 2),
+        "detoura_revenue_net": round(
+            sum(r.service_fee + r.markup - r.discount for r in rows), 2),
+        "detoura_service_fees": round(sum(r.service_fee for r in rows), 2),
+        "detoura_markup": round(sum(r.markup for r in rows), 2),
+    }
+
+    def _known_sum(attr: str) -> tuple[float, int]:
+        vals = [getattr(r, attr) for r in rows]
+        known = [v for v in vals if v is not None]
+        return round(sum(known), 2), len(vals) - len(known)
+
+    for label in ("provider_cost_estimate", "payment_cost", "refund",
+                  "recovery_cost"):
+        s, unknown = _known_sum(label)
+        out[f"{label}_known"] = s
+        out[f"{label}_unknown_bookings"] = unknown
+
+    fully_known = [r for r in rows if not r.has_unknown_costs]
+    margins = [r.contribution_margin for r in fully_known
+               if r.contribution_margin is not None]
+    out["gross_contribution_known"] = (
+        round(sum(margins), 2) if margins else 0.0
+    )
+    out["bookings_with_unknown_costs"] = n - len(fully_known)
+    out["avg_detoura_fee"] = (
+        round(out["detoura_revenue_gross"] / n, 2) if n else 0.0
+    )
+    out["avg_margin_known"] = (
+        round(sum(margins) / len(margins), 2) if margins else None
+    )
+    out["avg_margin_excluded_bookings"] = n - len(margins)
+
+    by_tier: dict[str, dict] = {}
+    for tier in ("BASIC", "ALL_IN_ONE"):
+        t = [r for r in rows if r.service_tier == tier]
+        by_tier[tier] = {
+            "bookings": len(t),
+            "gross_booking_value": round(sum(r.customer_price for r in t), 2),
+            "detoura_revenue_gross": round(
+                sum(r.service_fee + r.markup for r in t), 2),
+            "detoura_revenue_net": round(
+                sum(r.service_fee + r.markup - r.discount for r in t), 2),
+            "avg_detoura_fee": (
+                round(sum(r.service_fee + r.markup for r in t) / len(t), 2)
+                if t else 0.0
+            ),
+        }
+    out["by_tier"] = by_tier
+    return out
+
+
 def _m(row, key) -> float:
     return from_minor_units(row[key])
 

@@ -179,6 +179,140 @@ export interface OpsOverview {
   audit_events: number;
 }
 
+export interface MarkupPolicyConfig {
+  basic_percentage: number;
+  basic_fixed_fee: number;
+  all_in_one_percentage: number;
+  all_in_one_fixed_fee: number;
+  max_percentage: number;
+  max_fixed_fee: number;
+  min_total_fee: number;
+  max_total_fee: number;
+}
+
+export interface MarkupPolicy {
+  policy_id: string;
+  version: number;
+  label: string;
+  active: boolean;
+  created_at: string;
+  config: MarkupPolicyConfig | null;
+  bookings_priced: number;
+}
+
+export interface MarkupPreviewLine {
+  tier: string;
+  supplier_total: number;
+  detoura_service_fee: number;
+  detoura_markup: number;
+  detoura_fee_total: number;
+  customer_total: number;
+  bounded: boolean;
+  explanation: string[];
+}
+
+export interface MarkupPreview {
+  policy_ref: string;
+  invariant_ok: boolean;
+  lines: MarkupPreviewLine[];
+}
+
+export interface OpsPromo {
+  code: string;
+  label: string;
+  enabled: boolean;
+  kind: string;
+  value: number;
+  currency: string;
+  target: string;
+  starts_at: string | null;
+  ends_at: string | null;
+  global_limit: number | null;
+  per_user_limit: number | null;
+  min_order_value: number;
+  max_discount: number | null;
+  eligible_tiers: string[];
+  redemptions: number;
+  discount_total: number;
+  revenue_impact: number;
+  bookings_with_code: number;
+}
+
+export interface OpsPromoDetail extends OpsPromo {
+  redemption_log: {
+    booking_id: string;
+    discount_amount: number;
+    currency: string;
+    redeemed_at: string;
+  }[];
+}
+
+export interface FinanceSummary {
+  bookings: number;
+  currency: string;
+  gross_booking_value: number;
+  supplier_cost: number;
+  detoura_revenue_gross: number;
+  detoura_revenue_net: number;
+  detoura_service_fees: number;
+  detoura_markup: number;
+  promo_discounts: number;
+  provider_cost_estimate_known: number;
+  provider_cost_estimate_unknown_bookings: number;
+  payment_cost_known: number;
+  payment_cost_unknown_bookings: number;
+  refund_known: number;
+  refund_unknown_bookings: number;
+  recovery_cost_known: number;
+  recovery_cost_unknown_bookings: number;
+  gross_contribution_known: number;
+  bookings_with_unknown_costs: number;
+  avg_detoura_fee: number;
+  avg_margin_known: number | null;
+  avg_margin_excluded_bookings: number;
+  by_tier: Record<
+    string,
+    {
+      bookings: number;
+      gross_booking_value: number;
+      detoura_revenue_gross: number;
+      detoura_revenue_net: number;
+      avg_detoura_fee: number;
+      conversion: number | null;
+      tier_selected: number;
+    }
+  >;
+  test_data: boolean;
+  window: { since: string | null; until: string | null };
+}
+
+export interface AnalyticsReport {
+  test_data: boolean;
+  window: { since: string | null; until: string | null };
+  event_counts: Record<string, number>;
+  funnel: {
+    stage: string;
+    sessions: number;
+    drop_from_prev: number | null;
+    rate_from_prev: number | null;
+  }[];
+  tier_selection: Record<
+    string,
+    { selected: number; booked: number; conversion: number | null }
+  >;
+  promo_impact: {
+    sessions_applied_promo: number;
+    of_those_booked: number;
+    conversion: number | null;
+  };
+  repeat_search: {
+    visitors_who_searched: number;
+    repeat_searchers: number;
+    repeat_rate: number | null;
+    avg_searches_per_visitor: number;
+  };
+}
+
 /* --- calls -------------------------------------------------------------- */
 
 export const opsApi = {
@@ -213,5 +347,56 @@ export const opsApi = {
     if (params.target_id) q.set("target_id", params.target_id);
     const s = q.toString();
     return req<OpsAuditEvent[]>(`/audit${s ? `?${s}` : ""}`);
+  },
+
+  // --- C2: commercial + promo management, finance, analytics ---
+  policies: () => req<MarkupPolicy[]>("/commercial/policies"),
+  createPolicy: (body: MarkupPolicyConfig & { label: string; activate: boolean }) =>
+    req<MarkupPolicy>("/commercial/policies", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  activatePolicy: (policyId: string, version: number) =>
+    req<MarkupPolicy>(
+      `/commercial/policies/${encodeURIComponent(policyId)}/${version}/activate`,
+      { method: "POST" },
+    ),
+  previewPolicy: (body: {
+    supplier_total: number;
+    ticket_count?: number;
+    currency?: string;
+    policy_id?: string;
+    version?: number;
+    draft?: MarkupPolicyConfig & { label?: string };
+  }) =>
+    req<MarkupPreview>("/commercial/preview", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  promos: () => req<OpsPromo[]>("/promos"),
+  promo: (code: string) =>
+    req<OpsPromoDetail>(`/promos/${encodeURIComponent(code)}`),
+  upsertPromo: (body: Record<string, unknown>) =>
+    req<OpsPromoDetail>("/promos", { method: "POST", body: JSON.stringify(body) }),
+  setPromoEnabled: (code: string, enabled: boolean) =>
+    req<OpsPromoDetail>(
+      `/promos/${encodeURIComponent(code)}/${enabled ? "enable" : "disable"}`,
+      { method: "POST" },
+    ),
+
+  finance: (win: { since?: string; until?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (win.since) q.set("since", win.since);
+    if (win.until) q.set("until", win.until);
+    const s = q.toString();
+    return req<FinanceSummary>(`/finance${s ? `?${s}` : ""}`);
+  },
+  analytics: (win: { since?: string; until?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (win.since) q.set("since", win.since);
+    if (win.until) q.set("until", win.until);
+    const s = q.toString();
+    return req<AnalyticsReport>(`/analytics${s ? `?${s}` : ""}`);
   },
 };

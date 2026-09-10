@@ -7,11 +7,12 @@ audit trail, in a single SQLite file.
 
 from __future__ import annotations
 
-from . import audit, bookings, economics, policies, promos
+from . import analytics, audit, bookings, economics, policies, promos
 from .db import Database, configure_db, db_path_from_env, get_db, init_db
 
 __all__ = [
     "Database",
+    "analytics",
     "audit",
     "bookings",
     "bootstrap",

@@ -16,6 +16,12 @@ dependencies = [
     # request at the handshake. certifi is pure data, no transitive deps, and
     # the alternative is documenting an SSL_CERT_FILE requirement nobody reads.
     "certifi>=2024.2.2",
+    # V9 Phase 2.6 account passwords: Argon2id, the OWASP-recommended default
+    # and the winner of the Password Hashing Competition. Never rolled by
+    # hand - this is the "well-established library" the account security
+    # requirement calls for. Ships prebuilt wheels for the platforms this
+    # project's Docker image targets, so it costs no extra build step.
+    "argon2-cffi>=23.1",
 ]
 
 [project.optional-dependencies]
@@ -32,11 +38,19 @@ api = [
 session = [
     "redis>=5",
 ]
+# V9 Phase 2.6 Part B: the destination-image acquisition/optimization tooling
+# only. Never imported by the running application - the API serves a
+# pre-built JSON manifest, not live image processing - so it stays out of the
+# core/runtime dependency set.
+images = [
+    "Pillow>=10.0",
+]
 dev = [
     "pytest>=7.4",
     "httpx>=0.26",
     "fastapi>=0.110",
     "uvicorn>=0.27",
+    "Pillow>=10.0",
 ]
 
 [tool.setuptools.packages.find]

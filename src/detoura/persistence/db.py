@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -434,6 +434,47 @@ CREATE TABLE IF NOT EXISTS market_prior_tasks (
 );
 CREATE INDEX IF NOT EXISTS ix_priortask_job ON market_prior_tasks (job_id, status);
 CREATE INDEX IF NOT EXISTS ix_priortask_lease ON market_prior_tasks (status, lease_expires_at);
+
+-- ==================================================================
+-- V9 Phase 2.6 Part A — accounts, sessions, trip ownership. UserAccount is
+-- deliberately thin (no PII beyond a normalized email); Traveler/passenger
+-- data lives entirely elsewhere and is never joined into this table. A
+-- session's raw token is never stored - only its SHA-256 hash - and
+-- csrf_token_hash is likewise a hash, never the value handed to the browser.
+-- ==================================================================
+CREATE TABLE IF NOT EXISTS user_accounts (
+    user_id             TEXT PRIMARY KEY,
+    email_normalized    TEXT NOT NULL UNIQUE,
+    password_hash       TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    last_login_at       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    session_id          TEXT PRIMARY KEY,
+    user_id             TEXT NOT NULL,
+    token_hash          TEXT NOT NULL UNIQUE,
+    csrf_token_hash     TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    expires_at          TEXT NOT NULL,
+    revoked_at          TEXT,
+    last_seen_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_session_user ON auth_sessions (user_id);
+CREATE INDEX IF NOT EXISTS ix_session_token_hash ON auth_sessions (token_hash);
+
+-- One row per booking an authenticated user made. A booking with no row
+-- here is a valid, permanent anonymous/historical journey - never backfilled
+-- (V9 Phase 2.6 §A8).
+CREATE TABLE IF NOT EXISTS trip_ownership (
+    booking_id          TEXT PRIMARY KEY,
+    user_id             TEXT NOT NULL,
+    journey_reference   TEXT NOT NULL DEFAULT '',
+    claimed_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_trip_owner ON trip_ownership (user_id);
 """
 
 

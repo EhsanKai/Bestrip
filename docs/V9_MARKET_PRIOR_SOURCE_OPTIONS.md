@@ -78,3 +78,29 @@ This is reported truthfully in the release gate as:
    importer's `_ALLOWED_KEYS` allow-list drops anything not already an
    approved market/price/availability field, and this is a deliberate control,
    not an oversight to work around.
+
+## V9 Phase 2.5 update — the authorization/acquisition layer
+
+Phase 2.5 adds the *infrastructure* that can safely acquire from a real
+source once one is approved — `SourceRegistration` (fail-closed
+`AuthorizationStatus`, default `REVIEW_REQUIRED`), a bounded
+`BootstrapJob`/`BootstrapAcquisitionTask` model, and
+`AuthorizedHttpFetcher` (domain allowlist, SSRF guard, redirect validation,
+response-size limit, CAPTCHA/challenge detection, rate limiting) — see
+`docs/V9_PHASE2_5_MARKET_PRIOR_ACQUISITION.md` for the full architecture.
+
+**This does not change the rule above or this document's status matrix.**
+An `AUTHORIZED_WEB_SOURCE` / `API_SOURCE` registration still defaults to
+`REVIEW_REQUIRED` and `AuthorizedHttpFetcher.registration.network_allowed`
+is checked before *every* request; nothing in Phase 2.5 makes a live network
+call to a real third-party domain, and no such domain is registered.
+
+**REAL AUTHORIZED EXTERNAL SOURCE: NOT CONFIGURED** — unchanged from Phase 2.
+Phase 2.5 ships exactly one wired-up source: `fixture-europe-demo`
+(`SourceType.FILE_IMPORT`, deterministic, offline, `APPROVED` because it makes
+no external request at all — see `services/bootstrap_registry.py`). The full
+acquisition pipeline (job -> task -> fetch -> parse -> validate -> import) is
+demonstrated end to end against it in `scripts/bootstrap_e2e_demo.py`, and the
+network-safety controls (`AuthorizedHttpFetcher`) are proven against local
+stub HTTP clients in `tests/test_v9_phase25_network_safety.py` — never against
+a real domain.

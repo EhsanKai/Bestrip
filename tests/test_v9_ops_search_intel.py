@@ -128,6 +128,8 @@ def test_traces_endpoint_never_returns_pii(client, H):
 def test_phase2_routes_require_ops_auth(client):
     for p in ("/catalog", "/market-prior", "/market-prior/imports", "/knowledge"):
         assert client.get(f"/api/v1/ops/search-intel{p}").status_code in (401, 403)
+    # noted as a coverage gap in the Phase 2 QA report - closed here.
+    assert client.post("/api/v1/ops/search-intel/market-prior/prune").status_code in (401, 403)
 
 
 def test_catalog_endpoint_reports_expanded_scale(client, H):

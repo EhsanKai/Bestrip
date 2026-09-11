@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -359,6 +359,81 @@ CREATE TABLE IF NOT EXISTS booking_items (
     updated_at          TEXT NOT NULL,
     PRIMARY KEY (booking_id, sequence)
 );
+
+-- ==================================================================
+-- V9 Phase 2.5 — Authorized Market-Prior Acquisition. These three tables sit
+-- entirely upstream of market_priors: a job/task run here ends by feeding the
+-- existing Phase 2 import boundary (market_prior_import.run_import), and
+-- never writes market_priors directly. Fail-closed authorization lives on
+-- market_prior_sources; only authorization_status='APPROVED' rows may ever
+-- back a network-capable adapter (enforced in code, not just schema).
+-- ==================================================================
+CREATE TABLE IF NOT EXISTS market_prior_sources (
+    source_id           TEXT PRIMARY KEY,
+    source_name         TEXT NOT NULL,
+    source_type         TEXT NOT NULL,
+    authorization_status TEXT NOT NULL DEFAULT 'REVIEW_REQUIRED',
+    authorization_basis TEXT NOT NULL DEFAULT '',
+    allowed_scope       TEXT NOT NULL DEFAULT '',
+    commercial_reuse_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+    persistence_allowed INTEGER NOT NULL DEFAULT 1,
+    base_domain         TEXT,
+    rate_limit_json      TEXT NOT NULL DEFAULT '{}',
+    adapter_version     TEXT NOT NULL DEFAULT 'v1',
+    reviewed_at         TEXT,
+    reviewed_by         TEXT NOT NULL DEFAULT '',
+    notes               TEXT NOT NULL DEFAULT '',
+    robots_checked_at   TEXT,
+    robots_allowed      INTEGER,
+    request_cost_minor  INTEGER,
+    -- The next instant this source may be sent a request, in persisted
+    -- shared state rather than an in-process object - the choke point that
+    -- makes per-source rate limiting correct across every thread, job and
+    -- OS process sharing this database file (V9 Phase 2.5 §17, §59).
+    next_allowed_at     TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS market_prior_jobs (
+    job_id              TEXT PRIMARY KEY,
+    source_id           TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'PLANNED',
+    origin_scope_json   TEXT NOT NULL DEFAULT '[]',
+    destination_scope_json TEXT NOT NULL DEFAULT '[]',
+    horizon_scope_json  TEXT NOT NULL DEFAULT '[]',
+    request_budget      INTEGER NOT NULL,
+    dry_run             INTEGER NOT NULL DEFAULT 0,
+    planned             INTEGER NOT NULL DEFAULT 0,
+    deduplicated        INTEGER NOT NULL DEFAULT 0,
+    requests_used        INTEGER NOT NULL DEFAULT 0,
+    stopped_reason       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_priorjob_source ON market_prior_jobs (source_id, created_at);
+
+CREATE TABLE IF NOT EXISTS market_prior_tasks (
+    task_id             TEXT PRIMARY KEY,
+    job_id              TEXT NOT NULL,
+    source_id           TEXT NOT NULL,
+    origin              TEXT NOT NULL,
+    destination         TEXT NOT NULL,
+    horizon_bucket      TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'PENDING',
+    attempt_count       INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    last_attempt_at     TEXT,
+    next_retry_at       TEXT,
+    completed_at        TEXT,
+    parser_version      TEXT NOT NULL DEFAULT '',
+    failure_reason      TEXT NOT NULL DEFAULT '',
+    lease_owner         TEXT NOT NULL DEFAULT '',
+    lease_expires_at    TEXT,
+    UNIQUE (job_id, origin, destination, horizon_bucket)
+);
+CREATE INDEX IF NOT EXISTS ix_priortask_job ON market_prior_tasks (job_id, status);
+CREATE INDEX IF NOT EXISTS ix_priortask_lease ON market_prior_tasks (status, lease_expires_at);
 """
 
 
@@ -423,9 +498,22 @@ class Database:
     @contextmanager
     def write(self) -> Iterator[sqlite3.Connection]:
         """A serialised write transaction. Commits on success, rolls back on
-        error."""
+        error.
+
+        ``BEGIN IMMEDIATE``, not a plain (deferred) ``BEGIN``: a write
+        transaction is always going to write, so it should acquire SQLite's
+        write lock up front. A deferred ``BEGIN`` only takes a read lock
+        until the first write statement, which under concurrent writers
+        (V9 Phase 2.5: two OS processes hammering the same acquisition
+        source's rate-limit row) produces a reader-to-writer *lock upgrade*
+        race that ``PRAGMA busy_timeout`` does not reliably retry around —
+        observed directly as ``sqlite3.OperationalError: database is
+        locked`` under a cross-process acquisition test. ``BEGIN IMMEDIATE``
+        contends for the write lock itself, which ``busy_timeout`` *does*
+        retry, so a second writer (same process or a different one) simply
+        waits for the first transaction to commit."""
         with self._lock:
-            self._conn.execute("BEGIN")
+            self._conn.execute("BEGIN IMMEDIATE")
             try:
                 yield self._conn
             except BaseException:

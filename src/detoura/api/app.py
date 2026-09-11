@@ -30,6 +30,7 @@ from ..persistence import bootstrap as bootstrap_db
 from ..services.feedback import configure_sessions
 from ..services.session_store import store_from_env
 from .ops import router as ops_router
+from .ops_market_prior_acquisition import router as ops_acquisition_router
 from .ops_search_intel import router as ops_search_intel_router
 from .routes import router as engine_router
 from .static import mount_frontend
@@ -107,6 +108,9 @@ def create_app() -> FastAPI:
     # V9 Phase 1: read access to Search Intelligence (Price Memory coverage,
     # market signals, search traces, provider economics). Ops-authenticated.
     app.include_router(ops_search_intel_router)
+    # V9 Phase 2.5: Authorized Market-Prior Acquisition job control (sources,
+    # jobs, tasks). Ops-authenticated; unreachable from consumer search.
+    app.include_router(ops_acquisition_router)
     # Last: the SPA fallback is a catch-all and would shadow the routers.
     mount_frontend(app)
     return app

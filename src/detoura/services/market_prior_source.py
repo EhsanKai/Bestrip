@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Iterable, Iterator, Protocol
 
 
-def _stable_hash(*parts: str) -> int:
+def stable_hash(*parts: str) -> int:
     """A hash that is stable across processes and Python runs.
 
     Builtin ``hash()`` on ``str``/``tuple`` is salted per-process
@@ -93,7 +93,7 @@ class FixtureMarketPriorSource:
         for (o, d) in self.markets:
             if (o, d) in self.omit:
                 continue
-            h_od = _stable_hash(o, d)
+            h_od = stable_hash(o, d)
             base = 4000 + (h_od % 12000)  # 40..160 EUR-ish, minor units
             thin = (o, d) in self.thin_cheap
             if thin:
@@ -102,7 +102,7 @@ class FixtureMarketPriorSource:
                 # earlier booking a touch cheaper, deterministic
                 factor = 1.0 + max(0, (60 - hd)) / 300.0
                 typ = int(base * factor)
-                h_odh = _stable_hash(o, d, str(hd))
+                h_odh = stable_hash(o, d, str(hd))
                 yield {
                     "origin_airport": o,
                     "destination_airport": d,

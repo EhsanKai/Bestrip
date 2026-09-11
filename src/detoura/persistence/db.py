@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -258,6 +258,77 @@ CREATE TABLE IF NOT EXISTS search_traces (
 );
 CREATE INDEX IF NOT EXISTS ix_searchtrace_started ON search_traces (started_at);
 CREATE INDEX IF NOT EXISTS ix_searchtrace_origin ON search_traces (origin);
+
+-- ==================================================================
+-- V9 Phase 2: Bootstrap Market Prior — a SPARSE, external/pre-seeded,
+-- approximate historical view of markets. Architecturally distinct from
+-- price_observations (which is Detoura's own live acquisition history):
+-- different table, different provenance (source + source_version), different
+-- retention. NEVER a quote — no code path may treat market_priors as a
+-- bookable/current supplier fare. Money is integer minor units + explicit
+-- currency; anything the source did not supply is NULL (UNKNOWN, never 0).
+-- ==================================================================
+CREATE TABLE IF NOT EXISTS market_priors (
+    prior_id            TEXT PRIMARY KEY,
+    source              TEXT NOT NULL,
+    source_version      TEXT NOT NULL DEFAULT '',
+    imported_at         TEXT NOT NULL,
+    source_date         TEXT,
+    origin_airport      TEXT NOT NULL,
+    destination_airport TEXT NOT NULL,
+    destination_id      TEXT,
+    season              TEXT NOT NULL DEFAULT 'UNKNOWN',
+    month               INTEGER,
+    horizon_bucket      TEXT NOT NULL DEFAULT 'UNKNOWN',
+    weekday_class       TEXT NOT NULL DEFAULT 'UNKNOWN',
+    duration_bucket     TEXT NOT NULL DEFAULT 'UNKNOWN',
+    currency            TEXT NOT NULL,
+    sample_count        INTEGER,
+    observed_low_minor  INTEGER,
+    median_minor        INTEGER,
+    typical_minor       INTEGER,
+    observed_high_minor INTEGER,
+    confidence          TEXT NOT NULL DEFAULT 'LOW',
+    direct_possible     INTEGER,
+    weekly_frequency    INTEGER,
+    carrier_count       INTEGER,
+    provenance_version  INTEGER NOT NULL DEFAULT 1,
+    -- one row per (market x time-context bucket x source); a re-import of the
+    -- same logical row replaces it.
+    UNIQUE (source, origin_airport, destination_airport, season,
+            horizon_bucket, weekday_class, duration_bucket, currency)
+);
+CREATE INDEX IF NOT EXISTS ix_prior_market
+    ON market_priors (origin_airport, destination_airport);
+CREATE INDEX IF NOT EXISTS ix_prior_dest ON market_priors (destination_airport);
+CREATE INDEX IF NOT EXISTS ix_prior_source ON market_priors (source, imported_at);
+
+-- One row per bootstrap import run: provenance + metrics. Import failures are
+-- recorded here and never corrupt existing market_priors or price_observations.
+CREATE TABLE IF NOT EXISTS market_prior_imports (
+    import_id           TEXT PRIMARY KEY,
+    source              TEXT NOT NULL,
+    source_version      TEXT NOT NULL DEFAULT '',
+    started_at          TEXT NOT NULL,
+    finished_at         TEXT,
+    dry_run             INTEGER NOT NULL DEFAULT 0,
+    rows_seen           INTEGER NOT NULL DEFAULT 0,
+    rows_imported       INTEGER NOT NULL DEFAULT 0,
+    rows_updated        INTEGER NOT NULL DEFAULT 0,
+    rows_skipped_dup    INTEGER NOT NULL DEFAULT 0,
+    rows_rejected       INTEGER NOT NULL DEFAULT 0,
+    markets_covered     INTEGER NOT NULL DEFAULT 0,
+    origins_covered     INTEGER NOT NULL DEFAULT 0,
+    destinations_covered INTEGER NOT NULL DEFAULT 0,
+    -- external-source cost/limits, NULL when UNKNOWN (never reported as 0)
+    source_requests     INTEGER,
+    source_request_cost_minor INTEGER,
+    source_rate_limit_events  INTEGER,
+    rejected_json       TEXT NOT NULL DEFAULT '[]',
+    ok                  INTEGER NOT NULL DEFAULT 1,
+    error               TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_priorimport_source ON market_prior_imports (source, started_at);
 
 CREATE TABLE IF NOT EXISTS booking_items (
     booking_id          TEXT NOT NULL,

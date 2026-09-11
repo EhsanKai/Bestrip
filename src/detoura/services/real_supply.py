@@ -174,14 +174,13 @@ def acquire_real_supply(
 
     candidate_provenance = None
     if recorder is not None and getattr(recorder, "enabled", False) and used_days:
-        # a slightly wider ranked pool for the scorer to choose from
-        wide, _ = rank_candidates(
-            destinations, request,
-            limit=min(len(destinations), _budget.max_destinations * 2),
-            exploration_share=_budget.exploration_share,
-        )
+        # The recorder runs the full V9 Phase 2 candidate funnel over the whole
+        # catalogue — hard eligibility, feasibility, Market Prior + Price Memory
+        # batch lookup, opportunity scoring, diversity, EXPLOIT/EXPLORE
+        # allocation — and returns a bounded shortlist. It chooses *which*
+        # markets; the budget below still bounds *how many*.
         _chosen, candidate_provenance = recorder.plan_candidates(
-            wide, city_airports=city_airports, origin_airports=used_airports,
+            destinations, city_airports=city_airports, origin_airports=used_airports,
             departure_date=used_days[0], slots=_budget.max_destinations,
         )
 

@@ -16,6 +16,16 @@ import os
 from dataclasses import dataclass, field
 
 
+#: ~30 important European origin airports the bootstrap job prioritises
+#: (origin-first — V9 Phase 2 §6). Overridable via env
+#: ``MARKET_PRIOR_BOOTSTRAP_ORIGINS``.
+DEFAULT_BOOTSTRAP_ORIGINS: tuple[str, ...] = (
+    "LHR", "CDG", "AMS", "FRA", "MAD", "BCN", "FCO", "MUC", "BER", "DUB",
+    "CPH", "VIE", "ZRH", "LIS", "ARN", "OSL", "HEL", "BRU", "MAN", "MXP",
+    "ATH", "WAW", "PRG", "DUS", "CGN", "STN", "GVA", "OTP", "BUD", "EDI",
+)
+
+
 def _int(name: str, default: int) -> int:
     raw = os.getenv(name, "").strip()
     try:
@@ -30,6 +40,25 @@ def _float(name: str, default: float) -> float:
         return float(raw) if raw else default
     except ValueError:
         return default
+
+
+def _int_tuple(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        vals = tuple(int(x) for x in raw.replace(" ", "").split(",") if x)
+        return vals or default
+    except ValueError:
+        return default
+
+
+def _str_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    vals = tuple(x.strip().upper() for x in raw.split(",") if x.strip())
+    return vals or default
 
 
 def _opt_float(name: str) -> float | None:
@@ -117,6 +146,38 @@ class SearchIntelConfig:
 
     economics: ProviderEconomicsConfig = field(default_factory=ProviderEconomicsConfig)
 
+    # --- V9 Phase 2: Bootstrap Market Prior --------------------------------
+    prior_enabled: bool = True
+    prior_retention_days: int = 365
+    """Bootstrap prior rows older than this (by ``source_date`` or
+    ``imported_at``) are pruned. Longer than live Price Memory — a prior is
+    meant to be a slowly-changing background estimate."""
+    prior_horizon_bucket_days: tuple[int, ...] = (14, 30, 45, 60, 90, 120)
+    """The representative booking-horizon buckets a bootstrap import targets.
+    Configuration, not policy (env ``MARKET_PRIOR_HORIZON_BUCKETS``)."""
+    prior_decay_half_life_days: float = 120.0
+    """Confidence weight of a prior halves every this-many days past its
+    ``source_date``. Interpretable exponential decay (V9 §13)."""
+    prior_min_rows_for_band: int = 2
+    """Below this many matching prior rows, the expected price band is
+    suppressed (only a coarse "prior exists" signal remains)."""
+
+    # Signal precedence (V9 §12): recent live > older live > prior > cold-start.
+    # These are the *weights* the opportunity score blends the price-attractiveness
+    # component with; live always dominates when it is fresh and sufficient.
+    weight_live_when_confident: float = 1.0
+    weight_prior_ceiling: float = 0.55
+    """A prior's maximum influence on the price-attractiveness component, even
+    at HIGH prior confidence — so a bootstrap estimate never fully speaks for a
+    market Detoura has never actually priced."""
+    live_supersedes_min_samples: int = 4
+    """At or above this many fresh live observations, the prior's
+    price-attractiveness influence is scaled down to near zero."""
+
+    bootstrap_origin_airports: tuple[str, ...] = DEFAULT_BOOTSTRAP_ORIGINS
+    """~30 important European origin airports the bootstrap job prioritises
+    (origin-first — V9 §6). Env ``MARKET_PRIOR_BOOTSTRAP_ORIGINS``."""
+
     @classmethod
     def from_env(cls) -> "SearchIntelConfig":
         return cls(
@@ -144,6 +205,18 @@ class SearchIntelConfig:
                 excess_search_fee=_opt_float("DUFFEL_EXCESS_SEARCH_FEE"),
                 currency=os.getenv("DUFFEL_EXCESS_SEARCH_CURRENCY", "EUR").strip() or "EUR",
                 excess_ratio_threshold=_opt_float("DUFFEL_EXCESS_RATIO_THRESHOLD"),
+            ),
+            prior_enabled=os.getenv("MARKET_PRIOR_ENABLED", "1").strip() not in ("0", "false", "no"),
+            prior_retention_days=_int("MARKET_PRIOR_RETENTION_DAYS", 365),
+            prior_horizon_bucket_days=_int_tuple(
+                "MARKET_PRIOR_HORIZON_BUCKETS", (14, 30, 45, 60, 90, 120)
+            ),
+            prior_decay_half_life_days=_float("MARKET_PRIOR_DECAY_HALF_LIFE_DAYS", 120.0),
+            prior_min_rows_for_band=max(1, _int("MARKET_PRIOR_MIN_ROWS_FOR_BAND", 2)),
+            weight_prior_ceiling=min(1.0, max(0.0, _float("MARKET_PRIOR_WEIGHT_CEILING", 0.55))),
+            live_supersedes_min_samples=max(1, _int("MARKET_PRIOR_LIVE_SUPERSEDES_MIN", 4)),
+            bootstrap_origin_airports=_str_tuple(
+                "MARKET_PRIOR_BOOTSTRAP_ORIGINS", DEFAULT_BOOTSTRAP_ORIGINS
             ),
         )
 

@@ -106,6 +106,9 @@ def _destination(
     country: str,
     *,
     airport: str,
+    country_code: str,
+    subregion: str,
+    tags: tuple[str, ...] = (),
     history: float,
     nature: float,
     nightlife: float,
@@ -125,6 +128,13 @@ def _destination(
         id=id_,
         name=id_,
         country=country,
+        country_code=country_code,
+        region="Europe",
+        subregion=subregion,
+        tags=tags,
+        metadata_source="curated",
+        enabled=True,
+        acquisition_eligible=True,
         primary_airport=airport,
         history=history,
         nature=nature,
@@ -150,10 +160,12 @@ def _destination(
 #: other, because an experience model over identical cities cannot demonstrate
 #: anything. Zurich is the nature/quality outlier, Berlin the nightlife/culture
 #: one, Rome and Prague the history ones, Barcelona the only real beach city.
-DESTINATIONS: tuple[Destination, ...] = (
+CORE_DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "London", "United Kingdom",
         airport="LHR",
+        country_code="GB", subregion="UK & Ireland",
+        tags=("capital", "history", "museums", "shopping", "nightlife"),
         history=0.85, nature=0.35, nightlife=0.90, culture=0.95, food=0.75,
         architecture=0.80, shopping=0.95, museums=0.98, beaches=0.00,
         family_friendly=0.80, romance=0.60, adventure=0.45,
@@ -162,6 +174,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Brussels", "Belgium",
         airport="BRU",
+        country_code="BE", subregion="Benelux",
+        tags=("capital", "food", "architecture", "history"),
         history=0.65, nature=0.30, nightlife=0.55, culture=0.70, food=0.85,
         architecture=0.75, shopping=0.60, museums=0.70, beaches=0.00,
         family_friendly=0.65, romance=0.50, adventure=0.30,
@@ -170,6 +184,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Paris", "France",
         airport="CDG",
+        country_code="FR", subregion="France",
+        tags=("capital", "romance", "art", "food", "architecture"),
         history=0.90, nature=0.35, nightlife=0.75, culture=0.98, food=0.95,
         architecture=0.95, shopping=0.95, museums=1.00, beaches=0.00,
         family_friendly=0.70, romance=1.00, adventure=0.35,
@@ -178,6 +194,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Amsterdam", "Netherlands",
         airport="AMS",
+        country_code="NL", subregion="Benelux",
+        tags=("capital", "nightlife", "art", "architecture", "riverside"),
         history=0.70, nature=0.55, nightlife=0.85, culture=0.80, food=0.65,
         architecture=0.85, shopping=0.70, museums=0.90, beaches=0.20,
         family_friendly=0.70, romance=0.75, adventure=0.45,
@@ -186,6 +204,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Prague", "Czechia",
         airport="PRG",
+        country_code="CZ", subregion="Central Europe",
+        tags=("history", "oldtown", "architecture", "nightlife", "budget"),
         history=0.95, nature=0.40, nightlife=0.85, culture=0.85, food=0.70,
         architecture=0.95, shopping=0.50, museums=0.70, beaches=0.00,
         family_friendly=0.65, romance=0.85, adventure=0.40,
@@ -194,6 +214,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Vienna", "Austria",
         airport="VIE",
+        country_code="AT", subregion="Central Europe",
+        tags=("capital", "history", "baroque", "museums", "romance"),
         history=0.92, nature=0.45, nightlife=0.60, culture=0.95, food=0.80,
         architecture=0.92, shopping=0.70, museums=0.95, beaches=0.00,
         family_friendly=0.75, romance=0.85, adventure=0.35,
@@ -202,6 +224,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Madrid", "Spain",
         airport="MAD",
+        country_code="ES", subregion="Iberia",
+        tags=("capital", "nightlife", "art", "food", "museums"),
         history=0.80, nature=0.35, nightlife=0.90, culture=0.88, food=0.90,
         architecture=0.78, shopping=0.85, museums=0.92, beaches=0.00,
         family_friendly=0.70, romance=0.70, adventure=0.40,
@@ -210,6 +234,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Barcelona", "Spain",
         airport="BCN",
+        country_code="ES", subregion="Iberia",
+        tags=("beach", "architecture", "nightlife", "food", "art"),
         history=0.75, nature=0.70, nightlife=0.92, culture=0.90, food=0.88,
         architecture=0.95, shopping=0.85, museums=0.80, beaches=0.90,
         family_friendly=0.80, romance=0.80, adventure=0.65,
@@ -218,6 +244,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Milan", "Italy",
         airport="MXP",
+        country_code="IT", subregion="Italy",
+        tags=("shopping", "design", "food", "architecture"),
         history=0.70, nature=0.40, nightlife=0.70, culture=0.80, food=0.85,
         architecture=0.80, shopping=1.00, museums=0.75, beaches=0.00,
         family_friendly=0.55, romance=0.60, adventure=0.35,
@@ -226,6 +254,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Rome", "Italy",
         airport="FCO",
+        country_code="IT", subregion="Italy",
+        tags=("ancient", "history", "art", "food", "architecture"),
         history=1.00, nature=0.35, nightlife=0.65, culture=0.95, food=0.92,
         architecture=1.00, shopping=0.75, museums=0.95, beaches=0.15,
         family_friendly=0.70, romance=0.90, adventure=0.40,
@@ -234,6 +264,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Dublin", "Ireland",
         airport="DUB",
+        country_code="IE", subregion="UK & Ireland",
+        tags=("nightlife", "nature", "history", "food"),
         history=0.65, nature=0.65, nightlife=0.88, culture=0.70, food=0.60,
         architecture=0.55, shopping=0.55, museums=0.60, beaches=0.25,
         family_friendly=0.65, romance=0.55, adventure=0.60,
@@ -242,6 +274,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Copenhagen", "Denmark",
         airport="CPH",
+        country_code="DK", subregion="Nordics",
+        tags=("capital", "design", "food", "family"),
         history=0.60, nature=0.60, nightlife=0.70, culture=0.78, food=0.85,
         architecture=0.75, shopping=0.70, museums=0.72, beaches=0.35,
         family_friendly=0.90, romance=0.70, adventure=0.45,
@@ -250,6 +284,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Budapest", "Hungary",
         airport="BUD",
+        country_code="HU", subregion="Central Europe",
+        tags=("history", "nightlife", "spa", "architecture", "budget"),
         history=0.85, nature=0.50, nightlife=0.90, culture=0.80, food=0.72,
         architecture=0.90, shopping=0.50, museums=0.70, beaches=0.00,
         family_friendly=0.60, romance=0.80, adventure=0.50,
@@ -258,6 +294,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Berlin", "Germany",
         airport="BER",
+        country_code="DE", subregion="Central Europe",
+        tags=("capital", "nightlife", "history", "art", "museums"),
         history=0.90, nature=0.45, nightlife=0.95, culture=0.88, food=0.70,
         architecture=0.70, shopping=0.75, museums=0.95, beaches=0.10,
         family_friendly=0.65, romance=0.45, adventure=0.50,
@@ -266,6 +304,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Munich", "Germany",
         airport="MUC",
+        country_code="DE", subregion="Central Europe",
+        tags=("history", "outdoors", "food", "family", "festival"),
         history=0.70, nature=0.75, nightlife=0.65, culture=0.75, food=0.80,
         architecture=0.70, shopping=0.70, museums=0.75, beaches=0.00,
         family_friendly=0.85, romance=0.55, adventure=0.70,
@@ -274,6 +314,8 @@ DESTINATIONS: tuple[Destination, ...] = (
     _destination(
         "Zurich", "Switzerland",
         airport="ZRH",
+        country_code="CH", subregion="Central Europe",
+        tags=("lakes", "nature", "outdoors", "shopping"),
         history=0.50, nature=0.90, nightlife=0.45, culture=0.65, food=0.70,
         architecture=0.55, shopping=0.80, museums=0.60, beaches=0.30,
         family_friendly=0.80, romance=0.65, adventure=0.85,
@@ -282,7 +324,35 @@ DESTINATIONS: tuple[Destination, ...] = (
 )
 
 
+#: The full ~200-destination European discovery catalog (V9 Phase 2): the 16
+#: hand-tuned "core" cities (which also carry synthetic transport links) plus
+#: the broadly-tagged rest of Europe. The core set stays first so its ordering
+#: — which some legacy tests and the synthetic planner depend on — is unchanged.
+#:
+#: ``CORE_DESTINATIONS`` is what the synthetic ``StaticDestinationProvider``
+#: uses by default, so ``/api/v1/search`` behaviour is untouched. The
+#: real-supply / search-intelligence path uses this full catalog through the
+#: Phase 2 candidate funnel.
+from .european_catalog import EUROPEAN_CATALOG  # noqa: E402
+
+DESTINATIONS: tuple[Destination, ...] = CORE_DESTINATIONS + EUROPEAN_CATALOG
+
+#: Destination ids that also have synthetic transport links (the beam-searchable
+#: core network).
+CORE_DESTINATION_IDS: frozenset[str] = frozenset(d.id for d in CORE_DESTINATIONS)
+
+
+def acquisition_catalog() -> tuple[Destination, ...]:
+    """Every destination Detoura may spend a live provider request discovering:
+    ``enabled and acquisition_eligible`` with a usable primary airport."""
+    return tuple(
+        d for d in DESTINATIONS
+        if d.enabled and d.acquisition_eligible and d.primary_airport
+    )
+
+
 #: ``canonical key -> destination id`` lookup, used to resolve user input.
+#: Covers the full catalog so a user can name any of the ~200 cities.
 DESTINATION_INDEX: dict[str, str] = {canonical_key(d.id): d.id for d in DESTINATIONS}
 
 #: ``canonical key -> airport code`` lookup for origin airports.
@@ -291,7 +361,8 @@ AIRPORT_INDEX: dict[str, str] = {
     **{canonical_key(a.city): a.code for a in ORIGIN_AIRPORTS},
 }
 
-#: Every node id in the synthetic transport graph.
+#: Every node id in the synthetic transport graph — origins + the CORE cities
+#: only (the new discovery catalog has no synthetic links by design).
 ALL_NODES: tuple[str, ...] = tuple(a.code for a in ORIGIN_AIRPORTS) + tuple(
-    d.id for d in DESTINATIONS
+    d.id for d in CORE_DESTINATIONS
 )

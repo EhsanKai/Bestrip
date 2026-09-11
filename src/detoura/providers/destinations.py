@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Iterable, Protocol, runtime_checkable
 
-from ..data.destinations import DESTINATIONS, canonical_key
+from ..data.destinations import CORE_DESTINATIONS, canonical_key
 from ..models.destination import Destination
 
 
@@ -25,7 +25,7 @@ class StaticDestinationProvider:
     """Serves the built-in synthetic destination catalog."""
 
     def __init__(self, destinations: Iterable[Destination] | None = None) -> None:
-        source = list(destinations) if destinations is not None else list(DESTINATIONS)
+        source = list(destinations) if destinations is not None else list(CORE_DESTINATIONS)
         self._destinations = sorted(source, key=lambda d: d.id)
         self._index = {canonical_key(d.id): d for d in self._destinations}
         # Names may differ from ids in a richer catalog; index both.

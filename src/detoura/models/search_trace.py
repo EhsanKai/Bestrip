@@ -121,6 +121,10 @@ class SearchIntelligenceTrace(BaseModel):
     recommendations_produced: int = 0
     winner_recommendation_id: str = ""
 
+    #: V9 Phase 2 candidate-funnel stage counts (catalog_total → eligible_total
+    #: → feasible_total → prior/live/unknown → shortlisted → exploit/explore).
+    funnel: dict = Field(default_factory=dict)
+
     economics: SearchEconomicsSnapshot = Field(default_factory=SearchEconomicsSnapshot)
 
     @property

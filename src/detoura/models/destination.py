@@ -41,6 +41,35 @@ class Destination(BaseModel):
     name: str
     country: str
 
+    # --- V9 Phase 2: geography + catalog governance ---------------------
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
+    """ISO 3166-1 alpha-2, e.g. ``"FR"``. ``None`` for the legacy core catalog
+    entries written before this field existed."""
+    region: str = "Europe"
+    subregion: str | None = None
+    """A broad grouping used only for the diversity adjustment — e.g.
+    ``"Iberia"``, ``"Balkans"``, ``"Nordics"``, ``"Central Europe"``."""
+    timezone: str | None = None
+    latitude: float | None = Field(default=None, ge=-90.0, le=90.0)
+    longitude: float | None = Field(default=None, ge=-180.0, le=180.0)
+    secondary_airports: tuple[str, ...] = ()
+    """Retained for reference. Acquisition never fans out to these — the
+    primary airport is the single deterministic query node (V9 §18)."""
+    tags: tuple[str, ...] = ()
+    """Broad, truthful descriptors ("history", "beach", "nightlife",
+    "budget", "capital", "island", ...). The catalog derives the 12
+    experience attributes from these for entries that do not set them
+    explicitly, so we never fabricate fine-grained personality scores
+    (V9 §17)."""
+    enabled: bool = True
+    """A disabled destination is not offered anywhere."""
+    acquisition_eligible: bool = True
+    """Whether Detoura may spend a live provider request discovering this
+    market. Requires a usable ``primary_airport``."""
+    metadata_source: str = "synthetic"
+    """Where this row's data came from — ``"synthetic"``, ``"curated"``, an
+    import source id. Never presented as an authoritative external dataset."""
+
     primary_airport: str | None = Field(default=None, min_length=3, max_length=3)
     """The IATA code a real transport provider is queried with for this city (V8).
 
@@ -54,11 +83,14 @@ class Destination(BaseModel):
     """
 
     # --- V1 attributes -------------------------------------------------
-    history: float = Field(ge=0.0, le=1.0)
-    nature: float = Field(ge=0.0, le=1.0)
-    nightlife: float = Field(ge=0.0, le=1.0)
-    culture: float = Field(ge=0.0, le=1.0)
-    food: float = Field(ge=0.0, le=1.0)
+    # Default to "average" so a ~200-city catalog built from broad tags
+    # constructs without fabricating precise personality scores; the core
+    # 16 cities still set every value explicitly (V9 Phase 2 §17).
+    history: float = Field(default=0.5, ge=0.0, le=1.0)
+    nature: float = Field(default=0.5, ge=0.0, le=1.0)
+    nightlife: float = Field(default=0.5, ge=0.0, le=1.0)
+    culture: float = Field(default=0.5, ge=0.0, le=1.0)
+    food: float = Field(default=0.5, ge=0.0, le=1.0)
 
     # --- V3 attributes -------------------------------------------------
     architecture: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -85,6 +117,14 @@ class Destination(BaseModel):
         if self.recommended_max_days < self.recommended_min_days:
             raise ValueError(
                 f"{self.id}: recommended_max_days must be >= recommended_min_days"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _acq_needs_airport(self) -> "Destination":
+        if self.acquisition_eligible and self.enabled and not self.primary_airport:
+            raise ValueError(
+                f"{self.id}: acquisition_eligible requires a primary_airport"
             )
         return self
 

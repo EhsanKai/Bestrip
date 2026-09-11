@@ -117,6 +117,7 @@ class SearchIntelRecorder:
         """The date candidate decisions were scored against. When acquisition
         spans more than one date variant, the decision is shared across them and
         this records which date carried the intelligence (V9 QA fix §3)."""
+        self._funnel_trace: dict = {}
         self._ordinal = 0
 
     @property
@@ -135,94 +136,63 @@ class SearchIntelRecorder:
         departure_date: date,
         slots: int,
     ) -> tuple[list[Destination], dict[str, CandidateProvenance]]:
-        """Score the ranked candidates against Price Memory, choose ``slots`` of
-        them (guaranteeing an EXPLORE share), and record the decisions.
+        """Run the V9 Phase 2 candidate funnel over ``candidates`` (the full
+        acquisition catalog): hard eligibility → feasibility → batch Market
+        Prior + Price Memory lookup → Market Opportunity scoring → diversity →
+        EXPLOIT/EXPLORE allocation → bounded shortlist.
 
-        Returns ``(chosen destinations, {dest id -> CandidateProvenance})``. The
-        provenance dict is handed to ``build_plan`` so every edge — OUTBOUND,
-        RETURN and INTER_CITY — carries the right stance/reason/rank; stance is
-        never inferred later from ``edge.destination``.
+        Returns ``(chosen destinations, {dest id -> CandidateProvenance})``.
+        Provenance is handed to ``build_plan`` so every edge — OUTBOUND, RETURN
+        and INTER_CITY — carries the right stance/reason/rank; stance is never
+        inferred later from ``edge.destination``.
 
-        Cold start (empty Price Memory) → every candidate is EXPLORE and
-        selection falls back to the incoming rank order, so search correctness
-        never depends on history.
+        Cold start (no live history *and* no prior) → the market is UNKNOWN,
+        scores EXPLORE, and competes for the reserved EXPLORE slots, so an
+        unseen destination is never permanently unreachable and search
+        correctness never depends on any historical data.
         """
         self._scoring_reference_date = departure_date
         if not self.enabled or not candidates:
-            chosen = list(candidates[:slots])
-            return chosen, {}
+            return list(candidates[:slots]), {}
 
-        affinity = preference_affinity(candidates, self.request)
-        from ..models.search_intel import MarketKey
+        from .candidate_funnel import run_funnel
 
-        # A candidate's market is (each resolved origin airport) -> its airport,
-        # on the departure date. Query all (origin, dest) pairs in one batch and
-        # merge per destination — never merge currencies.
-        origins = [o.upper() for o in origin_airports] or [self.request.origin.upper()]
-        markets: list[MarketKey] = []
-        market_owner: dict[tuple, str] = {}
-        for d in candidates:
-            airport = (city_airports.get(d.id, d.id) or d.id).upper()
-            for o in origins:
-                mk = MarketKey.build(
-                    provider=self.provider, origin=o, destination=airport,
-                    departure_date=departure_date, travelers=self.travelers,
-                )
-                markets.append(mk)
-                market_owner[mk.as_tuple()] = d.id
+        result = run_funnel(
+            self.db, self.request, list(candidates),
+            origin_airports=list(origin_airports), departure_date=departure_date,
+            slots=slots, provider=self.provider, cfg=self.cfg, now=self._now(),
+        )
+        self._funnel_trace = result.trace.as_dict()
+        chosen_ids = {d.id for d in result.chosen}
 
-        signals = batch_market_signals(self.db, markets, cfg=self.cfg, now=self._now())
-        # merge every (origin, dest) signal for a destination into one, keeping
-        # currencies apart, then pick the primary.
-        per_dest: dict[str, dict[str, list]] = {}
-        for key_tuple, ccy_sigs in signals.items():
-            dest_id = market_owner.get(key_tuple)
-            if dest_id is None:
-                continue
-            for ccy, sig in ccy_sigs.items():
-                per_dest.setdefault(dest_id, {}).setdefault(ccy, []).append(sig)
-
-        inputs: list[CandidateInput] = []
-        for rank, d in enumerate(candidates):
-            airport = (city_airports.get(d.id, d.id) or d.id).upper()
-            sig = _merge_signals(per_dest.get(d.id, {}))
-            inputs.append(CandidateInput(
-                market=f"→{d.id}", pre_rank=rank, signal=sig,
-                preference_affinity=affinity.get(d.id), feasible=bool(airport),
-            ))
-
-        scored = score_candidates(inputs, cfg=self.cfg)
-        chosen = allocate(scored, slots=slots, cfg=self.cfg)
-        chosen_markets = {c.market for c in chosen}
-
-        by_market_score = {s.market: s for s in scored}
-        chosen_dest: list[Destination] = []
         provenance: dict[str, CandidateProvenance] = {}
-        for rank, d in enumerate(candidates):
-            s = by_market_score[f"→{d.id}"]
-            selected = s.market in chosen_markets
+        for s in result.scores.values():
+            dest_id = s.market[1:]
+            selected = dest_id in chosen_ids
+            conf = _knowledge_to_market_conf(s.knowledge)
             self._candidates.append(CandidateDecision(
-                market=f"{self.request.origin}→{d.id}",
-                pre_acquisition_rank=rank,
+                market=f"{self.request.origin}→{dest_id}",
+                pre_acquisition_rank=s.pre_rank,
                 stance=s.stance,
                 selected=selected,
                 selection_reason=s.reason,
-                intelligence_confidence=s.confidence,
-                historical_signal_used=s.historical_signal_used,
+                intelligence_confidence=conf,
+                historical_signal_used=s.knowledge in ("LIVE", "PRIOR"),
                 baseline_score=s.score,
-                score_components={**s.components, "scoring_reference_date": departure_date.isoformat()},
+                score_components={
+                    **s.components, "knowledge": s.knowledge,
+                    "scoring_reference_date": departure_date.isoformat(),
+                },
             ))
             if selected:
-                chosen_dest.append(d)
-                provenance[d.id] = CandidateProvenance(
-                    stance=s.stance, reason=s.reason, rank=rank,
+                provenance[dest_id] = CandidateProvenance(
+                    stance=s.stance,
+                    reason=f"[{s.knowledge}] {s.reason}",
+                    rank=s.pre_rank,
                     scoring_reference_date=departure_date,
                 )
-        # honour the allocation's ordering (exploit first, then explore)
-        order = {c.market: i for i, c in enumerate(chosen)}
-        chosen_dest.sort(key=lambda d: order.get(f"→{d.id}", 1_000))
-        ordered_prov = {d.id: provenance[d.id] for d in chosen_dest}
-        return chosen_dest, ordered_prov
+        ordered_prov = {d.id: provenance[d.id] for d in result.chosen if d.id in provenance}
+        return list(result.chosen), ordered_prov
 
     # ------------------------------------------------------------------
     # 2. per-call recording
@@ -427,6 +397,7 @@ class SearchIntelRecorder:
             call_outcomes=tuple(outcomes),
             recommendations_produced=recommendations_produced,
             winner_recommendation_id="",
+            funnel=dict(self._funnel_trace),
             economics=econ,
         )
         if self.enabled:
@@ -497,6 +468,16 @@ class SearchIntelRecorder:
             contributed_to_top_k=in_top,
             contributed_to_winner=in_win,
         )
+
+
+def _knowledge_to_market_conf(knowledge: str):
+    """Map the funnel's LIVE/PRIOR/UNKNOWN knowledge label onto the
+    CandidateDecision's MarketConfidence field for continuity with Phase 1."""
+    from ..models.search_intel import MarketConfidence
+    return {
+        "LIVE": MarketConfidence.MEDIUM, "PRIOR": MarketConfidence.LOW,
+        "UNKNOWN": MarketConfidence.NONE,
+    }.get(knowledge, MarketConfidence.NONE)
 
 
 def _merge_signals(by_ccy: dict[str, list]):

@@ -29,6 +29,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..persistence import bootstrap as bootstrap_db
 from ..services.feedback import configure_sessions
 from ..services.session_store import store_from_env
+from .auth import router as auth_router
+from .destination_images import mount_destination_images
+from .destination_images import router as destination_images_router
+from .me_trips import router as me_trips_router
 from .ops import router as ops_router
 from .ops_market_prior_acquisition import router as ops_acquisition_router
 from .ops_search_intel import router as ops_search_intel_router
@@ -102,6 +106,14 @@ def create_app() -> FastAPI:
     )
     app.include_router(product_router)
     app.include_router(engine_router)
+    # V9 Phase 2.6: account auth + My Trips. Anonymous callers of every other
+    # route are unaffected - nothing on the search/booking path depends on
+    # these.
+    app.include_router(auth_router)
+    app.include_router(me_trips_router)
+    # V9 Phase 2.6 Part B: destination-image manifest seam. A no-op (404s,
+    # not an error) when no image library has been acquired on disk.
+    app.include_router(destination_images_router)
     # V8.5: the admin/ops console API. Disabled (503) unless DETOURA_OPS_TOKEN
     # is set at runtime.
     app.include_router(ops_router)
@@ -111,6 +123,8 @@ def create_app() -> FastAPI:
     # V9 Phase 2.5: Authorized Market-Prior Acquisition job control (sources,
     # jobs, tasks). Ops-authenticated; unreachable from consumer search.
     app.include_router(ops_acquisition_router)
+    # Static WebP assets for the destination-image seam above.
+    mount_destination_images(app)
     # Last: the SPA fallback is a catch-all and would shadow the routers.
     mount_frontend(app)
     return app

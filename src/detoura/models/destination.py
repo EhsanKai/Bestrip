@@ -63,9 +63,19 @@ class Destination(BaseModel):
     (V9 §17)."""
     enabled: bool = True
     """A disabled destination is not offered anywhere."""
-    acquisition_eligible: bool = True
+    acquisition_eligible: bool = False
     """Whether Detoura may spend a live provider request discovering this
-    market. Requires a usable ``primary_airport``."""
+    market. Requires a usable ``primary_airport``.
+
+    Defaults to ``False`` — opt-in, not opt-out — because ``primary_airport``
+    defaults to ``None``. Every catalog builder (``data/destinations.py``,
+    ``data/european_catalog.py``) sets this ``True`` explicitly alongside a
+    real airport; a bare ``Destination(...)`` built ad hoc (a unit test, a
+    synthetic-only fixture) stays ineligible by default rather than failing
+    the airport-governance validator below for a concern it never opted into
+    (V9 Phase 2 regression fix — see ``tests/test_models.py`` /
+    ``tests/test_v3_experience.py``, which predate this field and construct a
+    ``Destination`` with no airport on purpose)."""
     metadata_source: str = "synthetic"
     """Where this row's data came from — ``"synthetic"``, ``"curated"``, an
     import source id. Never presented as an authoritative external dataset."""

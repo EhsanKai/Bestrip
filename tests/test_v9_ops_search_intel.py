@@ -1,4 +1,4 @@
-"""V9 Phase 1 — Ops read access to Search Intelligence + privacy of DTOs."""
+"""V9 Phase 1/2 — Ops read access to Search Intelligence + privacy of DTOs."""
 
 from __future__ import annotations
 
@@ -11,7 +11,10 @@ from fastapi.testclient import TestClient
 from detoura.api.app import create_app
 from detoura.models.search_intel import PriceObservation, SearchModeTag, TripShape
 from detoura.persistence import get_db
+from detoura.persistence import market_priors as mpp
 from detoura.persistence import price_memory as pm
+from detoura.services.market_prior_import import run_import
+from detoura.services.market_prior_source import FixtureMarketPriorSource
 
 
 @pytest.fixture
@@ -117,3 +120,91 @@ def test_traces_endpoint_never_returns_pii(client, H):
         assert bad not in blob
     detail = client.get("/api/v1/ops/search-intel/traces/srch_x", headers=H)
     assert detail.status_code == 200
+
+
+# ======================================================================
+# V9 Phase 2 — catalog + Bootstrap Market Prior Ops observability
+# ======================================================================
+def test_phase2_routes_require_ops_auth(client):
+    for p in ("/catalog", "/market-prior", "/market-prior/imports", "/knowledge"):
+        assert client.get(f"/api/v1/ops/search-intel{p}").status_code in (401, 403)
+
+
+def test_catalog_endpoint_reports_expanded_scale(client, H):
+    r = client.get("/api/v1/ops/search-intel/catalog", headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["catalog_total"] > 150       # far beyond the legacy 16
+    assert body["core_network_total"] == 16
+    assert body["acquisition_eligible_total"] > 150
+    assert body["countries_covered"] >= 20
+    assert body["subregions_covered"] >= 8
+    assert sum(body["by_subregion"].values()) == body["catalog_total"]
+
+
+def test_market_prior_endpoint_reports_coverage_and_is_not_a_quote(client, H):
+    db = get_db()
+    run_import(db, FixtureMarketPriorSource(markets=(("CGN", "BCN"), ("CGN", "FCO"))))
+    r = client.get("/api/v1/ops/search-intel/market-prior", headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["not_a_quote"] is True
+    assert body["coverage"]["rows"] == 12   # 2 markets x 6 horizon buckets
+    assert body["coverage"]["markets"] == 2
+
+
+def test_market_prior_imports_endpoint_lists_recorded_runs(client, H):
+    db = get_db()
+    run_import(db, FixtureMarketPriorSource(markets=(("CGN", "BCN"),), version="v1"))
+    r = client.get("/api/v1/ops/search-intel/market-prior/imports", headers=H)
+    assert r.status_code == 200
+    imports = r.json()["imports"]
+    assert len(imports) == 1
+    assert imports[0]["ok"] == 1
+
+
+def test_market_prior_prune_only_touches_the_prior_table(client, H):
+    db = get_db()
+    run_import(db, FixtureMarketPriorSource(markets=(("CGN", "BCN"),),
+                                            source_date=date(2020, 1, 1)))
+    r = client.post("/api/v1/ops/search-intel/market-prior/prune", headers=H)
+    assert r.status_code == 200
+    assert r.json()["priors_pruned"] == 6
+    assert mpp.coverage_summary(db)["rows"] == 0
+
+
+def test_knowledge_endpoint_aggregates_funnel_trace(client, H):
+    db = get_db()
+    from detoura.models.search_trace import SearchIntelligenceTrace
+    tr = SearchIntelligenceTrace(
+        search_id="srch_funnel", started_at=datetime.now(timezone.utc),
+        origin="CGN", date_from=date(2026, 9, 1), date_to=date(2026, 9, 14),
+        duration_days=5, travelers=2,
+        funnel={"catalog_total": 203, "live_history_known_count": 2,
+                "prior_known_count": 3, "fully_unknown_count": 3,
+                "shortlisted_total": 8, "exploit_candidates": 5,
+                "explore_candidates": 3},
+    )
+    pm.record_trace(db, tr)
+    r = client.get("/api/v1/ops/search-intel/knowledge", headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["searches_with_funnel_trace"] == 1
+    assert body["totals"]["live"] == 2
+    assert body["totals"]["prior"] == 3
+    assert body["totals"]["unknown"] == 3
+    assert body["totals"]["catalog_total"] == 203
+
+
+def test_knowledge_endpoint_skips_pre_phase2_traces_without_error(client, H):
+    db = get_db()
+    from detoura.models.search_trace import SearchIntelligenceTrace
+    tr = SearchIntelligenceTrace(
+        search_id="srch_old", started_at=datetime.now(timezone.utc),
+        origin="CGN", date_from=date(2026, 9, 1), date_to=date(2026, 9, 14),
+        duration_days=5, travelers=2,
+    )  # no `funnel` set -> defaults to {}
+    pm.record_trace(db, tr)
+    r = client.get("/api/v1/ops/search-intel/knowledge", headers=H)
+    assert r.status_code == 200
+    assert r.json()["searches_with_funnel_trace"] == 0

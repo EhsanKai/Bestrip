@@ -22,10 +22,23 @@ from __future__ import annotations
 
 import csv
 import json
+import zlib
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Iterable, Iterator, Protocol
+
+
+def _stable_hash(*parts: str) -> int:
+    """A hash that is stable across processes and Python runs.
+
+    Builtin ``hash()`` on ``str``/``tuple`` is salted per-process
+    (``PYTHONHASHSEED`` randomization) — two runs of the same fixture would
+    silently generate different synthetic prices, which contradicts the
+    "deterministic" contract this module documents and undermines any
+    benchmark or test that compares fixture output across process runs.
+    ``zlib.crc32`` has no such salting."""
+    return zlib.crc32("|".join(parts).encode("utf-8"))
 
 #: A raw, provider-neutral prior record. Keys are all optional except the
 #: market identity + currency; the import pipeline validates and buckets.
@@ -80,26 +93,28 @@ class FixtureMarketPriorSource:
         for (o, d) in self.markets:
             if (o, d) in self.omit:
                 continue
-            base = 4000 + (hash((o, d)) % 12000)  # 40..160 EUR-ish, minor units
+            h_od = _stable_hash(o, d)
+            base = 4000 + (h_od % 12000)  # 40..160 EUR-ish, minor units
             thin = (o, d) in self.thin_cheap
             if thin:
-                base = 2500 + (hash((o, d)) % 1500)  # cheap
+                base = 2500 + (h_od % 1500)  # cheap
             for hd in self.horizon_days:
                 # earlier booking a touch cheaper, deterministic
                 factor = 1.0 + max(0, (60 - hd)) / 300.0
                 typ = int(base * factor)
+                h_odh = _stable_hash(o, d, str(hd))
                 yield {
                     "origin_airport": o,
                     "destination_airport": d,
                     "horizon_days": hd,
                     "currency": self.currency,
-                    "sample_count": 6 if thin else 40 + (hash((o, d, hd)) % 30),
+                    "sample_count": 6 if thin else 40 + (h_odh % 30),
                     "observed_low_minor": int(typ * 0.72),
                     "median_minor": typ,
                     "observed_high_minor": int(typ * 1.55),
-                    "direct_possible": (hash((o, d)) % 3 != 0),
-                    "weekly_frequency": 3 if thin else 7 + (hash((o, d)) % 30),
-                    "carrier_count": 1 if thin else 1 + (hash((o, d)) % 4),
+                    "direct_possible": (h_od % 3 != 0),
+                    "weekly_frequency": 3 if thin else 7 + (h_od % 30),
+                    "carrier_count": 1 if thin else 1 + (h_od % 4),
                     "source_date": self.source_date.isoformat() if self.source_date else None,
                 }
 

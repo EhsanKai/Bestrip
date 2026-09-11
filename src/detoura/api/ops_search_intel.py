@@ -10,13 +10,16 @@ signal is returned with ``not_a_quote: true`` and amounts are labelled
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from ..data.destinations import CORE_DESTINATIONS, DESTINATIONS, acquisition_catalog
 from ..models.money import from_minor_units
 from ..models.search_intel import MarketKey
 from ..persistence import get_db
+from ..persistence import market_priors as mpp
 from ..persistence import price_memory as pm
 from ..search_intel_config import search_intel_config
 from ..services import provider_economics
@@ -161,4 +164,104 @@ def si_prune(actor: str = Depends(require_ops)) -> dict:
         "observations_pruned": obs,
         "traces_pruned": tr,
         "stale_provenance_pruned": stale,
+    }
+
+
+# ======================================================================
+# V9 Phase 2 — catalog + Bootstrap Market Prior observability (§41)
+# ======================================================================
+@router.get("/catalog")
+def si_catalog(actor: str = Depends(require_ops)) -> dict:
+    """Catalog stats only — no UI, no per-city personality scores. Confirms at
+    a glance that acquisition is not still limited to the legacy 16 cities."""
+    acq = acquisition_catalog()
+    countries = {d.country_code for d in DESTINATIONS if d.country_code}
+    subregions = {d.subregion for d in DESTINATIONS if d.subregion}
+    by_subregion: dict[str, int] = {}
+    for d in DESTINATIONS:
+        key = d.subregion or "UNKNOWN"
+        by_subregion[key] = by_subregion.get(key, 0) + 1
+    return {
+        "catalog_total": len(DESTINATIONS),
+        "core_network_total": len(CORE_DESTINATIONS),
+        "enabled_total": sum(1 for d in DESTINATIONS if d.enabled),
+        "acquisition_eligible_total": len(acq),
+        "countries_covered": len(countries),
+        "subregions_covered": len(subregions),
+        "by_subregion": by_subregion,
+        "test_data": True,
+    }
+
+
+@router.get("/market-prior")
+def si_market_prior(actor: str = Depends(require_ops)) -> dict:
+    """Bootstrap Market Prior coverage and freshness — never a fare. Distinct
+    from ``/traces`` and ``/markets``, which are live Price Memory."""
+    db = get_db()
+    cfg = search_intel_config()
+    cov = mpp.coverage_summary(db)
+    stale = mpp.stale_row_count(db, retention_days=cfg.prior_retention_days)
+    return {
+        "prior_enabled": cfg.prior_enabled,
+        "retention_days": cfg.prior_retention_days,
+        "decay_half_life_days": cfg.prior_decay_half_life_days,
+        "coverage": cov,
+        "stale_row_count": stale,
+        "not_a_quote": True,
+        "note": "Bootstrap Market Prior is approximate historical intelligence "
+                "for acquisition scoring only — never a current fare or booking input.",
+        "test_data": True,
+    }
+
+
+@router.get("/market-prior/imports")
+def si_market_prior_imports(
+    actor: str = Depends(require_ops),
+    limit: int = Query(default=20, ge=1, le=200),
+) -> dict:
+    rows = mpp.recent_imports(get_db(), limit=limit)
+    return {"imports": rows, "test_data": True}
+
+
+@router.post("/market-prior/prune")
+def si_market_prior_prune(actor: str = Depends(require_ops)) -> dict:
+    db = get_db()
+    cfg = search_intel_config()
+    deleted = mpp.prune(db, retention_days=cfg.prior_retention_days)
+    return {"retention_days": cfg.prior_retention_days, "priors_pruned": deleted}
+
+
+@router.get("/knowledge")
+def si_knowledge(
+    actor: str = Depends(require_ops),
+    sample: int = Query(default=50, ge=1, le=500),
+) -> dict:
+    """LIVE / PRIOR / UNKNOWN candidate counts, aggregated from the funnel
+    trace of the last ``sample`` searches (§20, §21). A search before Phase 2
+    has no ``funnel`` field and is simply skipped, never reported as zero."""
+    rows = pm.recent_traces(get_db(), limit=sample)
+    totals = {"live": 0, "prior": 0, "unknown": 0, "shortlisted": 0,
+              "exploit": 0, "explore": 0, "catalog_total": None}
+    searches_with_funnel = 0
+    for r in rows:
+        try:
+            body = json.loads(r.get("trace_json") or "{}")
+        except (TypeError, ValueError):
+            continue
+        funnel = body.get("funnel") or {}
+        if not funnel:
+            continue
+        searches_with_funnel += 1
+        totals["live"] += funnel.get("live_history_known_count", 0) or 0
+        totals["prior"] += funnel.get("prior_known_count", 0) or 0
+        totals["unknown"] += funnel.get("fully_unknown_count", 0) or 0
+        totals["shortlisted"] += funnel.get("shortlisted_total", 0) or 0
+        totals["exploit"] += funnel.get("exploit_candidates", 0) or 0
+        totals["explore"] += funnel.get("explore_candidates", 0) or 0
+        totals["catalog_total"] = funnel.get("catalog_total", totals["catalog_total"])
+    return {
+        "searches_sampled": len(rows),
+        "searches_with_funnel_trace": searches_with_funnel,
+        "totals": totals,
+        "test_data": True,
     }

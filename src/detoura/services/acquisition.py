@@ -201,7 +201,17 @@ def rank_candidates(
             score *= 0.5
         return score
 
-    eligible = [d for d in destinations if d.id.casefold() not in avoid]
+    # V9 Phase 2: a destination that is disabled, not opted into acquisition,
+    # or has no resolvable airport must never be selected for a real provider
+    # call here - this is the fallback path used whenever the search
+    # intelligence recorder is off (candidate_provenance is None in
+    # build_plan), so it cannot rely on the funnel's own eligibility filter to
+    # keep an ineligible catalog entry out of the acquisition plan.
+    eligible = [
+        d for d in destinations
+        if d.id.casefold() not in avoid
+        and d.enabled and d.acquisition_eligible and d.primary_airport
+    ]
     # Named destinations are not candidates to be ranked - they are the answer
     # to a question the traveller already settled.
     pinned = [d for d in eligible if d.id.casefold() in must or d.id.casefold() in preferred]

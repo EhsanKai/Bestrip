@@ -39,3 +39,12 @@ detoura.db
 
 # Local build artifact — a 26MB zip of the client bundle, not a source input.
 frontend.zip
+
+# V9 Phase 2.6 Part B: destination-image acquisition scratch. The pipeline
+# processes downloads in memory and never writes a raw original to disk, but
+# these are reserved for any future cache/debug use so one is never
+# accidentally committed. The manifest and optimized data/destination_images/
+# assets/*.webp ARE committed - they are the actual product, not scratch.
+data/destination_images/originals/
+data/destination_images/cache/
+data/destination_images/reports/

@@ -42,7 +42,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DETOURA_FRONTEND_DIST=/app/web \
-    DETOURA_DB_PATH=/app/data/detoura.db
+    DETOURA_DB_PATH=/app/data/detoura.db \
+    DETOURA_DESTINATION_IMAGES_DIR=/app/data/destination_images
 
 WORKDIR /app
 
@@ -52,6 +53,13 @@ COPY src/ ./src/
 RUN pip install --no-cache-dir ".[api,session]"
 
 COPY --from=web /build/dist /app/web
+
+# The destination-image provenance manifest and pre-optimized WebP assets
+# (V9 Phase 2.6 Part B) - a build-time artifact like the frontend dist, not
+# runtime-generated, so it ships in the image rather than depending on the
+# acquisition pipeline (network access, Pillow) ever running in production.
+COPY data/destination_images/manifest.json /app/data/destination_images/manifest.json
+COPY data/destination_images/assets/ /app/data/destination_images/assets/
 
 # The commercial + ops SQLite database (V8.5). Mount a volume here to keep
 # promo codes, markup policy versions, the economics ledger and the audit

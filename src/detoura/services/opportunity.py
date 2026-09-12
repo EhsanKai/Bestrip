@@ -69,6 +69,10 @@ class OpportunityInput:
     live: HistoricalPriceSignal | None
     prior: HistoricalMarketPriorSignal | None
     preference_affinity: float | None = None
+    """USER FIT (V9 §B5) — how well this destination matches *this
+    traveler's* stated preferences (:func:`detoura.services.acquisition.preference_affinity`).
+    Deliberately separate from ``attractiveness_score`` below, which is the
+    same number for every traveler. ``None`` = unknown, scored neutral."""
     feasible: bool = True
     #: this market's historical contribution rates from live Price Memory,
     #: any may be None (unknown)
@@ -77,6 +81,14 @@ class OpportunityInput:
     winner_rate: float | None = None
     subregion: str | None = None
     country_code: str | None = None
+    attractiveness_score: float | None = None
+    """GLOBAL DESTINATION ATTRACTIVENESS (V9 Phase 3 §B) — this destination's
+    :class:`~detoura.models.attractiveness.DestinationAttractivenessProfile`
+    aggregate, rescaled to ``[0, 1]``. ``None`` when the profile is UNKNOWN
+    (no catalog basis) or not supplied by the caller — scored neutral (0.5),
+    never a penalty: a destination Detoura has not yet profiled is not
+    assumed unattractive (§A3 "do not silently convert unknown values into
+    optimistic values" cuts the other way too — neutral, not penalised)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +174,8 @@ def score_opportunities(
 
     w_price, w_conf, w_fresh = 0.28, 0.16, 0.12
     w_pref, w_feas, w_supply, w_contrib = 0.16, 0.10, 0.08, 0.10
-    wsum = w_price + w_conf + w_fresh + w_pref + w_feas + w_supply + w_contrib
+    w_attract = max(0.0, cfg.weight_attractiveness)
+    wsum = w_price + w_conf + w_fresh + w_pref + w_feas + w_supply + w_contrib + w_attract
 
     out: list[OpportunityScore] = []
     for i in inputs:
@@ -186,11 +199,18 @@ def score_opportunities(
         # market we have never tried is neutral (0.5), never penalised.
         contrib_parts = [r for r in (i.useful_rate, i.top_k_rate, i.winner_rate) if r is not None]
         contrib_c = (0.5 + 0.5 * (sum(contrib_parts) / len(contrib_parts))) if contrib_parts else 0.5
+        # V9 Phase 3 §A3/§B: global destination attractiveness, independent of
+        # this traveler's preferences (that is `pref_c` above). UNKNOWN -> the
+        # same neutral 0.5 every other unset component gets, never a penalty.
+        attract_c = (
+            0.5 if i.attractiveness_score is None
+            else max(0.0, min(1.0, i.attractiveness_score))
+        )
 
         base = (
             w_price * price_c + w_conf * conf_c + w_fresh * fresh_c
             + w_pref * pref_c + w_feas * feas_c + w_supply * supply_c
-            + w_contrib * contrib_c
+            + w_contrib * contrib_c + w_attract * attract_c
         ) / wsum
 
         stance = _stance(kn)
@@ -206,6 +226,8 @@ def score_opportunities(
                 "confidence": round(conf_c, 4), "freshness": round(fresh_c, 4),
                 "preference": round(pref_c, 4), "feasibility": feas_c,
                 "supply": round(supply_c, 4), "contribution": round(contrib_c, 4),
+                "attractiveness": round(attract_c, 4),
+                "attractiveness_known": i.attractiveness_score is not None,
                 "base": round(base, 4),
                 "exploration_bonus": (
                     cfg.exploration_bonus if stance is AcquisitionStance.EXPLORE else 0.0

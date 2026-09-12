@@ -318,7 +318,15 @@ class SearchIntelRecorder:
         cache_misses: int = 0,
         provider_calls_used: int = 0,
         recommendations_produced: int = 0,
+        portfolio: tuple[dict, ...] = (),
+        portfolio_metrics: dict | None = None,
     ) -> SearchIntelligenceTrace:
+        """``portfolio``/``portfolio_metrics`` (V9 Phase 3 §D2): the final
+        Recommendation Portfolio's per-destination decisions and aggregate
+        diagnostics, when ``services.live_search`` ran that pass. Both
+        default empty — a search that never reranked (no ``portfolio_db``,
+        or a multi-city itinerary the pass could not apply to) persists an
+        honestly empty portfolio section, never fabricated decisions."""
         candidate_calls = getattr(self, "_candidate_calls", set())
         top_k_calls = getattr(self, "_top_k_calls", set())
         winner_calls = getattr(self, "_winner_calls", set())
@@ -399,6 +407,8 @@ class SearchIntelRecorder:
             winner_recommendation_id="",
             funnel=dict(self._funnel_trace),
             economics=econ,
+            portfolio=tuple(portfolio),
+            portfolio_metrics=dict(portfolio_metrics or {}),
         )
         if self.enabled:
             pm.record_trace(self.db, trace)

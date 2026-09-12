@@ -127,6 +127,20 @@ class SearchIntelligenceTrace(BaseModel):
 
     economics: SearchEconomicsSnapshot = Field(default_factory=SearchEconomicsSnapshot)
 
+    #: V9 Phase 3 §D2 — the final Recommendation Portfolio's per-destination
+    #: decisions (:class:`detoura.services.portfolio.PortfolioDecision`,
+    #: serialized), when a portfolio reranking pass ran. Empty when Phase 3
+    #: portfolio reranking was not applied to this search (e.g. a multi-city
+    #: itinerary the reranker could not map to single destinations) — the
+    #: planner's own ranking then stands unmodified, and this trace says so
+    #: rather than fabricating decisions for a pass that never ran.
+    portfolio: tuple[dict, ...] = ()
+    portfolio_metrics: dict = Field(default_factory=dict)
+    """Aggregate before/after-style diagnostics for the final portfolio
+    (mean attractiveness, geographic/experience concentration, country
+    diversity — see ``services.portfolio.PortfolioResult.metrics``). Ops/debug
+    only, never surfaced to a consumer."""
+
     @property
     def explore_fraction(self) -> float | None:
         total = self.calls_explore + self.calls_exploit

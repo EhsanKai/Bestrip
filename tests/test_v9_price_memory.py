@@ -76,7 +76,7 @@ def test_migration_from_v4_database_is_non_destructive(tmp_path):
     conn.commit()
     conn.close()
     d = Database(path)  # runs _migrate
-    assert d.query_one("SELECT version FROM schema_version")["version"] == 8
+    assert d.query_one("SELECT version FROM schema_version")["version"] == 9
     assert d.query_one("SELECT x FROM booking_economics WHERE booking_id='bk_keep'")["x"] == 42
     assert d.query("SELECT * FROM price_observations") == []
 

@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -475,6 +475,37 @@ CREATE TABLE IF NOT EXISTS trip_ownership (
     claimed_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_trip_owner ON trip_ownership (user_id);
+
+-- ==================================================================
+-- V9 Phase 3: Destination Attractiveness
+-- ==================================================================
+-- One row per (destination_id, model_version). Versioned by design: a new
+-- model_version never overwrites or reinterprets an old row - it is a new
+-- row, so a stored profile's meaning never silently changes underneath a
+-- caller that cached it, and the whole history of a destination's scores
+-- across model revisions stays queryable. "Current" is whichever
+-- model_version the running config names (see attractiveness_config.py),
+-- not implicitly "the highest row" or "the last written".
+CREATE TABLE IF NOT EXISTS destination_attractiveness (
+    destination_id            TEXT NOT NULL,
+    model_version             INTEGER NOT NULL,
+    sightseeing_score         REAL,
+    culture_score             REAL,
+    food_score                REAL,
+    nightlife_score           REAL,
+    nature_score              REAL,
+    uniqueness_score          REAL,
+    short_trip_score          REAL,
+    experience_density_score  REAL,
+    aggregate_score           REAL,
+    confidence                TEXT NOT NULL DEFAULT 'UNKNOWN',
+    provenance                TEXT NOT NULL DEFAULT 'UNKNOWN',
+    source                    TEXT NOT NULL DEFAULT '',
+    updated_at                TEXT NOT NULL,
+    PRIMARY KEY (destination_id, model_version)
+);
+CREATE INDEX IF NOT EXISTS ix_attractiveness_version
+    ON destination_attractiveness (model_version);
 """
 
 

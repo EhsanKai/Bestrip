@@ -101,6 +101,34 @@ ORIGIN_DISTANCES_KM: dict[str, dict[str, float]] = {
 }
 
 
+#: City-centre coordinates for the 16 hand-tuned core cities (V9 Phase 3
+#: minimal compatibility fix). These predate the V9 Phase 2 geography fields
+#: and were left ``None`` — harmless while nothing read them, but a real gap
+#: once geographic-diversity scoring (§C2) needs coordinates for the *whole*
+#: catalog, not just the ~187-city discovery set. Well-known public city
+#: centres, rounded to match the precision already used in
+#: ``european_catalog.py`` — no new claim about any of these cities beyond
+#: where they are.
+_CORE_COORDS: dict[str, tuple[float, float]] = {
+    "London": (51.51, -0.13),
+    "Brussels": (50.85, 4.35),
+    "Paris": (48.86, 2.35),
+    "Amsterdam": (52.37, 4.90),
+    "Prague": (50.09, 14.42),
+    "Vienna": (48.21, 16.37),
+    "Madrid": (40.42, -3.70),
+    "Barcelona": (41.39, 2.16),
+    "Milan": (45.46, 9.19),
+    "Rome": (41.90, 12.50),
+    "Dublin": (53.35, -6.26),
+    "Copenhagen": (55.68, 12.57),
+    "Budapest": (47.50, 19.04),
+    "Berlin": (52.52, 13.40),
+    "Munich": (48.14, 11.58),
+    "Zurich": (47.37, 8.54),
+}
+
+
 def _destination(
     id_: str,
     country: str,
@@ -124,6 +152,7 @@ def _destination(
     min_days: float,
     max_days: float,
 ) -> Destination:
+    lat, lon = _CORE_COORDS.get(id_, (None, None))
     return Destination(
         id=id_,
         name=id_,
@@ -136,6 +165,8 @@ def _destination(
         enabled=True,
         acquisition_eligible=True,
         primary_airport=airport,
+        latitude=lat,
+        longitude=lon,
         history=history,
         nature=nature,
         nightlife=nightlife,

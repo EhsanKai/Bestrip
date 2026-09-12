@@ -34,6 +34,7 @@ from .destination_images import mount_destination_images
 from .destination_images import router as destination_images_router
 from .me_trips import router as me_trips_router
 from .ops import router as ops_router
+from .ops_attractiveness import router as ops_attractiveness_router
 from .ops_market_prior_acquisition import router as ops_acquisition_router
 from .ops_search_intel import router as ops_search_intel_router
 from .routes import router as engine_router
@@ -123,6 +124,9 @@ def create_app() -> FastAPI:
     # V9 Phase 2.5: Authorized Market-Prior Acquisition job control (sources,
     # jobs, tasks). Ops-authenticated; unreachable from consumer search.
     app.include_router(ops_acquisition_router)
+    # V9 Phase 3: read access to Destination Attractiveness profiles/coverage
+    # + a reseed trigger. Ops-authenticated; no consumer-facing route.
+    app.include_router(ops_attractiveness_router)
     # Static WebP assets for the destination-image seam above.
     mount_destination_images(app)
     # Last: the SPA fallback is a catch-all and would shadow the routers.

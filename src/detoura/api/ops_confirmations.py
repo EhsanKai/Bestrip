@@ -37,8 +37,10 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     from ..persistence import communications as communication_store
+    from ..services import communication_service
 except (ImportError, ModuleNotFoundError):
     communication_store = None  # type: ignore
+    communication_service = None  # type: ignore
 
 router = APIRouter(prefix="/api/v1/ops/confirmations", tags=["ops", "confirmations"])
 
@@ -232,20 +234,19 @@ def retry_communication(booking_id: str, actor: str = Depends(require_ops)) -> d
     if booking is None:
         raise HTTPException(status_code=404, detail={"message": "No such booking."})
 
-    if communication_store is None:
+    if communication_service is None:
         # Module not merged yet - return placeholder indicating action was received.
-        # Once Agent 5's module is merged, this will call the real function.
         return {
             "booking_id": booking_id,
             "status": "retry_requested",
-            "note": "communication persistence module not yet available",
+            "note": "communication service not yet available",
         }
 
     try:
-        # Call the communication domain's resend/retry function.
-        # This function must validate that the communication is in a retriable state
-        # and enforce whatever rate limits / retry policies it defines.
-        result = communication_store.request_resend(db, booking_id=booking_id)
+        # Same domain function the consumer-facing resend uses (§U: no
+        # separate, weaker Ops code path) - validates state, enforces the
+        # domain's own invariants, never lets Ops fabricate a status.
+        result = communication_service.request_resend(db, booking_id=booking_id)
     except Exception as error:
         # Any validation/policy error from the communication domain propagates.
         raise HTTPException(

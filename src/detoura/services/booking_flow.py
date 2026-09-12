@@ -315,6 +315,19 @@ def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -
                 finalize_economics(run, db)
             except Exception:
                 pass
+            # V9 Phase 5: try to run the post-booking finalizer now that the
+            # durable booking record + (if applicable) economics ledger row
+            # exist. Deliberately a SEPARATE try/except from the block
+            # above - a finalizer failure (confirmation/document/email)
+            # must never be indistinguishable from a booking-persistence
+            # failure, and must never re-raise into this thread.
+            try:
+                from ..persistence import get_db as _get_db
+                from .post_booking_finalizer import try_finalize
+
+                try_finalize(_get_db(), booking_id=run.booking_id)
+            except Exception:
+                pass
 
     threading.Thread(target=_worker, name=f"booking-{run.booking_id}", daemon=True).start()
 

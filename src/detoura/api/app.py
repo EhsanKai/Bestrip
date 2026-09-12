@@ -35,6 +35,7 @@ from .destination_images import router as destination_images_router
 from .me_trips import router as me_trips_router
 from .ops import router as ops_router
 from .ops_attractiveness import router as ops_attractiveness_router
+from .ops_confirmations import router as ops_confirmations_router
 from .ops_market_prior_acquisition import router as ops_acquisition_router
 from .ops_payments import router as ops_payments_router
 from .ops_search_intel import router as ops_search_intel_router
@@ -135,6 +136,10 @@ def create_app() -> FastAPI:
     # V9 Phase 4: payment visibility + explicit, domain-validated recovery
     # actions (reconcile/capture/cancel/refund) - no generic "set status".
     app.include_router(ops_payments_router)
+    # V9 Phase 5: post-booking confirmation/document/communication visibility
+    # + the one safe recovery action (retry communication) - no generic
+    # "mark sent"/"mark issued"/"mark confirmed".
+    app.include_router(ops_confirmations_router)
     # Static WebP assets for the destination-image seam above.
     mount_destination_images(app)
     # Last: the SPA fallback is a catch-all and would shadow the routers.

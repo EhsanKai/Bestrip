@@ -41,8 +41,10 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     from ..persistence import communications as communication_store
+    from ..services import communication_service
 except (ImportError, ModuleNotFoundError):
     communication_store = None  # type: ignore
+    communication_service = None  # type: ignore
 
 router = APIRouter(prefix="/api/v1/me", tags=["me"])
 
@@ -224,23 +226,19 @@ def resend_confirmation(
 
     require_csrf(request, session)
 
-    if communication_store is None:
+    if communication_service is None:
         # Module not merged yet - return placeholder indicating action was received.
-        # Once Agent 5's module is merged, this will call:
-        # communication_store.request_resend(db, booking_id=booking_id,
-        #                                     communication_type="confirmation")
         return {"booking_id": booking_id, "status": "resend_requested"}
 
     try:
-        # Call through to the communication domain's resend function.
-        # Expected function signature:
-        #   request_resend(db, booking_id: str, communication_type: str) -> Communication
-        result = communication_store.request_resend(
-            db, booking_id=booking_id, communication_type="confirmation"
-        )
+        # request_resend re-renders and re-sends the SAME logical
+        # booking-confirmation communication - a new attempt, never a new
+        # communication row (see services/communication_service.py).
+        result = communication_service.request_resend(db, booking_id=booking_id)
     except Exception as error:
-        # Catch any validation errors from the communication domain (e.g.,
-        # rate limit exceeded, invalid booking state, etc.)
+        # Any domain error (no communication exists yet, one is already
+        # in-flight, an invalid transition) surfaces as a 409 - Ops/the
+        # caller cannot force the domain's own invariants.
         raise HTTPException(
             status_code=409, detail={"message": str(error)}
         )

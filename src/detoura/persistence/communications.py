@@ -195,6 +195,18 @@ def get_communication_for_booking(
     return _row_to_communication(row) if row else None
 
 
+def list_communications_for_booking(db: Database, booking_id: str) -> list[CustomerCommunication]:
+    """Every communication for a booking, across all (currently one)
+    communication types - added for Ops visibility (V9 Phase 5 §
+    integration): a booking's post-booking recovery view needs to show
+    every logical communication that exists for it, not just one type."""
+    rows = db.query(
+        "SELECT * FROM customer_communications WHERE booking_id=? ORDER BY created_at",
+        (booking_id,),
+    )
+    return [_row_to_communication(r) for r in rows]
+
+
 def compare_and_swap_communication(
     db: Database, *, communication: CustomerCommunication, expected_version: int,
 ) -> CustomerCommunication:
@@ -274,14 +286,29 @@ def list_attempts_for_communication(
 
 def update_attempt_completion(
     db: Database, *, attempt_id: str, completed_at: datetime, status: str,
+    provider_message_id: str | None = None,
 ) -> None:
-    """Mark an attempt as completed with final status."""
+    """Mark an attempt as completed with final status.
+
+    ``provider_message_id`` is written when the provider returned one
+    (including on an UNKNOWN outcome, where the provider may have received
+    the request even though the response never arrived - see
+    ``sandbox_email.py``) - without this, a later reconciliation call has
+    nothing to retrieve against and an UNKNOWN outcome can never be
+    resolved to real provider truth (V9 Phase 5 integration finding)."""
     with db.write() as conn:
-        conn.execute(
-            "UPDATE communication_attempts SET completed_at=?, status=?"
-            " WHERE attempt_id=?",
-            (completed_at.isoformat(), status, attempt_id),
-        )
+        if provider_message_id is not None:
+            conn.execute(
+                "UPDATE communication_attempts SET completed_at=?, status=?, provider_message_id=?"
+                " WHERE attempt_id=?",
+                (completed_at.isoformat(), status, provider_message_id, attempt_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE communication_attempts SET completed_at=?, status=?"
+                " WHERE attempt_id=?",
+                (completed_at.isoformat(), status, attempt_id),
+            )
 
 
 # ======================================================================

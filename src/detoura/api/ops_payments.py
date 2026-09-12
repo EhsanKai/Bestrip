@@ -158,6 +158,18 @@ def ops_capture(payment_id: str, actor: str = Depends(require_ops)) -> dict:
         updated = ps.request_capture(db, payment=payment, provider=provider)
     except store.StaleVersion:
         raise HTTPException(status_code=409, detail={"message": "This payment changed concurrently; re-fetch and retry."})
+    # V9 Phase 5: a payment can settle AFTER its booking already reached a
+    # terminal phase (today's only live capture path is this Ops action -
+    # see post_booking_finalizer.py's module docstring). Re-running the
+    # finalizer here lets a confirmation held at PENDING_VERIFICATION for
+    # want of a settled payment promote to CONFIRMED once this capture
+    # succeeds. Never lets a finalizer failure affect the capture response.
+    try:
+        from ..services.post_booking_finalizer import try_finalize
+
+        try_finalize(db, booking_id=updated.booking_id)
+    except Exception:
+        pass
     return _payment_dto(updated)
 
 

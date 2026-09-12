@@ -217,7 +217,20 @@ def _apply_authorize_result(
         "provider_payment_reference": result.provider_reference or payment.provider_payment_reference,
         "authorized_amount": result.authorized_amount or payment.authorized_amount,
     })
-    stored = store.compare_and_swap_payment(db, payment=updated, expected_version=payment.version)
+    try:
+        stored = store.compare_and_swap_payment(db, payment=updated, expected_version=payment.version)
+    except store.StaleVersion:
+        # A genuinely concurrent authorize_payment call for this SAME
+        # payment (both threads read the identical pre-authorize version,
+        # both reached the provider - which the idempotency-key cache
+        # already collapsed into one real execution, §J) raced on this
+        # final write. The loser never double-executed anything; it is
+        # simply not the thread whose write landed. Re-read and return the
+        # real current state rather than raising for it - a caller of
+        # authorize_payment must never see an exception from a race that
+        # produced no double authorization at all (§X.7).
+        current = store.get_payment(db, payment.payment_id)
+        return current if current is not None else payment
     store.record_event(db, PaymentEvent(
         event_id=_event_id(), payment_id=payment.payment_id, event_type=event_type,
         occurred_at=now, amount=result.authorized_amount, detail=detail,

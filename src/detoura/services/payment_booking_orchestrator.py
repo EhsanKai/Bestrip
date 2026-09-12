@@ -191,3 +191,27 @@ def run_paid_booking(
         requires_customer_reconfirmation=False,
         summary=f"unexpected booking phase {run.phase.value} after an authorized payment; needs Ops review",
     )
+
+
+def run_paid_booking_and_finalize(db: Database, **kwargs) -> PaidBookingOutcome:
+    """V9 Phase 5 integration seam, added ADDITIVELY - :func:`run_paid_booking`
+    itself (Phase 4, closed/approved) is untouched above. This is the literal
+    ``BookingPaymentOutcome -> Eligibility evaluation`` starting point the
+    Phase 5 post-booking finalizer pipeline is drawn from: once payment,
+    booking and recovery have all been reasoned about (whatever
+    ``run_paid_booking`` decided), run the finalizer against the durable
+    state it just wrote (the booking record + payment transaction), so a
+    caller of this combined entry point gets confirmation/document/
+    communication handling for free, without this module needing to import
+    anything from those domains at its own top level. A finalizer failure
+    is swallowed here exactly as it is at every other trigger point - it
+    must never turn this function's own, already-decided outcome into
+    something else."""
+    outcome = run_paid_booking(db, **kwargs)
+    try:
+        from .post_booking_finalizer import try_finalize
+
+        try_finalize(db, booking_id=outcome.payment.booking_id)
+    except Exception:
+        pass
+    return outcome

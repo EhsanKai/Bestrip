@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -647,6 +647,130 @@ CREATE TABLE IF NOT EXISTS reconciliation_findings (
 );
 CREATE INDEX IF NOT EXISTS ix_reconciliation_payment ON reconciliation_findings (payment_id);
 CREATE INDEX IF NOT EXISTS ix_reconciliation_open ON reconciliation_findings (resolved);
+
+-- V9 Phase 5: journey confirmations (Agent 1). Exactly one row per booking
+-- (booking_id UNIQUE is the idempotency mechanism for a replayed/concurrent
+-- finalizer run). booking_phase/payment_status are snapshots taken at
+-- eligibility-evaluation time, never live joins.
+CREATE TABLE IF NOT EXISTS journey_confirmations (
+    confirmation_id     TEXT PRIMARY KEY,
+    booking_id          TEXT NOT NULL UNIQUE,
+    journey_reference   TEXT NOT NULL,
+    user_id             TEXT,
+    status              TEXT NOT NULL,
+    service_tier        TEXT NOT NULL DEFAULT '',
+    booking_phase       TEXT NOT NULL,
+    payment_id          TEXT,
+    payment_status      TEXT,
+    party_size          INTEGER NOT NULL DEFAULT 1,
+    lead_name           TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL,
+    finalized_at        TEXT,
+    version             INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS ix_confirmation_user ON journey_confirmations (user_id);
+CREATE INDEX IF NOT EXISTS ix_confirmation_status ON journey_confirmations (status);
+CREATE INDEX IF NOT EXISTS ix_confirmation_payment ON journey_confirmations (payment_id);
+
+CREATE TABLE IF NOT EXISTS confirmation_events (
+    event_id            TEXT PRIMARY KEY,
+    confirmation_id     TEXT NOT NULL,
+    event_type          TEXT NOT NULL,
+    occurred_at         TEXT NOT NULL,
+    detail              TEXT NOT NULL DEFAULT '',
+    data_json           TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS ix_confirmation_event ON confirmation_events (confirmation_id, occurred_at);
+
+-- V9 Phase 5: financial documents (Agent 2) - receipt / invoice / credit
+-- note. An issued row is NEVER updated. A refund adds a CREDIT_NOTE row
+-- pointing at the original via adjusts_document_id (does NOT invalidate
+-- it); a correction adds a row via supersedes_document_id (does). Money is
+-- integer minor units; NULL means UNKNOWN, never zero.
+CREATE TABLE IF NOT EXISTS financial_documents (
+    document_id               TEXT PRIMARY KEY,
+    document_type             TEXT NOT NULL,
+    document_number           TEXT NOT NULL UNIQUE,
+    booking_id                TEXT NOT NULL,
+    journey_reference         TEXT NOT NULL,
+    user_id                   TEXT,
+    currency                  TEXT NOT NULL,
+    supplier_transport_minor  INTEGER,
+    supplier_baggage_minor    INTEGER,
+    supplier_fees_minor       INTEGER,
+    detoura_markup_minor      INTEGER,
+    detoura_service_fee_minor INTEGER,
+    discount_minor            INTEGER,
+    tax_minor                 INTEGER,
+    customer_total_minor      INTEGER NOT NULL,
+    captured_amount_minor     INTEGER NOT NULL,
+    refunded_amount_minor     INTEGER NOT NULL DEFAULT 0,
+    issued_at                 TEXT NOT NULL,
+    adjusts_document_id       TEXT,
+    supersedes_document_id    TEXT,
+    is_production             INTEGER NOT NULL DEFAULT 0,
+    idempotency_key           TEXT NOT NULL UNIQUE,
+    pdf_blob                  BLOB
+);
+CREATE INDEX IF NOT EXISTS ix_findoc_booking ON financial_documents (booking_id);
+CREATE INDEX IF NOT EXISTS ix_findoc_user ON financial_documents (user_id);
+CREATE INDEX IF NOT EXISTS ix_findoc_adjusts ON financial_documents (adjusts_document_id);
+CREATE INDEX IF NOT EXISTS ix_findoc_supersedes ON financial_documents (supersedes_document_id);
+
+-- One row per numbering series (e.g. RCPT-2026). next_value is the last
+-- number handed out, incremented inside a write transaction - never
+-- read-then-written back.
+CREATE TABLE IF NOT EXISTS document_numbering (
+    series      TEXT PRIMARY KEY,
+    next_value  INTEGER NOT NULL DEFAULT 0
+);
+
+-- V9 Phase 5: customer communications (Agent 3) - one logical
+-- booking-confirmation email per booking; a resend is a new
+-- communication_attempts row on the same communication, never a new one.
+CREATE TABLE IF NOT EXISTS customer_communications (
+    communication_id TEXT PRIMARY KEY,
+    booking_id TEXT NOT NULL,
+    journey_reference TEXT NOT NULL,
+    user_id TEXT,
+    channel TEXT NOT NULL,
+    communication_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    recipient_address TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(booking_id, communication_type)
+);
+CREATE INDEX IF NOT EXISTS idx_communications_booking ON customer_communications(booking_id);
+CREATE INDEX IF NOT EXISTS idx_communications_user ON customer_communications(user_id);
+
+CREATE TABLE IF NOT EXISTS communication_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    communication_id TEXT NOT NULL REFERENCES customer_communications(communication_id),
+    attempt_number INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    provider_name TEXT NOT NULL,
+    provider_message_id TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE(communication_id, attempt_number)
+);
+CREATE INDEX IF NOT EXISTS idx_attempts_communication ON communication_attempts(communication_id);
+
+CREATE TABLE IF NOT EXISTS communication_events (
+    event_id TEXT PRIMARY KEY,
+    communication_id TEXT NOT NULL REFERENCES customer_communications(communication_id),
+    attempt_id TEXT REFERENCES communication_attempts(attempt_id),
+    event_type TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    detail TEXT DEFAULT '',
+    data_json TEXT DEFAULT '{}',
+    FOREIGN KEY(communication_id) REFERENCES customer_communications(communication_id)
+);
+CREATE INDEX IF NOT EXISTS idx_events_communication ON communication_events(communication_id);
+CREATE INDEX IF NOT EXISTS idx_events_occurred ON communication_events(occurred_at);
 """
 
 

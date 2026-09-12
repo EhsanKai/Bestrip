@@ -661,7 +661,20 @@ def _finalize_if_terminal(run) -> None:
 
 def _intent_dto(run) -> BookingIntentResponse:
     _finalize_if_terminal(run)
-    persist_run(run, get_db())
+    db = get_db()
+    persist_run(run, db)
+    if run.phase in _TERMINAL_PHASES:
+        # V9 Phase 5: the post-booking finalizer reads only the durable
+        # BookingRecord/PaymentTransaction/EconomicsRow just written above -
+        # never this in-memory `run` - so it is safe to call on every poll
+        # once terminal, not just the first one (idempotent by construction
+        # in each domain it touches). Never let it break a poll response.
+        try:
+            from ..services.post_booking_finalizer import try_finalize
+
+            try_finalize(db, booking_id=run.booking_id)
+        except Exception:
+            pass
     from ..services.booking_commercial import reconcile_run_price
 
     rec = reconcile_run_price(run)

@@ -16,7 +16,7 @@ from detoura.models.search_intel import (
     travelers_bucket,
 )
 from detoura.persistence import price_memory as pm
-from detoura.persistence.db import Database
+from detoura.persistence.db import SCHEMA_VERSION, Database
 from detoura.search_intel_config import SearchIntelConfig
 from detoura.services.acquisition_scoring import (
     CandidateInput,
@@ -76,7 +76,10 @@ def test_migration_from_v4_database_is_non_destructive(tmp_path):
     conn.commit()
     conn.close()
     d = Database(path)  # runs _migrate
-    assert d.query_one("SELECT version FROM schema_version")["version"] == 9
+    # Asserted against the live constant, not a hardcoded number - this test
+    # exists to prove migration is non-destructive, not to pin the current
+    # schema version (which every phase that adds tables bumps).
+    assert d.query_one("SELECT version FROM schema_version")["version"] == SCHEMA_VERSION
     assert d.query_one("SELECT x FROM booking_economics WHERE booking_id='bk_keep'")["x"] == 42
     assert d.query("SELECT * FROM price_observations") == []
 

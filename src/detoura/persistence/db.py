@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -506,6 +506,147 @@ CREATE TABLE IF NOT EXISTS destination_attractiveness (
 );
 CREATE INDEX IF NOT EXISTS ix_attractiveness_version
     ON destination_attractiveness (model_version);
+
+-- ==================================================================
+-- V9 Phase 4: Payment Architecture & Transaction Foundation
+-- ==================================================================
+-- Everything here follows the same money discipline as `bookings` /
+-- `economics`: integer minor units, never float, and UNKNOWN is a real
+-- distinct value from 0.
+
+-- The immutable checkout/payment snapshot (V9 Phase 4 §C). Once written, a
+-- row is never updated - a new snapshot is a new row, and a payment always
+-- points at the exact snapshot it was authorized against. This is a
+-- server-owned price freeze: the CommercialQuote that priced it is embedded
+-- verbatim (quote_json), never recomputed from live rules later.
+CREATE TABLE IF NOT EXISTS checkout_snapshots (
+    snapshot_id           TEXT PRIMARY KEY,
+    booking_id            TEXT NOT NULL,
+    journey_reference     TEXT NOT NULL,
+    user_id               TEXT,
+    service_tier          TEXT NOT NULL,
+    currency              TEXT NOT NULL,
+    customer_total_minor  INTEGER NOT NULL,
+    markup_policy_id      TEXT NOT NULL DEFAULT '',
+    markup_policy_version INTEGER NOT NULL DEFAULT 0,
+    price_provenance      TEXT NOT NULL DEFAULT '',
+    quote_json            TEXT NOT NULL DEFAULT '{}',
+    revalidation_json     TEXT NOT NULL DEFAULT '{}',
+    created_at            TEXT NOT NULL,
+    expires_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_checkout_snapshot_booking ON checkout_snapshots (booking_id);
+
+-- One row per payment transaction - the current, mutable state. History is
+-- never reconstructed from this row alone; `payment_events` is the
+-- append-only ledger of every irreversible step that got it here.
+-- `idempotency_key` is UNIQUE: a retried "create payment" with the same key
+-- is a single atomic INSERT attempt, never a read-then-write race.
+CREATE TABLE IF NOT EXISTS payment_transactions (
+    payment_id                  TEXT PRIMARY KEY,
+    journey_reference           TEXT NOT NULL,
+    booking_id                  TEXT NOT NULL,
+    user_id                     TEXT,
+    checkout_snapshot_id        TEXT NOT NULL,
+    currency                    TEXT NOT NULL,
+    customer_total_minor        INTEGER NOT NULL,
+    status                      TEXT NOT NULL,
+    provider                    TEXT NOT NULL,
+    provider_payment_reference  TEXT,
+    idempotency_key             TEXT NOT NULL UNIQUE,
+    authorized_amount_minor     INTEGER NOT NULL DEFAULT 0,
+    captured_amount_minor       INTEGER NOT NULL DEFAULT 0,
+    refunded_amount_minor       INTEGER NOT NULL DEFAULT 0,
+    created_at                  TEXT NOT NULL,
+    updated_at                  TEXT NOT NULL,
+    version                     INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS ix_payment_booking ON payment_transactions (booking_id);
+CREATE INDEX IF NOT EXISTS ix_payment_user ON payment_transactions (user_id);
+CREATE INDEX IF NOT EXISTS ix_payment_provider_ref ON payment_transactions (provider_payment_reference);
+CREATE INDEX IF NOT EXISTS ix_payment_status ON payment_transactions (status);
+
+-- Append-only financial ledger (V9 Phase 4 §Q). Every irreversible money
+-- action gets a row here, in order, and a row here is never updated or
+-- deleted - the current-state row above can be rebuilt from this history if
+-- it is ever in doubt. Never a payment credential in `detail`/`data_json`.
+CREATE TABLE IF NOT EXISTS payment_events (
+    event_id            TEXT PRIMARY KEY,
+    payment_id          TEXT NOT NULL,
+    event_type          TEXT NOT NULL,
+    occurred_at          TEXT NOT NULL,
+    amount_minor        INTEGER,
+    detail               TEXT NOT NULL DEFAULT '',
+    data_json           TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS ix_payment_event_payment ON payment_events (payment_id, occurred_at);
+
+-- Inbound provider event (webhook) receipt + dedup. The primary key IS the
+-- idempotency mechanism: a duplicate or replayed webhook is a second INSERT
+-- attempt against the same (provider, provider_event_id) and fails
+-- atomically - never a SELECT-then-INSERT race. Out-of-order events are
+-- tolerated by the payment state machine, not by this table.
+CREATE TABLE IF NOT EXISTS payment_provider_events (
+    provider            TEXT NOT NULL,
+    provider_event_id   TEXT NOT NULL,
+    payment_id          TEXT,
+    event_type          TEXT NOT NULL DEFAULT '',
+    received_at         TEXT NOT NULL,
+    payload_json        TEXT NOT NULL DEFAULT '{}',
+    processed           INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider, provider_event_id)
+);
+CREATE INDEX IF NOT EXISTS ix_provider_event_payment ON payment_provider_events (payment_id);
+
+-- Refunds are their own entity, not a field on payment_transactions -
+-- multiple refund attempts against one payment are multiple rows here.
+-- `idempotency_key` UNIQUE is the same atomic-claim pattern as payments.
+CREATE TABLE IF NOT EXISTS refunds (
+    refund_id                  TEXT PRIMARY KEY,
+    payment_id                  TEXT NOT NULL,
+    amount_minor                INTEGER NOT NULL,
+    currency                    TEXT NOT NULL,
+    status                      TEXT NOT NULL,
+    reason                      TEXT NOT NULL DEFAULT '',
+    idempotency_key              TEXT NOT NULL UNIQUE,
+    provider_refund_reference    TEXT,
+    created_at                   TEXT NOT NULL,
+    updated_at                   TEXT NOT NULL,
+    version                      INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS ix_refund_payment ON refunds (payment_id);
+
+-- Accounting/reconciliation-friendly breakdown of what one payment
+-- economically covers (V9 Phase 4 §H) - never a duplicate of the V8.5
+-- commercial engine, just a record of which components a captured payment
+-- corresponds to. Written once, from the same PriceBreakdown/quote the
+-- checkout snapshot froze.
+CREATE TABLE IF NOT EXISTS payment_allocations (
+    allocation_id        TEXT PRIMARY KEY,
+    payment_id           TEXT NOT NULL,
+    component            TEXT NOT NULL,
+    label                TEXT NOT NULL DEFAULT '',
+    amount_minor         INTEGER NOT NULL,
+    currency             TEXT NOT NULL,
+    created_at           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_allocation_payment ON payment_allocations (payment_id);
+
+-- Reconciliation discrepancies (V9 Phase 4 §P) - classified, never
+-- silently auto-corrected. Ops resolves them explicitly.
+CREATE TABLE IF NOT EXISTS reconciliation_findings (
+    finding_id           TEXT PRIMARY KEY,
+    payment_id           TEXT NOT NULL,
+    local_status         TEXT NOT NULL,
+    provider_status      TEXT NOT NULL,
+    classification       TEXT NOT NULL,
+    detail               TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    resolved             INTEGER NOT NULL DEFAULT 0,
+    resolved_at          TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_reconciliation_payment ON reconciliation_findings (payment_id);
+CREATE INDEX IF NOT EXISTS ix_reconciliation_open ON reconciliation_findings (resolved);
 """
 
 

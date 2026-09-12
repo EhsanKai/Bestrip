@@ -36,7 +36,9 @@ from .me_trips import router as me_trips_router
 from .ops import router as ops_router
 from .ops_attractiveness import router as ops_attractiveness_router
 from .ops_market_prior_acquisition import router as ops_acquisition_router
+from .ops_payments import router as ops_payments_router
 from .ops_search_intel import router as ops_search_intel_router
+from .payments import router as payments_router
 from .routes import router as engine_router
 from .static import mount_frontend
 from .v1 import router as product_router
@@ -112,6 +114,9 @@ def create_app() -> FastAPI:
     # these.
     app.include_router(auth_router)
     app.include_router(me_trips_router)
+    # V9 Phase 4: payment intents/confirm/refund + provider webhook.
+    # Server-owned amount/currency/quote throughout - never client-supplied.
+    app.include_router(payments_router)
     # V9 Phase 2.6 Part B: destination-image manifest seam. A no-op (404s,
     # not an error) when no image library has been acquired on disk.
     app.include_router(destination_images_router)
@@ -127,6 +132,9 @@ def create_app() -> FastAPI:
     # V9 Phase 3: read access to Destination Attractiveness profiles/coverage
     # + a reseed trigger. Ops-authenticated; no consumer-facing route.
     app.include_router(ops_attractiveness_router)
+    # V9 Phase 4: payment visibility + explicit, domain-validated recovery
+    # actions (reconcile/capture/cancel/refund) - no generic "set status".
+    app.include_router(ops_payments_router)
     # Static WebP assets for the destination-image seam above.
     mount_destination_images(app)
     # Last: the SPA fallback is a catch-all and would shadow the routers.

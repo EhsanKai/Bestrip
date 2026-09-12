@@ -235,13 +235,19 @@ def resend_confirmation(
         # booking-confirmation communication - a new attempt, never a new
         # communication row (see services/communication_service.py).
         result = communication_service.request_resend(db, booking_id=booking_id)
-    except Exception as error:
-        # Any domain error (no communication exists yet, one is already
-        # in-flight, an invalid transition) surfaces as a 409 - Ops/the
-        # caller cannot force the domain's own invariants.
-        raise HTTPException(
-            status_code=409, detail={"message": str(error)}
-        )
+    except (
+        communication_service.NoSuchCommunication,
+        communication_service.CommunicationAlreadyInFlight,
+    ) as error:
+        # Only these two known, safe-to-echo domain errors surface with
+        # their own message - no communication exists yet, or a send is
+        # already in flight (a concurrent resend loses this race cleanly;
+        # see persistence.communications.claim_send_slot, V9 Phase 5 QA
+        # finding #1). Anything else (an unexpected internal exception)
+        # must never echo str(error) to a caller - that leaked a raw
+        # sqlite3.IntegrityError, including real table/column names,
+        # before this fix - so it falls through to FastAPI's own 500.
+        raise HTTPException(status_code=409, detail={"message": str(error)})
 
     return {
         "booking_id": booking_id,

@@ -992,3 +992,49 @@ def test_finalizer_shaped_flow_failed_booking_creates_nothing(db):
     assert get_confirmation_for_booking(db, "bk_never") is None
     rows = db.query("SELECT COUNT(*) AS n FROM journey_confirmations")
     assert rows[0]["n"] == 0
+
+
+# ======================================================================
+# V9 Phase 5 QA finding #2 regression: RECOVERY_REQUIRED != CONFIRMED
+# even when only `recovery_state` (not `phase`) reflects the problem.
+# ======================================================================
+def test_recovery_state_flag_overrides_an_otherwise_confirmable_booking():
+    """A booking that looks perfectly healthy by phase/payment alone
+    (complete + captured) must never read CONFIRMED once an explicit
+    Ops/ticket-operations recovery flag is set - a cancellation attempt
+    that itself failed leaves `phase` untouched but sets `recovery_state`."""
+    status = evaluate_confirmation_eligibility(
+        booking_phase=PHASE_COMPLETE, payment_status="CAPTURED", has_payment=True,
+        recovery_state="CANCELLATION_FAILED",
+    )
+    assert status is ConfirmationStatus.PARTIAL_RECOVERY
+    assert status is not ConfirmationStatus.CONFIRMED
+
+
+def test_recovery_state_empty_string_is_healthy_not_a_flag():
+    status = evaluate_confirmation_eligibility(
+        booking_phase=PHASE_COMPLETE, payment_status="CAPTURED", has_payment=True,
+        recovery_state="",
+    )
+    assert status is ConfirmationStatus.CONFIRMED
+
+
+def test_recovery_state_flag_checked_before_confirmed_for_every_named_recovery_value():
+    """Every value in persistence.bookings.RECOVERY_STATES (except the
+    healthy "") must prevent CONFIRMED on an otherwise-eligible booking."""
+    from detoura.persistence.bookings import RECOVERY_STATES
+
+    for value in RECOVERY_STATES:
+        status = evaluate_confirmation_eligibility(
+            booking_phase=PHASE_COMPLETE, payment_status="CAPTURED", has_payment=True,
+            recovery_state=value,
+        )
+        assert status is not ConfirmationStatus.CONFIRMED, f"recovery_state={value!r} leaked CONFIRMED"
+
+
+def test_require_confirmation_status_also_honors_recovery_state():
+    status = require_confirmation_status(
+        booking_phase=PHASE_COMPLETE, payment_status="CAPTURED", has_payment=True,
+        recovery_state="PRICE_CHANGED",
+    )
+    assert status is ConfirmationStatus.PARTIAL_RECOVERY

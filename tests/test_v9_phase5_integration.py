@@ -377,3 +377,111 @@ def test_missing_production_company_metadata_fails_closed(monkeypatch):
             db, booking_id="bk_prodguard", document_type=FinancialDocumentType.RECEIPT,
             idempotency_key="idem_prodguard_1",
         )
+
+
+# ======================================================================
+# V9 Phase 5 QA finding #1 regression: concurrent resend must never race
+# on attempt_number (no raw sqlite3 error leak, no duplicate/lost attempt)
+# ======================================================================
+def test_concurrent_resend_from_terminal_state_never_leaks_or_duplicates():
+    db = _db()
+    _seed_booking(db, booking_id="bk_resendrace")
+    from detoura.persistence import communications as cstore
+
+    comm = cs.create_and_send_communication(
+        db, booking_id="bk_resendrace", journey_reference="jr_bk_resendrace", user_id=None,
+        recipient_address="x@example.com", subject="s", body_text="b",
+        idempotency_key="comm:bk_resendrace:confirmation",
+    )
+    assert comm.status is CommunicationStatus.SENT
+
+    results, errors = [], []
+
+    def _resend():
+        try:
+            results.append(cs.request_resend(db, booking_id="bk_resendrace"))
+        except cs.CommunicationAlreadyInFlight:
+            pass
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    threads = [threading.Thread(target=_resend) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # No unexpected exception of any kind - specifically never a raw
+    # sqlite3.IntegrityError surfacing past the service layer.
+    assert not errors, f"unexpected exceptions leaked: {errors}"
+    attempts = cstore.list_attempts_for_communication(db, comm.communication_id)
+    numbers = [a.attempt_number for a in attempts]
+    assert len(numbers) == len(set(numbers)), f"duplicate attempt_number: {numbers}"
+
+
+def test_concurrent_resend_via_http_never_leaks_raw_db_error(monkeypatch):
+    """The same race, through the real HTTP surface - the endpoint must
+    never echo an internal exception's message to the caller."""
+    import json as _json
+
+    from fastapi.testclient import TestClient
+
+    from detoura.api.app import create_app
+    import detoura.persistence.db as _dbmod
+
+    monkeypatch.setenv("DETOURA_DB_PATH", ":memory:")
+    monkeypatch.setattr(_dbmod, "_DB", None)
+    client = TestClient(create_app())
+    db = get_db()
+    _seed_booking(db, booking_id="bk_httprace")
+    cs.create_and_send_communication(
+        db, booking_id="bk_httprace", journey_reference="jr_bk_httprace", user_id=None,
+        recipient_address="x@example.com", subject="s", body_text="b",
+        idempotency_key="comm:bk_httprace:confirmation",
+    )
+
+    bodies = []
+
+    def _hit():
+        r = client.post(f"/api/v1/me/trips/bk_httprace/confirmation/resend")
+        bodies.append((r.status_code, r.text))
+
+    threads = [threading.Thread(target=_hit) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for status, text in bodies:
+        assert "sqlite3" not in text.lower()
+        assert "IntegrityError" not in text
+        assert "UNIQUE constraint" not in text
+        assert status in (200, 401, 403, 404, 409)
+
+
+# ======================================================================
+# V9 Phase 5 QA finding #2 regression: a post-confirmation recovery flag
+# must demote CONFIRMED, end-to-end through the real ticket_operations
+# trigger, not just at the pure-function level.
+# ======================================================================
+def test_ticket_operations_recovery_flag_demotes_a_live_confirmation():
+    from detoura.persistence import confirmations as cstore
+    from detoura.services import ticket_operations as top
+
+    db = _db()
+    _seed_paid_booking(db, booking_id="bk_recovdemo")
+    outcome = pbf.try_finalize(db, booking_id="bk_recovdemo")
+    assert outcome.confirmation.status is ConfirmationStatus.CONFIRMED
+
+    # The exact production code path: a cancellation attempt itself fails,
+    # flagging recovery_state without ever touching booking.phase.
+    top._set_recovery(db, "bk_recovdemo", "CANCELLATION_FAILED")
+
+    demoted = cstore.get_confirmation_for_booking(db, "bk_recovdemo")
+    assert demoted.status is ConfirmationStatus.PARTIAL_RECOVERY
+    assert demoted.confirmation_id == outcome.confirmation.confirmation_id  # same record, not a new one
+
+    # And clearing it promotes back.
+    top._set_recovery(db, "bk_recovdemo", "")
+    recovered = cstore.get_confirmation_for_booking(db, "bk_recovdemo")
+    assert recovered.status is ConfirmationStatus.CONFIRMED

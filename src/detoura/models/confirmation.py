@@ -262,6 +262,7 @@ def evaluate_confirmation_eligibility(
     booking_phase: str | None,
     payment_status: str | None = None,
     has_payment: bool = True,
+    recovery_state: str | None = None,
 ) -> ConfirmationStatus | None:
     """Decide what, if anything, a booking's confirmation record should say.
 
@@ -276,6 +277,19 @@ def evaluate_confirmation_eligibility(
     ``has_payment=False`` is contradictory input and is resolved the safe
     way - the payment is treated as real and must prove itself.
 
+    ``recovery_state`` is ``persistence.bookings.BookingRecord.recovery_state``
+    - "" means healthy, anything else (``PRICE_CHANGED``,
+    ``PARTIAL_FAILURE``, ``RECOVERY_REQUIRED``, ``UNAVAILABLE``,
+    ``CANCELLATION_FAILED``, ``CHANGE_REQUIRES_ACTION``, ``FAILED``) is an
+    explicit Ops/ticket-operations flag that a real, unresolved problem
+    exists - set independently of ``booking_phase``, which can stay
+    ``"complete"`` even after a *post*-confirmation failure (e.g. a
+    cancellation attempt that itself failed). A booking's phase and
+    payment status alone are not the whole truth once travel-servicing
+    operations have begun (V9 Phase 5 QA finding #2: RECOVERY_REQUIRED
+    must never read as CONFIRMED, and previously did, because this
+    function never looked at ``recovery_state`` at all).
+
     The rules, in order:
 
     1. Nothing was ever committed (pre-commitment phase, no money moved) ->
@@ -287,12 +301,18 @@ def evaluate_confirmation_eligibility(
          no record at all.
     3. Money committed against a pre-commitment phase -> ``PARTIAL_RECOVERY``
        (a charge with no journey behind it is an ops problem, not a nothing).
-    4. Booking ``partial_failure`` -> ``PARTIAL_RECOVERY``, never ``CONFIRMED``.
-    5. Payment ``UNKNOWN`` / ``RECONCILIATION_REQUIRED``, or a payment claimed
+    4. An explicit ``recovery_state`` flag -> ``PARTIAL_RECOVERY``,
+       unconditionally, regardless of what the phase/payment otherwise say.
+       Checked before the partial-failure/indeterminate-payment/CONFIRMED
+       rules below so nothing after it can ever produce ``CONFIRMED`` for a
+       flagged booking (same discipline as rule 5's ordering).
+    5. Booking ``partial_failure`` -> ``PARTIAL_RECOVERY``, never ``CONFIRMED``.
+    6. Payment ``UNKNOWN`` / ``RECONCILIATION_REQUIRED``, or a payment claimed
        with no status at all -> ``PENDING_VERIFICATION``. Never ``CONFIRMED``.
-    6. Booking ``complete`` AND (no payment required OR money genuinely
-       collected) -> ``CONFIRMED``. This is the only path to ``CONFIRMED``.
-    7. Anything else that got this far - still issuing, awaiting reconfirm,
+    7. Booking ``complete`` AND (no payment required OR money genuinely
+       collected) AND no recovery flag -> ``CONFIRMED``. This is the only
+       path to ``CONFIRMED``.
+    8. Anything else that got this far - still issuing, awaiting reconfirm,
        guided booking, authorized-but-not-captured, or a phase string this
        code has never heard of -> ``PENDING_VERIFICATION``. An unrecognised
        phase fails closed into a visible pending record rather than into
@@ -300,6 +320,7 @@ def evaluate_confirmation_eligibility(
     """
     phase = _normalize_phase(booking_phase)
     status = _normalize_payment_status(payment_status)
+    has_recovery_flag = bool((recovery_state or "").strip())
 
     # Contradictory input fails closed: a named status means a real payment.
     payment_required = has_payment or status is not None
@@ -326,20 +347,29 @@ def evaluate_confirmation_eligibility(
     if phase in PRE_COMMITMENT_PHASES:
         return ConfirmationStatus.PARTIAL_RECOVERY if money_committed else None
 
-    # (4) Partially booked is never a success, regardless of the payment.
+    # (4) An explicit Ops/ticket-operations recovery flag overrides
+    # everything below, unconditionally - a phase of "complete" does not
+    # mean nothing went wrong AFTER confirmation (see the docstring).
+    # Checked before partial-failure/indeterminate-payment/CONFIRMED so no
+    # future reordering of those rules can ever let a flagged booking read
+    # as CONFIRMED.
+    if has_recovery_flag:
+        return ConfirmationStatus.PARTIAL_RECOVERY
+
+    # (5) Partially booked is never a success, regardless of the payment.
     if phase == PHASE_PARTIAL_FAILURE:
         return ConfirmationStatus.PARTIAL_RECOVERY
 
-    # (5) Indeterminate money can never produce a success. Checked BEFORE the
+    # (6) Indeterminate money can never produce a success. Checked BEFORE the
     # CONFIRMED rule so no ordering change can ever let UNKNOWN through.
     if payment_indeterminate:
         return ConfirmationStatus.PENDING_VERIFICATION
 
-    # (6) The only route to CONFIRMED.
+    # (7) The only route to CONFIRMED.
     if phase == PHASE_COMPLETE and payment_paid:
         return ConfirmationStatus.CONFIRMED
 
-    # (7) Committed, not yet provable - including unrecognised phases.
+    # (8) Committed, not yet provable - including unrecognised phases.
     return ConfirmationStatus.PENDING_VERIFICATION
 
 
@@ -348,6 +378,7 @@ def require_confirmation_status(
     booking_phase: str | None,
     payment_status: str | None = None,
     has_payment: bool = True,
+    recovery_state: str | None = None,
 ) -> ConfirmationStatus:
     """:func:`evaluate_confirmation_eligibility`, but raising
     :class:`NotConfirmable` instead of returning ``None`` - for callers that
@@ -357,6 +388,7 @@ def require_confirmation_status(
         booking_phase=booking_phase,
         payment_status=payment_status,
         has_payment=has_payment,
+        recovery_state=recovery_state,
     )
     if status is None:
         raise NotConfirmable(

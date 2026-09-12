@@ -112,6 +112,7 @@ def try_finalize(db: Database, *, booking_id: str, now: datetime | None = None) 
 
     eligibility = evaluate_confirmation_eligibility(
         booking_phase=booking.phase, payment_status=payment_status, has_payment=has_payment,
+        recovery_state=booking.recovery_state,
     )
     if eligibility is None:
         # FAILED before any commitment - no confirmation record at all

@@ -171,8 +171,28 @@ def _send_attempt(
     db: Database, *, communication: CustomerCommunication, provider: CommunicationProvider,
     subject: str, body_text: str, now: datetime,
 ) -> CustomerCommunication:
-    existing_attempts = store.list_attempts_for_communication(db, communication.communication_id)
-    attempt_number = len(existing_attempts) + 1
+    """Claim a send slot and actually send. The slot claim
+    (:func:`persistence.communications.claim_send_slot`) is the ONLY
+    concurrency guard that matters here - it atomically allocates
+    ``attempt_number`` AND refuses the claim if another attempt on this
+    communication is already ``SENDING``, in one statement, one
+    transaction. (V9 Phase 5 QA finding #1: the previous code computed
+    ``attempt_number`` in Python from a separate read, then inserted
+    separately - two concurrent resends could compute the same number,
+    collide on the table's UNIQUE constraint, and leak a raw
+    ``sqlite3.IntegrityError`` through the public API; and the earlier
+    ``CommunicationAlreadyInFlight`` pre-check only ever looked at the
+    COMMUNICATION's own status, which never even reaches ``SENDING`` for a
+    resend from a terminal SENT/FAILED state - a real "click resend twice"
+    race that could send two genuine emails.)"""
+    attempt = store.claim_send_slot(
+        db, attempt_id=store.new_id("attempt"), communication_id=communication.communication_id,
+        provider_name=provider.name, created_at=now,
+    )
+    if attempt is None:
+        raise CommunicationAlreadyInFlight(
+            f"{communication.communication_id}: a send is already in flight"
+        )
 
     pending = communication
     if pending.status in (CommunicationStatus.PENDING,):
@@ -181,30 +201,18 @@ def _send_attempt(
             db, communication=pending, expected_version=communication.version,
         )
     elif pending.status in (CommunicationStatus.SENT, CommunicationStatus.FAILED):
-        # A resend from a terminal state - move through SENDING again
-        # (same-state is never re-entered; a resend is a fresh attempt).
-        pending = pending.with_status(CommunicationStatus.SENDING, now=now) \
-            if CommunicationStatus.SENDING in _reachable(pending.status) else pending
-        if pending.status != CommunicationStatus.SENDING:
-            # SENT/FAILED have no outgoing transitions in the domain model
-            # (deliberately terminal) - a resend after a terminal outcome
-            # is still a legitimate new attempt at the ATTEMPT level, it
-            # just cannot move the already-terminal COMMUNICATION status
-            # backwards. Record the attempt without forcing an illegal
-            # communication-level transition.
-            pending = communication
-    attempt = CommunicationAttempt(
-        attempt_id=store.new_id("attempt"), communication_id=communication.communication_id,
-        attempt_number=attempt_number, status=CommunicationStatus.SENDING.value,
-        provider_name=provider.name, created_at=now,
-    )
-    store.record_attempt(db, attempt)
+        # A resend from a terminal state - the domain model deliberately
+        # forbids moving a terminal COMMUNICATION status backwards; the
+        # slot claim above (not this transition) is what makes the resend
+        # itself safe. Record the attempt without forcing an illegal
+        # communication-level transition; `pending` stays as-is.
+        pass
     store.record_event(db, CommunicationEvent(
         event_id=_event_id(), communication_id=communication.communication_id,
         attempt_id=attempt.attempt_id, event_type="EMAIL_SEND_REQUESTED", occurred_at=now,
     ))
 
-    idem = _attempt_provider_key(communication.communication_id, attempt_number)
+    idem = _attempt_provider_key(communication.communication_id, attempt.attempt_number)
     result = provider.send(
         idempotency_key=idem, recipient=pending.recipient_address, subject=subject,
         body_text=body_text, reference=communication.communication_id,

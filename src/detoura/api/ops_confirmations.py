@@ -247,11 +247,15 @@ def retry_communication(booking_id: str, actor: str = Depends(require_ops)) -> d
         # separate, weaker Ops code path) - validates state, enforces the
         # domain's own invariants, never lets Ops fabricate a status.
         result = communication_service.request_resend(db, booking_id=booking_id)
-    except Exception as error:
-        # Any validation/policy error from the communication domain propagates.
-        raise HTTPException(
-            status_code=409, detail={"message": str(error)}
-        )
+    except (
+        communication_service.NoSuchCommunication,
+        communication_service.CommunicationAlreadyInFlight,
+    ) as error:
+        # Only these two known domain errors are safe to echo (V9 Phase 5
+        # QA finding #1 - never str(error) an unexpected exception type to
+        # a caller, Ops included; see me_trips.py::resend_confirmation for
+        # the full rationale).
+        raise HTTPException(status_code=409, detail={"message": str(error)})
 
     return {
         "booking_id": booking_id,

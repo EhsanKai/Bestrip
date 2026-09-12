@@ -252,7 +252,15 @@ def _row_to_attempt(row: sqlite3.Row) -> CommunicationAttempt:
 
 
 def record_attempt(db: Database, attempt: CommunicationAttempt) -> None:
-    """Record a new send attempt."""
+    """Record a new send attempt.
+
+    Callers that need to allocate ``attempt_number`` themselves - i.e.
+    every real send/resend path - must use :func:`claim_send_slot`
+    instead: computing ``len(existing) + 1`` in Python and then calling
+    this function is a read-then-write race (V9 Phase 5 QA finding #1).
+    This raw insert remains for callers that already hold a correctly
+    allocated, collision-free ``attempt_number`` (none do today; kept for
+    the attempt-model's own persistence completeness and tests)."""
     with db.write() as conn:
         conn.execute(
             "INSERT INTO communication_attempts ("
@@ -270,6 +278,61 @@ def record_attempt(db: Database, attempt: CommunicationAttempt) -> None:
                 _iso(attempt.completed_at),
             ),
         )
+
+
+def claim_send_slot(
+    db: Database, *, attempt_id: str, communication_id: str, provider_name: str, created_at: datetime,
+) -> CommunicationAttempt | None:
+    """Atomically claim the next attempt_number AND refuse the claim if
+    another attempt on this communication is already ``SENDING`` - one
+    statement, one transaction, no read-then-write TOCTOU (V9 Phase 5 QA
+    finding #1: the previous ``len(existing_attempts) + 1`` computed in
+    Python, then inserted separately, let two concurrent resends compute
+    the same number and collide on the table's own
+    ``UNIQUE(communication_id, attempt_number)`` constraint - a raw
+    ``sqlite3.IntegrityError`` that leaked through the public resend API,
+    and silently dropped whichever request lost the race with no attempt
+    recorded and no send made.
+
+    Both the "what number comes next" question and the "is a send already
+    in flight" question are answered by SQLite itself, inside the single
+    INSERT...SELECT below, while ``db.write()`` holds the process-wide
+    write lock for the whole transaction - so no other writer can observe
+    or race against the state this statement reads. Returns ``None``
+    (never inserts anything) when a SENDING attempt already exists;
+    the caller treats that as "already in flight", exactly like the
+    domain-level ``CommunicationAlreadyInFlight`` guard, just race-free."""
+    # NOTE on the query shape: an aggregate with no GROUP BY (MAX(...) here)
+    # ALWAYS produces exactly one output row, even when its own WHERE
+    # clause matches zero source rows - a `... WHERE cond AND NOT EXISTS
+    # (...)` guard on the SAME aggregate query therefore does NOT prevent
+    # the insert (verified directly: it still returns one row whether or
+    # not a SENDING attempt exists). The gate has to be a WHERE clause on
+    # a query that is NOT itself an aggregate - hence the inner derived
+    # table computes "what number comes next" (always one row, correctly),
+    # and the OUTER, non-aggregate SELECT is what NOT EXISTS actually
+    # filters to zero rows when a send is already in flight.
+    with db.write() as conn:
+        cur = conn.execute(
+            "INSERT INTO communication_attempts ("
+            " attempt_id, communication_id, attempt_number, status,"
+            " provider_name, created_at"
+            ") SELECT ?, ?, next_num, 'SENDING', ?, ? FROM ("
+            "   SELECT COALESCE(MAX(attempt_number), 0) + 1 AS next_num"
+            "   FROM communication_attempts WHERE communication_id = ?"
+            " )"
+            " WHERE NOT EXISTS ("
+            "   SELECT 1 FROM communication_attempts"
+            "   WHERE communication_id = ? AND status = 'SENDING'"
+            " )",
+            (attempt_id, communication_id, provider_name, created_at.isoformat(), communication_id, communication_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM communication_attempts WHERE attempt_id=?", (attempt_id,),
+        ).fetchone()
+    return _row_to_attempt(row)
 
 
 def list_attempts_for_communication(

@@ -141,6 +141,23 @@ def _set_recovery(db: Database, booking_id: str, state: str) -> None:
         rec.recovery_state = state
         bookings_store.upsert(db, rec)
     except Exception:
+        return
+    # V9 Phase 5: a ticket operation can flag (or clear) a recovery problem
+    # on a booking whose `phase` never changes - a cancellation attempt
+    # that itself failed, for instance, leaves `phase="complete"` but sets
+    # `recovery_state="CANCELLATION_FAILED"`. Re-running the finalizer here
+    # is what lets an already-CONFIRMED confirmation (and the "your booking
+    # is confirmed" email already sent) demote to PARTIAL_RECOVERY the
+    # moment that happens, instead of silently staying CONFIRMED forever
+    # (V9 Phase 5 QA finding #2: RECOVERY_REQUIRED != CONFIRMED). Also runs
+    # when the flag is cleared (state=""), so a resolved recovery can
+    # promote back. Never lets a finalizer failure affect this function's
+    # own, already-committed recovery-flag write.
+    try:
+        from .post_booking_finalizer import try_finalize
+
+        try_finalize(db, booking_id=booking_id)
+    except Exception:
         pass
 
 

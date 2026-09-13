@@ -1,0 +1,130 @@
+{
+  "Prague": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a7/Prague_%286365119737%29.jpg/960px-Prague_%286365119737%29.jpg",
+    "alt": "Prague city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Prague_%286365119737%29.jpg",
+    "credit": "Moyan Brenn from Italy",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0"
+  },
+  "Vienna": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/5/5b/Schoenbrunn_philharmoniker_2012.jpg/960px-Schoenbrunn_philharmoniker_2012.jpg",
+    "alt": "Vienna city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Schoenbrunn_philharmoniker_2012.jpg",
+    "credit": "Superbass",
+    "license": "CC BY-SA 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0"
+  },
+  "Berlin": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/f/f7/Museumsinsel_Berlin_Juli_2021_1_%28cropped%29_b.jpg/960px-Museumsinsel_Berlin_Juli_2021_1_%28cropped%29_b.jpg",
+    "alt": "Berlin city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Museumsinsel_Berlin_Juli_2021_1_%28cropped%29_b.jpg",
+    "credit": "File:Museumsinsel Berlin Juli 2021 1 (cropped).jpg: Kasa Fue\nderivative work: Georgfotoart",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0"
+  },
+  "Budapest": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/5/53/View_from_Gell%C3%A9rt_Hill_to_the_Danube%2C_Hungary_-_Budapest_%2828493220635%29.jpg/960px-View_from_Gell%C3%A9rt_Hill_to_the_Danube%2C_Hungary_-_Budapest_%2828493220635%29.jpg",
+    "alt": "Budapest city view",
+    "source": "https://commons.wikimedia.org/wiki/File:View_from_Gell%C3%A9rt_Hill_to_the_Danube%2C_Hungary_-_Budapest_%2828493220635%29.jpg",
+    "credit": "Visions of Domino",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0"
+  },
+  "Amsterdam": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/5/57/Imagen_de_los_canales_conc%C3%A9ntricos_en_%C3%81msterdam.png/960px-Imagen_de_los_canales_conc%C3%A9ntricos_en_%C3%81msterdam.png",
+    "alt": "Amsterdam city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Imagen_de_los_canales_conc%C3%A9ntricos_en_%C3%81msterdam.png",
+    "credit": "Andrés Barrios",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0"
+  },
+  "Barcelona": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a6/Evening_light_over_Barcelona.jpg/960px-Evening_light_over_Barcelona.jpg",
+    "alt": "Barcelona city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Evening_light_over_Barcelona.jpg",
+    "credit": "M McBey",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0"
+  },
+  "Brussels": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/ae/Grand_Place_Bruselas_2.jpg/960px-Grand_Place_Bruselas_2.jpg",
+    "alt": "Brussels city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Grand_Place_Bruselas_2.jpg",
+    "credit": "Francisco Conde Sánchez",
+    "license": "CC BY-SA 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0"
+  },
+  "Copenhagen": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/15/2018_-_Christiansborg_from_the_Marble_Bridge.jpg/960px-2018_-_Christiansborg_from_the_Marble_Bridge.jpg",
+    "alt": "Copenhagen city view",
+    "source": "https://commons.wikimedia.org/wiki/File:2018_-_Christiansborg_from_the_Marble_Bridge.jpg",
+    "credit": "Moahim",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0"
+  },
+  "Dublin": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/9/92/Dublin_-_aerial_-_2025-07-07_01.jpg/960px-Dublin_-_aerial_-_2025-07-07_01.jpg",
+    "alt": "Dublin city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Dublin_-_aerial_-_2025-07-07_01.jpg",
+    "credit": "瑞丽江的河水",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0"
+  },
+  "London": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/6/67/London_Skyline_%28125508655%29.jpeg/960px-London_Skyline_%28125508655%29.jpeg",
+    "alt": "London city view",
+    "source": "https://commons.wikimedia.org/wiki/File:London_Skyline_%28125508655%29.jpeg",
+    "credit": "Ilya Grigorik",
+    "license": "CC BY-SA 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0"
+  },
+  "Madrid": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/14/Madrid_-_Sky_Bar_360%C2%BA_%28Hotel_Riu_Plaza_Espa%C3%B1a%29%2C_vistas_19.jpg/960px-Madrid_-_Sky_Bar_360%C2%BA_%28Hotel_Riu_Plaza_Espa%C3%B1a%29%2C_vistas_19.jpg",
+    "alt": "Madrid city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Madrid_-_Sky_Bar_360%C2%BA_%28Hotel_Riu_Plaza_Espa%C3%B1a%29%2C_vistas_19.jpg",
+    "credit": "Zarateman",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en"
+  },
+  "Milan": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/70/Milan_Cathedral_from_Piazza_del_Duomo.jpg/960px-Milan_Cathedral_from_Piazza_del_Duomo.jpg",
+    "alt": "Milan city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Milan_Cathedral_from_Piazza_del_Duomo.jpg",
+    "credit": "Jiuguang Wang",
+    "license": "CC BY-SA 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0"
+  },
+  "Munich": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/d/d3/Stadtbild_M%C3%BCnchen.jpg/960px-Stadtbild_M%C3%BCnchen.jpg",
+    "alt": "Munich city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Stadtbild_M%C3%BCnchen.jpg",
+    "credit": "Thomas Wolf, www.foto-tw.de",
+    "license": "CC BY-SA 3.0 de",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/de/deed.en"
+  },
+  "Paris": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/4b/La_Tour_Eiffel_vue_de_la_Tour_Saint-Jacques%2C_Paris_ao%C3%BBt_2014_%282%29.jpg/960px-La_Tour_Eiffel_vue_de_la_Tour_Saint-Jacques%2C_Paris_ao%C3%BBt_2014_%282%29.jpg",
+    "alt": "Paris city view",
+    "source": "https://commons.wikimedia.org/wiki/File:La_Tour_Eiffel_vue_de_la_Tour_Saint-Jacques%2C_Paris_ao%C3%BBt_2014_%282%29.jpg",
+    "credit": "Yann Caradec from Paris, France",
+    "license": "CC BY-SA 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0"
+  },
+  "Rome": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/7e/Trevi_Fountain%2C_Rome%2C_Italy_2_-_May_2007.jpg/960px-Trevi_Fountain%2C_Rome%2C_Italy_2_-_May_2007.jpg",
+    "alt": "Rome city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Trevi_Fountain%2C_Rome%2C_Italy_2_-_May_2007.jpg",
+    "credit": "Diliff",
+    "license": "CC BY 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/3.0"
+  },
+  "Zurich": {
+    "src": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/af/Altstadt_Z%C3%BCrich_2015.jpg/960px-Altstadt_Z%C3%BCrich_2015.jpg",
+    "alt": "Zurich city view",
+    "source": "https://commons.wikimedia.org/wiki/File:Altstadt_Z%C3%BCrich_2015.jpg",
+    "credit": "Thomas Wolf, www.foto-tw.de",
+    "license": "CC BY-SA 3.0 de",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/de/deed.en"
+  }
+}

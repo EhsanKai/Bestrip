@@ -1,3 +1,5 @@
+import { useId, useRef, useState } from "react";
+import cityPhotos from "../../data/cityPhotos.json";
 import type { TripRecommendation } from "../../api/types";
 import { cityCountLabel, hours, joinCities, money, percent } from "../../lib/format";
 import {
@@ -9,8 +11,6 @@ import {
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { Icon } from "../ui/Icon";
-import { JourneyPoster } from "./JourneyPoster";
-import { variantFor } from "./illustrationVariant";
 import { RouteLine } from "./RouteLine";
 import "./RecommendationCard.css";
 
@@ -34,18 +34,29 @@ export function RecommendationCard({
   onCompare,
 }: Props) {
   const modes = trip.legs.map((leg) => leg.mode);
-  const variant = variantFor(trip.cities);
+  const cities = [...new Set(trip.cities)];
+  const [activeCity, setActiveCity] = useState<string | null>(null);
+  const previewId = useId();
+  const cityButtons = useRef<Record<string, HTMLButtonElement | null>>({});
+  const activeMatch = trip.destination_matches?.find(match => match.city === activeCity);
+  const closePreview = () => {
+    if (activeCity) cityButtons.current[activeCity]?.focus();
+    setActiveCity(null);
+  };
 
   return (
     <Card
       as="article"
       interactive
       selected={selected}
-      className={`rec rec--${variant}`}
+      className="rec"
       onClick={() => onOpen?.(trip)}
       aria-label={`${joinCities(trip.cities)}, ${money(trip.total_price, trip.currency)}`}
     >
-      <div className="rec__hero">
+      <div className={`rec__hero ${activeCity ? "rec__hero--preview" : ""}`}
+        onPointerLeave={event => { if (event.pointerType === "mouse") setActiveCity(null); }}
+        onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); closePreview(); } }}
+        onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setActiveCity(null); }}>
         <div className="rec__copy">
           <div className="rec__topline">
             <span className="rec__rank">{trip.rank === 1 ? "Detoura pick" : `Option ${trip.rank}`}</span>
@@ -54,9 +65,10 @@ export function RecommendationCard({
 
           <h3 className="rec__title">{joinCities(trip.cities)}</h3>
           <div className="rec__meta">
-            <span>{trip.duration_days.toFixed(0)} days</span>
-            <span aria-hidden="true">·</span>
-            <span>{cityCountLabel(trip.cities.length)}</span>
+            <span>{Icon.calendar({ size: 14 })}{trip.duration_days.toFixed(0)} days</span>
+
+            <span>{Icon.location({ size: 14 })}{cityCountLabel(cities.length)}</span>
+            <span className="rec__inline-price">{Icon.wallet({ size: 14 })}{money(trip.total_price, trip.currency)}</span>
           </div>
 
           <RouteLine nodes={trip.route_nodes} modes={modes} cities={trip.cities} compact />
@@ -82,25 +94,33 @@ export function RecommendationCard({
           )}
         </div>
 
-        {/* Not aria-hidden as a whole: this panel holds the price, which is
-          * the single most important fact on the card. Only the decorative
-          * layers inside it are hidden. */}
-        <div className="rec__visual">
-          <div className="rec__price-block">
-            <div className="rec__from">Estimated trip cost</div>
-            <div className="rec__total numeric">{money(trip.total_price, trip.currency)}</div>
-            <div className="rec__pp numeric">{money(trip.price_per_person, trip.currency)} each</div>
-            <div className="rec__estnote">flights, stays &amp; transfers</div>
-            {trip.over_budget_by && trip.over_budget_by > 0 ? (
-              <div className="rec__over">
-                {money(trip.over_budget_by, trip.currency)} over your preferred budget
-              </div>
-            ) : null}
+        <div className={`rec__collage rec__collage--${cities.length > 3 ? "many" : cities.length}`}
+          onClick={event => event.stopPropagation()}>
+          <div className="rec__city-panels" role="group" aria-label="Preview destinations">
+            {cities.map(city => <button type="button" className="rec__city-panel" key={city}
+              ref={element => { cityButtons.current[city] = element; }}
+              aria-label={`Preview ${city}`} aria-expanded={activeCity === city}
+              aria-controls={activeCity === city ? previewId : undefined}
+              onPointerEnter={event => { if (event.pointerType === "mouse") setActiveCity(city); }}
+              onFocus={() => setActiveCity(city)} onClick={() => setActiveCity(city)}>
+              <CityImage city={city} />
+              <span className="rec__city-name">{city}</span>
+            </button>)}
           </div>
-          <div className="rec__city-index" aria-hidden="true">
-            {trip.cities.map(cityCode).join(" / ")}
-          </div>
-          <JourneyPoster cities={trip.cities} rank={trip.rank} />
+          {activeCity && <div className="rec__city-preview" id={previewId}>
+            <CityImage key={activeCity} city={activeCity} />
+            <div className="rec__preview-caption">
+              <h4>{activeCity}</h4>
+              {activeMatch?.strengths.length ? <p>{activeMatch.strengths.slice(0, 3).map(value => value.replaceAll("_", " ")).join(" · ")}</p> : null}
+            </div>
+            <button type="button" className="rec__preview-open" onClick={() => onOpen?.(trip)}>
+              Explore trip {Icon.arrowRight({ size: 16 })}
+            </button>
+            <button type="button" className="rec__preview-close" onClick={closePreview} aria-label="Back to all cities">
+              {Icon.close({ size: 18 })}
+            </button>
+          </div>}
+          <PhotoCredits cities={activeCity ? [activeCity] : cities} />
         </div>
       </div>
 
@@ -112,10 +132,15 @@ export function RecommendationCard({
       </div>
 
       <div className="rec__footer">
-        <div className="rec__costs">
+        <div className="rec__pricing">
+          <div className="rec__fare"><strong>{money(trip.total_price, trip.currency)}</strong><span>estimated total · {money(trip.price_per_person, trip.currency)} each</span></div>
+          <div className="rec__costs">
           <span><small>Transport</small>{money(trip.costs.transport, trip.currency)}</span>
           <span><small>Rooms</small>{money(trip.costs.accommodation, trip.currency)}</span>
           <span><small>Transfers</small>{money(trip.costs.ground_transfer, trip.currency)}</span>
+        </div>
+
+          {trip.over_budget_by && trip.over_budget_by > 0 ? <p className="rec__over">{money(trip.over_budget_by, trip.currency)} over your preferred budget</p> : null}
         </div>
 
         {trip.tradeoff && <p className="rec__tradeoff">{trip.tradeoff}</p>}
@@ -152,7 +177,37 @@ function Metric({ label, value }: { label: string; value: string }) {
   return <div className="rec__metric"><span>{label}</span><strong className="numeric">{value}</strong></div>;
 }
 
-function cityCode(city: string) {
-  const letters = city.replace(/[^A-Za-z]/g, "").toUpperCase();
-  return letters.slice(0, 3) || city.slice(0, 3).toUpperCase();
+const photos: Record<string, (typeof cityPhotos)["Munich"]> = cityPhotos;
+
+function CityImage({ city }: { city: string }) {
+  const [failed, setFailed] = useState(false);
+  const photo = photos[city];
+  if (!photo || failed) {
+    return <span className="rec__image-fallback" role="img" aria-label={`${city} city photo unavailable`}>
+      {Icon.location({ size: 28 })}
+      <span>{city}</span>
+      <small>City photo unavailable</small>
+    </span>;
+  }
+
+  return <img
+    className="rec__city-image"
+    src={photo.src}
+    alt={photo.alt || `${city} destination view`}
+    width="960"
+    height="600"
+    loading="lazy"
+    decoding="async"
+    referrerPolicy="no-referrer"
+    onError={() => setFailed(true)}
+  />;
+}
+
+function PhotoCredits({ cities }: { cities: string[] }) {
+  const available = cities.filter(city => photos[city]);
+  if (!available.length) return null;
+  return <details className="rec__photo-credit">
+    <summary>Photo credits</summary>
+    {available.map(city => <p key={city}>{city}: {photos[city].credit} · <a href={photos[city].source} target="_blank" rel="noreferrer">Wikimedia Commons</a> · <a href={photos[city].licenseUrl} target="_blank" rel="noreferrer">{photos[city].license}</a>. Cropped to fit.</p>)}
+  </details>;
 }

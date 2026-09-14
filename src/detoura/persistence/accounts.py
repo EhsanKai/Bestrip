@@ -173,12 +173,26 @@ def claim_trip(
     """Associates ``booking_id`` with ``user_id``. Idempotent for the same
     user; returns ``False`` (never overwrites) if the booking is already
     claimed by a *different* user — ownership, once established, does not
-    silently transfer."""
+    silently transfer.
+
+    The existence check and the insert happen inside one ``db.write()``
+    transaction (V9 Phase 6) - not read-then-separately-write. The two
+    previously ran as independent calls, each taking and releasing
+    ``Database``'s lock on its own, leaving a gap between them where two
+    concurrent callers could both observe "unclaimed" and both proceed to
+    insert; the second would then hit ``trip_ownership``'s own
+    ``booking_id`` primary key and raise a raw ``sqlite3.IntegrityError``
+    instead of returning a clean ``False``/idempotent ``True``. One
+    transaction closes that window: ``db.write()`` holds the same lock for
+    the whole read-decide-write sequence, so a second caller simply waits
+    for the first to finish and then sees its result already committed."""
     ts = (now or datetime.now(timezone.utc)).isoformat()
-    existing = db.query_one("SELECT user_id FROM trip_ownership WHERE booking_id=?", (booking_id,))
-    if existing is not None:
-        return existing["user_id"] == user_id
     with db.write() as conn:
+        existing = conn.execute(
+            "SELECT user_id FROM trip_ownership WHERE booking_id=?", (booking_id,)
+        ).fetchone()
+        if existing is not None:
+            return existing["user_id"] == user_id
         conn.execute(
             "INSERT INTO trip_ownership (booking_id, user_id, journey_reference, claimed_at)"
             " VALUES (?,?,?,?)",

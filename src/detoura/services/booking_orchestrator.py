@@ -164,6 +164,19 @@ class BookingRun:
     user_key: str = "anonymous"
     session_ref: str = ""
     economics_written: bool = False
+    owner_user_id: str | None = None
+    """The authenticated account that created this journey, or ``None`` for
+    an anonymous one (V9 Phase 6). Deliberately separate from ``user_key``
+    above, which is an unrelated per-key promo-redemption-limit scope, not
+    an authorization identity - conflating them would let a change to
+    promo-limiting semantics silently change who owns/can pay for a
+    booking, or vice versa. Set exactly once, from the server-resolved
+    session at booking-intent creation (api/v1.py); never accepted from a
+    client-supplied field, and never reassigned afterwards - see
+    services/booking_persistence.py, which is the only place this is acted
+    on (claims the trip for this account on every persist), and
+    persistence/accounts.claim_trip, which itself refuses to move an
+    existing different owner's claim."""
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property

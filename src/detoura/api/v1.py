@@ -20,7 +20,7 @@ import os
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..models.itinerary import (
     Itinerary,
@@ -52,6 +52,7 @@ from ..services.booking_flow import (
 from ..services.booking_commercial import finalize_economics, price_run
 from ..services.booking_persistence import persist_run
 from ..services.booking_orchestrator import BookingPhase
+from .auth import get_optional_session
 from ..models.commercial import ServiceTier
 from ..persistence import analytics as analytics_store
 from ..persistence import get_db
@@ -763,17 +764,28 @@ def commercial_preview(body: CommercialPreviewRequest) -> CommercialPreviewRespo
 
 
 @router.post("/booking-intents", response_model=BookingIntentResponse, status_code=201)
-def create_booking_intent(body: CreateBookingIntentRequest) -> BookingIntentResponse:
+def create_booking_intent(body: CreateBookingIntentRequest, request: Request) -> BookingIntentResponse:
     """Begin a booking. From a server-issued `selection_id` (real Duffel offers,
     `SANDBOX_BOOKED`) or from a synthetic trip's legs (`DEMO_ONLY` — no Duffel
-    Order is ever created and the pass says so)."""
+    Order is ever created and the pass says so).
+
+    V9 Phase 6: if the caller has a valid session, the resulting journey is
+    owned by that account (see BookingRun.owner_user_id / My Trips) - purely
+    additive. An anonymous caller (no session, the overwhelming common case
+    today) books exactly as before; no owner row is ever created for them.
+    The account id comes only from the server-validated session cookie,
+    never from anything in `body`.
+    """
+    session = get_optional_session(request)
+    owner_user_id = session.user_id if session is not None else None
+
     if body.selection_id:
         selection = selection_store().get(body.selection_id)
         if selection is None:
             raise HTTPException(status_code=404, detail={
                 "message": "That selection is unknown or has expired. Search again.",
             })
-        run = create_run_from_selection(selection)
+        run = create_run_from_selection(selection, owner_user_id=owner_user_id)
     elif body.demo_legs:
         est = body.demo_trip_estimate
         run = create_run_demo(
@@ -798,6 +810,7 @@ def create_booking_intent(body: CreateBookingIntentRequest) -> BookingIntentResp
                 }
                 for leg in body.demo_legs
             ],
+            owner_user_id=owner_user_id,
         )
     else:
         raise HTTPException(status_code=422, detail="provide selection_id or demo_legs")

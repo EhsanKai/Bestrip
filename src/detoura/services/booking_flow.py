@@ -162,8 +162,14 @@ def _route_cities(items: list[ItemProgress]) -> tuple[str, ...]:
 
 def create_run_from_selection(
     selection: Selection, *, tolerance: PriceTolerance | None = None,
+    owner_user_id: str | None = None,
 ) -> BookingRun:
-    """A SANDBOX_BOOKED run - real Duffel offers behind every leg."""
+    """A SANDBOX_BOOKED run - real Duffel offers behind every leg.
+
+    ``owner_user_id`` is the server-resolved account id of the caller, if
+    any (never a client-supplied value - see api/v1.py's
+    ``create_booking_intent``, the only caller). ``None`` for an anonymous
+    caller, which must keep working exactly as before."""
     items = [item_from_selected(i + 1, o) for i, o in enumerate(selection.offers)]
     for it in items:
         it.origin_city = _city(it.origin_airport)
@@ -185,6 +191,7 @@ def create_run_from_selection(
         items=items,
         selection_id=selection.selection_id,
         session_ref="sess_" + secrets.token_urlsafe(8),
+        owner_user_id=owner_user_id,
     )
     return run
 
@@ -197,6 +204,7 @@ def create_run_demo(
     trip_estimate: dict | None = None,
     tolerance: PriceTolerance | None = None,
     discovered_total: float | None = None,  # accepted, ignored - see below
+    owner_user_id: str | None = None,
 ) -> BookingRun:
     """A DEMO_ONLY run from a synthetic trip - no Duffel offer ids, no Order.
 
@@ -243,6 +251,7 @@ def create_run_demo(
         items=items,
         trip_estimate=dict(trip_estimate or {}),
         session_ref="sess_" + secrets.token_urlsafe(8),
+        owner_user_id=owner_user_id,
     )
 
 

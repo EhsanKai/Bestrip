@@ -430,6 +430,49 @@ def test_full_credit_note_mirrors_the_original_line_items(db):
     assert note.tax == receipt.tax
 
 
+def test_full_credit_note_drops_mirror_when_it_would_not_reconcile(db):
+    """Adversarial QA claim: a FULL credit note against a receipt whose
+    captured amount never reached the priced total must not mirror the
+    original's line items when they would sum to something other than the
+    amount actually being credited.
+
+    Reproduces: receipt issued against a partial capture (so its line items
+    reconcile to the *priced* ``customer_total``, not to what was captured);
+    later the booking is credited in full for only what was ever actually
+    captured (less than the priced total). A naive mirror would restate the
+    original's full-price line items on a document whose own total is the
+    smaller captured amount - internally inconsistent. The service must
+    detect that and fall back to an honest "unknown attribution" credit note
+    instead, exactly as it already does for a partial refund.
+    """
+    total = _seed_economics(db)  # priced total, e.g. 598.36
+    only_ever_captured = round(total - 48.36, 2)
+    _seed_payment(db, captured=only_ever_captured)
+    receipt = service.issue_receipt_or_invoice(
+        db, booking_id=BOOKING, document_type=FinancialDocumentType.RECEIPT,
+        idempotency_key="idem_receipt_key_1",
+    )
+    # The receipt's own line items reconcile to the full priced total, which
+    # is *not* what was captured - this is the pre-existing, legitimate case
+    # of a receipt issued against a partial capture.
+    assert receipt.customer_total == total
+    assert receipt.captured_amount == only_ever_captured
+
+    note = service.issue_credit_note(
+        db, booking_id=BOOKING, refund_amount=only_ever_captured,
+        original_document_id=receipt.document_id,
+        idempotency_key="idem_credit_key_1",
+    )
+    assert note.credit_scope is CreditScope.FULL
+    assert note.customer_total == only_ever_captured
+    # Must NOT silently mirror the original's (larger, non-reconciling)
+    # line items onto a smaller total - that would be an internally
+    # inconsistent document.
+    assert note.has_line_item_breakdown is False
+    assert note.supplier_transport is None
+    assert note.tax is None
+
+
 # ======================================================================
 # 3. Static import isolation
 # ======================================================================

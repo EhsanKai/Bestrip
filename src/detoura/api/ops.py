@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
+from ..auth_config import auth_config
 from ..models.airline import airline_for
 from ..models.commercial import ServiceTier
 from ..models.promo import PromoCode, PromoKind, PromoTarget
@@ -28,8 +29,10 @@ from ..persistence import policies as policies_store
 from ..persistence import promos as promos_store
 from ..persistence import ticket_ops as ticket_ops_store
 from ..services import ticket_operations as ticket_ops
+from ..services.client_ip import resolve_client_ip
 from ..services.commercial import CommercialPricingService
 from .ops_auth import (
+    check_ops_login_rate_limit,
     create_session,
     ops_enabled,
     require_ops,
@@ -243,11 +246,24 @@ def ops_status() -> dict:
     return {"enabled": ops_enabled(), "test_mode": True}
 
 
+def _ops_client_ip(request: Request) -> str:
+    cfg = auth_config()
+    direct = request.client.host if request.client else None
+    return resolve_client_ip(
+        direct_peer=direct, forwarded_for=request.headers.get("X-Forwarded-For"),
+        trusted_proxy_hops=cfg.trusted_proxy_hops,
+    )
+
+
 @router.post("/session", response_model=OpsSessionResponse)
-def ops_login(body: OpsLoginRequest) -> OpsSessionResponse:
+def ops_login(body: OpsLoginRequest, request: Request) -> OpsSessionResponse:
     if not ops_enabled():
         raise HTTPException(status_code=503, detail={
             "message": "Detoura Ops is not configured on this deployment.",
+        })
+    if not check_ops_login_rate_limit(_ops_client_ip(request)):
+        raise HTTPException(status_code=429, detail={
+            "message": "Too many attempts. Try again later.",
         })
     if not verify_shared_token(body.token):
         raise HTTPException(status_code=401, detail={

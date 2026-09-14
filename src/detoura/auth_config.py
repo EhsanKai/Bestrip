@@ -15,10 +15,28 @@ from dataclasses import dataclass
 #: for its own default (slots replace it with a member_descriptor), so
 #: from_env() must not do `cls.session_ttl_seconds` etc.
 DEFAULT_SESSION_TTL_SECONDS = 60 * 60 * 24 * 14  # 14 days
+#: Per-(IP, email) login attempts per window - a short, soft throttle, never
+#: a long-lived lock (V9 Phase 6 slice 1). Deliberately never keyed by email
+#: alone: see auth_service.login and docs/V9_PHASE6_AUTH_HARDENING.md.
 DEFAULT_LOGIN_MAX_ATTEMPTS = 8
 DEFAULT_LOGIN_WINDOW_SECONDS = 300.0
+#: Coarse per-IP login-attempt volume control, independent of which email(s)
+#: it targets - catches one source cycling through many identifiers
+#: (credential stuffing) rather than any single targeted account. Generous
+#: enough that a shared NAT/office network is not routinely blocked; if
+#: X-Forwarded-For is not trusted (AUTH_TRUSTED_PROXY_HOPS=0, the default),
+#: every request behind one shared proxy collapses onto its single address,
+#: so this budget is effectively shared by everyone behind it - keep it
+#: generous unless proxy trust is configured.
+DEFAULT_LOGIN_IP_MAX_ATTEMPTS = 30
+DEFAULT_LOGIN_IP_WINDOW_SECONDS = 300.0
 DEFAULT_REGISTER_MAX_ATTEMPTS = 5
 DEFAULT_REGISTER_WINDOW_SECONDS = 3600.0
+#: Number of reverse-proxy hops in front of this service whose
+#: X-Forwarded-For entry is trusted. 0 (default) = trust nothing, use the
+#: raw TCP peer. See services/client_ip.py for the exact semantics and why
+#: a wrong value here is a spoofing hole, not a convenience knob.
+DEFAULT_TRUSTED_PROXY_HOPS = 0
 
 
 def _int(name: str, default: int) -> int:
@@ -46,13 +64,16 @@ class AuthConfig:
     is_production: bool = False
     session_cookie_name: str = "detoura_session"
     csrf_cookie_name: str = "detoura_csrf"
-    #: Login attempts per email per window, and per-IP registration attempts
-    #: - generous enough for a real user who mistypes a password a few
-    #: times, tight enough to blunt a credential-stuffing loop (§A7).
+    #: Login attempts per (IP, email) pair per window, and per-IP registration
+    #: attempts - generous enough for a real user who mistypes a password a
+    #: few times, tight enough to blunt a credential-stuffing loop (§A7).
     login_max_attempts: int = DEFAULT_LOGIN_MAX_ATTEMPTS
     login_window_seconds: float = DEFAULT_LOGIN_WINDOW_SECONDS
+    login_ip_max_attempts: int = DEFAULT_LOGIN_IP_MAX_ATTEMPTS
+    login_ip_window_seconds: float = DEFAULT_LOGIN_IP_WINDOW_SECONDS
     register_max_attempts: int = DEFAULT_REGISTER_MAX_ATTEMPTS
     register_window_seconds: float = DEFAULT_REGISTER_WINDOW_SECONDS
+    trusted_proxy_hops: int = DEFAULT_TRUSTED_PROXY_HOPS
 
     @classmethod
     def from_env(cls) -> "AuthConfig":
@@ -61,8 +82,11 @@ class AuthConfig:
             is_production=_bool("DETOURA_ENV_PRODUCTION", False) or os.getenv("DETOURA_ENV", "").strip().lower() == "production",
             login_max_attempts=max(1, _int("AUTH_LOGIN_MAX_ATTEMPTS", DEFAULT_LOGIN_MAX_ATTEMPTS)),
             login_window_seconds=float(max(1, _int("AUTH_LOGIN_WINDOW_SECONDS", int(DEFAULT_LOGIN_WINDOW_SECONDS)))),
+            login_ip_max_attempts=max(1, _int("AUTH_LOGIN_IP_MAX_ATTEMPTS", DEFAULT_LOGIN_IP_MAX_ATTEMPTS)),
+            login_ip_window_seconds=float(max(1, _int("AUTH_LOGIN_IP_WINDOW_SECONDS", int(DEFAULT_LOGIN_IP_WINDOW_SECONDS)))),
             register_max_attempts=max(1, _int("AUTH_REGISTER_MAX_ATTEMPTS", DEFAULT_REGISTER_MAX_ATTEMPTS)),
             register_window_seconds=float(max(1, _int("AUTH_REGISTER_WINDOW_SECONDS", int(DEFAULT_REGISTER_WINDOW_SECONDS)))),
+            trusted_proxy_hops=max(0, _int("AUTH_TRUSTED_PROXY_HOPS", DEFAULT_TRUSTED_PROXY_HOPS)),
         )
 
 

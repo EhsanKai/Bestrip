@@ -21,6 +21,7 @@ from ..persistence import accounts as store
 from ..persistence import get_db
 from ..services import auth_service
 from ..services.auth_service import AuthError, RateLimitedError, SessionContext
+from ..services.client_ip import resolve_client_ip
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -65,6 +66,20 @@ def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(cfg.csrf_cookie_name, path="/")
 
 
+def _client_ip(request: Request) -> str:
+    """See ``services/client_ip.py`` for the trust-boundary rationale.
+    ``AUTH_TRUSTED_PROXY_HOPS`` defaults to 0 (don't trust
+    ``X-Forwarded-For``) - correct for local dev and any deployment without
+    a reverse proxy Detoura controls."""
+    cfg = auth_config()
+    direct = request.client.host if request.client else None
+    return resolve_client_ip(
+        direct_peer=direct,
+        forwarded_for=request.headers.get("X-Forwarded-For"),
+        trusted_proxy_hops=cfg.trusted_proxy_hops,
+    )
+
+
 def get_optional_session(request: Request) -> SessionContext | None:
     cfg = auth_config()
     raw_token = request.cookies.get(cfg.session_cookie_name)
@@ -95,10 +110,12 @@ def require_csrf(request: Request, session: SessionContext) -> None:
 
 
 @router.post("/register")
-def register(body: RegisterRequest) -> dict:
+def register(body: RegisterRequest, request: Request) -> dict:
     db = get_db()
     try:
-        user_id = auth_service.register(db, email=body.email, password=body.password)
+        user_id = auth_service.register(
+            db, email=body.email, password=body.password, client_ip=_client_ip(request),
+        )
     except RateLimitedError as exc:
         raise HTTPException(status_code=429, detail={"message": str(exc)}) from exc
     except AuthError as exc:
@@ -107,10 +124,12 @@ def register(body: RegisterRequest) -> dict:
 
 
 @router.post("/login")
-def login(body: LoginRequest, response: Response) -> dict:
+def login(body: LoginRequest, request: Request, response: Response) -> dict:
     db = get_db()
     try:
-        result = auth_service.login(db, email=body.email, password=body.password)
+        result = auth_service.login(
+            db, email=body.email, password=body.password, client_ip=_client_ip(request),
+        )
     except RateLimitedError as exc:
         raise HTTPException(status_code=429, detail={"message": str(exc)}) from exc
     except AuthError as exc:

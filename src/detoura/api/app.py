@@ -30,6 +30,7 @@ from ..persistence import bootstrap as bootstrap_db
 from ..services.feedback import configure_sessions
 from ..services.session_store import store_from_env
 from .auth import router as auth_router
+from .body_limit import DEFAULT_MAX_BODY_BYTES, MaxBodySizeMiddleware
 from .destination_images import mount_destination_images
 from .destination_images import router as destination_images_router
 from .me_trips import router as me_trips_router
@@ -80,6 +81,17 @@ def cors_origins() -> list[str]:
     return [origin.strip() for origin in configured.split(",") if origin.strip()]
 
 
+def _max_body_bytes() -> int:
+    raw = os.getenv("DETOURA_MAX_REQUEST_BODY_BYTES", "").strip()
+    if not raw:
+        return DEFAULT_MAX_BODY_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_BODY_BYTES
+    return value if value > 0 else DEFAULT_MAX_BODY_BYTES
+
+
 def create_app() -> FastAPI:
     # Install the session store this deployment is configured for, before any
     # request can touch it.
@@ -108,6 +120,11 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # V9 Phase 6 slice 2: reject an oversized request body before it is
+    # ever fully buffered in memory - added last/outermost (Starlette runs
+    # the most-recently-added middleware first) so it can refuse before
+    # CORS or any route even sees the request. See body_limit.py.
+    app.add_middleware(MaxBodySizeMiddleware, max_bytes=_max_body_bytes())
     app.include_router(product_router)
     app.include_router(engine_router)
     # V9 Phase 2.6: account auth + My Trips. Anonymous callers of every other

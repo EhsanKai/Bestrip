@@ -159,6 +159,14 @@ def test_a_flood_of_recheck_legs_is_refused(client):
     This is the endpoint that bypasses the provider cache on purpose, so an
     unbounded list here is the most expensive request in the API - and against
     a real billed provider, the most expensive in the literal sense.
+
+    Refused by one of two independent layers now (V9 Phase 6 slice 2): the
+    generic request-body-size cap (413, api/body_limit.py) may reject a
+    payload this large before it is even parsed, or - for a flood just under
+    that byte cap - Pydantic's own ``max_length=MAX_RECHECK_LEGS`` on the
+    field still refuses it semantically (422). Both are a correct refusal of
+    the same adversarial input; which one fires first is a body-size
+    implementation detail, not the thing this test is protecting.
     """
     body = {
         "trip_id": "t",
@@ -167,7 +175,7 @@ def test_a_flood_of_recheck_legs_is_refused(client):
         "legs": [_leg(i) for i in range(37_500)],
     }
 
-    assert client.post("/api/v1/trips/recheck", json=body).status_code == 422
+    assert client.post("/api/v1/trips/recheck", json=body).status_code in (413, 422)
 
 
 def test_a_realistic_itinerary_still_re_checks(client):

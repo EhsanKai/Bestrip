@@ -1,4 +1,5 @@
-"""Register / login / logout / session validation (V9 Phase 2.6 §A1-§A7).
+"""Register / login / logout / session validation (V9 Phase 2.6 §A1-§A7;
+login abuse controls hardened in V9 Phase 6 slice 1).
 
 The business logic behind the auth API — kept separate from the FastAPI
 router so it is testable without an HTTP client and so the enumeration-
@@ -9,6 +10,27 @@ account" and "wrong password" raise the same :class:`AuthError` with the
 same message; a disabled account also does, so a caller cannot distinguish
 "this email is registered but disabled" from "this email does not exist"
 (§A4, §A11).
+
+**Login is never rate-limited by email alone.** An earlier version of this
+module keyed the login limiter on the normalized email only, which let an
+unauthenticated attacker who merely *knows* a victim's address deny that
+victim's own logins by deliberately tripping the limiter against it from
+anywhere. Two independent budgets replace that single key:
+
+* a coarse budget per client IP (``"login_ip"`` scope) - bounds how many
+  login attempts one source may make regardless of which email(s) it
+  targets, catching credential-stuffing volume;
+* a short, soft budget per ``(client IP, normalized email)`` pair
+  (``"login_pair"`` scope) - bounds repeated targeted guesses against one
+  account *from one source*.
+
+Neither is a long-lived lockout (both are fixed, short windows - see
+``auth_config.py``), and critically, a victim's own login attempts from
+their own IP consume neither budget an attacker who lacks that IP has
+touched. ``client_ip`` is caller-supplied rather than read from the request
+here on purpose (see ``services/client_ip.py``): resolving *which* header or
+socket field is trustworthy is a transport-layer decision the HTTP layer
+must make, not this module.
 """
 
 from __future__ import annotations
@@ -21,6 +43,7 @@ from ..models.account import AccountStatus
 from ..persistence import accounts as store
 from ..persistence import audit
 from ..persistence.db import Database
+from .client_ip import UNKNOWN as UNKNOWN_CLIENT_IP
 from .email_normalization import InvalidEmail, normalize_email
 from .password_hashing import PasswordPolicyError, hash_password, verify_password
 from .rate_limit import RateLimiter, rate_limiter
@@ -47,25 +70,31 @@ class LoginResult:
 
 
 def register(
-    db: Database, *, email: str, password: str, now: datetime | None = None,
-    cfg: AuthConfig | None = None,
+    db: Database, *, email: str, password: str, client_ip: str = UNKNOWN_CLIENT_IP,
+    now: datetime | None = None, cfg: AuthConfig | None = None,
 ) -> str:
     """Returns the new ``user_id``. Raises :class:`AuthError` for a bad
     email/password or a duplicate account, :class:`RateLimitedError` for too
-    many attempts from this caller."""
+    many attempts from this caller.
+
+    Scoped per ``(client_ip, email)``, not email alone (V9 Phase 6 slice 1
+    follow-up - an independent adversarial review of the login fix in this
+    same slice correctly pointed out that ``register`` still had the exact
+    bug class the login limiter was just fixed for: an attacker who only
+    knows a victim's email could burn that email's entire registration
+    budget with throwaway requests and keep the real person from ever
+    signing up with it, for as long as the attacker cares to repeat it).
+    """
     cfg = cfg or auth_config()
     now = now or datetime.now(timezone.utc)
     limiter = rate_limiter()
-    # Registration abuse is bounded per attempted email - a script trying
-    # many emails against one IP is a job for an upstream WAF/proxy limiter;
-    # this closes the "hammer one address" case cheaply and without needing
-    # request/IP plumbing into this module.
     try:
         normalized = normalize_email(email)
     except InvalidEmail as exc:
         raise AuthError("Invalid email address.") from exc
 
-    if not limiter.allow("register", normalized, max_calls=cfg.register_max_attempts,
+    pair_key = f"{client_ip}\x1f{normalized}"
+    if not limiter.allow("register_pair", pair_key, max_calls=cfg.register_max_attempts,
                           window_seconds=cfg.register_window_seconds):
         raise RateLimitedError("Too many registration attempts. Try again later.")
 
@@ -92,15 +121,32 @@ def register(
 
 
 def login(
-    db: Database, *, email: str, password: str, now: datetime | None = None,
-    cfg: AuthConfig | None = None,
+    db: Database, *, email: str, password: str, client_ip: str = UNKNOWN_CLIENT_IP,
+    now: datetime | None = None, cfg: AuthConfig | None = None,
 ) -> LoginResult:
     """Raises :class:`AuthError` (always the same generic message) for any
     invalid-credentials/disabled-account case, :class:`RateLimitedError` for
-    too many attempts."""
+    too many attempts.
+
+    ``client_ip`` should be a trustworthy address from
+    ``services.client_ip.resolve_client_ip`` (the API layer's job — see the
+    module docstring). Defaulting it to a fixed sentinel rather than making
+    it required keeps every existing non-HTTP caller (tests, scripts)
+    working unchanged, at the cost of those callers sharing one IP-shaped
+    bucket - harmless, since it only affects rate-limit grouping, never
+    correctness of who can log in as whom.
+    """
     cfg = cfg or auth_config()
     now = now or datetime.now(timezone.utc)
     limiter = rate_limiter()
+
+    # 1) Coarse per-IP volume control, checked first and independent of the
+    #    target email: bounds one source cycling through many identifiers
+    #    (credential stuffing) before we even look at which account it's
+    #    aimed at.
+    if not limiter.allow("login_ip", client_ip, max_calls=cfg.login_ip_max_attempts,
+                          window_seconds=cfg.login_ip_window_seconds):
+        raise RateLimitedError("Too many login attempts. Try again later.")
 
     try:
         normalized = normalize_email(email)
@@ -111,7 +157,14 @@ def login(
         _record_login_failure(db, actor="unknown", note="malformed email")
         raise AuthError(GENERIC_LOGIN_FAILURE) from None
 
-    if not limiter.allow("login", normalized, max_calls=cfg.login_max_attempts,
+    # 2) Short, soft per-(IP, email) throttle. Deliberately never keyed by
+    #    email alone - see the module docstring - so an attacker without
+    #    the victim's IP can throttle only themselves, never the victim's
+    #    own attempts from their own device. `\x1f` (ASCII unit separator)
+    #    joins the two halves: it cannot appear in a parsed IP or a
+    #    normalized email, so no (ip, email) pair can collide with another.
+    pair_key = f"{client_ip}\x1f{normalized}"
+    if not limiter.allow("login_pair", pair_key, max_calls=cfg.login_max_attempts,
                           window_seconds=cfg.login_window_seconds):
         raise RateLimitedError("Too many login attempts. Try again later.")
 
@@ -134,7 +187,12 @@ def login(
         _record_login_failure(db, actor=user["user_id"], note="wrong password")
         raise AuthError(GENERIC_LOGIN_FAILURE)
 
-    limiter.reset("login", normalized)
+    # Only the targeted-guess budget resets on success - the per-IP budget
+    # is a volume control unrelated to whether any one attempt succeeded,
+    # and must keep counting so an attacker who eventually guesses right
+    # against one of many accounts cannot use that to reset their own
+    # room to keep guessing against the rest.
+    limiter.reset("login_pair", pair_key)
     store.set_last_login(db, user["user_id"], now=now)
 
     raw_token = store.new_session_token()

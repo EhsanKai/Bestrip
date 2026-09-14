@@ -43,6 +43,26 @@ def _isolated_commercial_db(tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolated_rate_limits():
+    """V9 Phase 6: the abuse-control ``RateLimiter`` (services/rate_limit.py)
+    is a process-wide singleton by design (see its own docstring) - correct
+    for a real single-process deployment, but it means two tests in the same
+    pytest run that hit the same rate-limited endpoint (login, register, ops
+    session exchange, ...) would otherwise share one counter and could fail
+    depending on test *order*, not on either test's own behavior. Several
+    individual test files already clear it themselves for exactly this
+    reason (e.g. tests/test_v9_phase6_login_limiter.py); this makes that the
+    default for every test rather than something each new rate-limited
+    endpoint's tests must remember to add.
+    """
+    from detoura.services.rate_limit import rate_limiter
+
+    rate_limiter().clear()
+    yield
+    rate_limiter().clear()
+
+
 WINDOW_FROM = date(2026, 9, 10)
 WINDOW_TO = date(2026, 9, 15)
 

@@ -2,6 +2,25 @@
 
 Starting checkpoint: `2fbf4a8` (V9 Phase 5, APPROVED).
 
+## Follow-up (commit `11f9eb1`): account → booking ownership — CLOSED
+
+The item below ("Account → booking ownership: VERIFIED, NOT FIXED
+(deferred)") is now fixed. `BookingRun` carries an `owner_user_id`, set
+once at booking-intent creation from the server-resolved session (never
+the request body); the existing `persist_run` choke point claims the trip
+for that owner on every call, idempotently. `persistence.accounts.claim_trip`
+itself was hardened in the same change - its existence-check-then-insert
+was two separate lock acquisitions (a real TOCTOU race), now one
+transaction. The `xfail(strict=True)` spec test in
+`tests/test_v9_phase6_ownership_wiring.py` passes for real now and the
+marker is removed; 15 more tests were added (IDOR, anonymous flow,
+traveler-email-is-not-account-identity, idempotent retry, cross-user
+denial, two concurrency scenarios, recovery-state visibility). Independently
+adversarially reviewed (separate agent, read-only) - one Low finding (no
+log line on a silent `claim_trip` failure), fixed. Full detail in the
+commit message; release-blocker ledger item 4 below is updated to reflect
+this closure.
+
 ## Verdict
 
 **V9 PHASE 6 VERDICT: INCOMPLETE** (partial — real, tested, independently
@@ -241,8 +260,8 @@ implementation items unless noted):
 2. Real Stripe Test Mode server E2E - **not run, no credentials**.
 3. Fresh independent Phase 4 payment adversarial QA - **not done this
    session** (Slice 3 was spot-checked, not re-attacked).
-4. Account→booking ownership wiring - **verified NOT wired** (see Slice 2);
-   fix deferred to its own slice given `BookingRun`'s blast radius.
+4. Account→booking ownership wiring - **CLOSED** (commit `11f9eb1`, see the
+   follow-up section at the top of this report).
 5. EU legal/tax/payment/package-travel specialist review - external,
    unstarted.
 6. Destination-image manual review backlog - unchanged.

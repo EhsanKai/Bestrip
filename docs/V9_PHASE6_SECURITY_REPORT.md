@@ -2,6 +2,333 @@
 
 Starting checkpoint: `2fbf4a8` (V9 Phase 5, APPROVED).
 
+## FINAL CLOSURE: V9 Phase 6 — Production Security & Ops Hardening
+
+Starting HEAD `469ffc3`. Final HEAD `469ffc3` (this pass made no executable
+code changes — see "Secrets / Configuration review" below).
+
+This section is the closure gate for Phase 6 as a whole. It distinguishes
+two things that must not be mixed:
+
+- **PHASE 6 SECURITY STATUS** — whether Detoura's own code has known,
+  unresolved Critical/High security defects.
+- **PRE-BETA / RELEASE BLOCKERS** — real work still required before a real
+  launch, none of which is a Phase 6 software-security defect.
+
+### A. Secrets / Configuration — fresh bounded pass
+
+A fresh, bounded review of every production-reachable configuration/secrets
+surface, not a repeat of any earlier slice's spot-checks. Inspected:
+`payment_config.py`, `auth_config.py`, `api/ops_auth.py`,
+`providers/stripe_payment.py`, `providers/duffel.py`, `acquisition_config.py`,
+`communication_config.py`, `services/session_store.py`, `api/app.py` (CORS/
+body-limit), `providers/http.py` (TLS defaults), `services/financial_document_pdf.py`,
+the `Dockerfile`, and a repository-wide grep for hardcoded secrets.
+
+Findings:
+
+- **Payments**: `PaymentConfig.live_charging_enabled` defaults `False` and is
+  a hard kill switch — `resolve_provider()` returns the sandbox adapter
+  unconditionally unless it is `True` *and* `provider == "stripe"`. Even
+  then, `StripePaymentProvider.__post_init__` (`providers/stripe_payment.py:144`)
+  refuses any key that isn't `sk_test_`-prefixed unless `allow_non_test_key=True`
+  is passed explicitly at construction — a third, separate override no
+  environment variable can trigger. `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`
+  are read once at provider-construction time only, never stored on
+  `PaymentConfig`, so a config dump cannot leak either. `redact_key()` is the
+  only thing that ever renders a key to a log/print, and it never emits the
+  real value. **PASS.**
+- **Booking (Duffel)**: `providers/duffel.py` mirrors the same pattern —
+  refuses any non-`duffel_test_`-prefixed token unless `allow_non_test_token=True`
+  is passed explicitly; `create_test_order`/order responses are additionally
+  checked against the envelope's own `live_mode` field
+  (`assert_test_mode`), a second, independent check beyond the token prefix.
+  **PASS.**
+- **Auth**: session/CSRF cookies are marked `Secure` only when
+  `DETOURA_ENV_PRODUCTION`/`DETOURA_ENV=production` is set — a documented
+  plain-HTTP dev exception, not a production fallback (a real deployment
+  that forgets to set it gets a *less* secure cookie, not a broken one; this
+  is pre-existing, unchanged behavior, not newly discovered here). Session
+  tokens are `secrets.token_urlsafe`-generated and SHA-256-hashed at rest.
+  **PASS.**
+- **Ops**: `require_ops` (`api/ops_auth.py`) returns 503 — Ops disabled,
+  zero data exposed — whenever `DETOURA_OPS_TOKEN` is unset or empty
+  (`ops_enabled()` is `bool(ops_token())`). There is no "no-auth" fallback
+  mode. Shared-token comparison is constant-time
+  (`secrets.compare_digest`) and rate-limited. **PASS.**
+- **Network / acquisition**: `AcquisitionConfig` budgets
+  (`max_requests_per_run`, `max_response_bytes`, etc.) are all bounded with
+  `max(...)` floors against a non-numeric/empty env value falling through to
+  a safe default, never to 0/unbounded. TLS uses
+  `ssl.create_default_context()` defaults throughout
+  (`providers/http.py:_build_ssl_context`) — `CERT_REQUIRED` and
+  `check_hostname=True` are never overridden anywhere in `src/detoura`.
+  **PASS.**
+- **CORS**: `cors_origins()` (`api/app.py`) has no wildcard shortcut;
+  `DETOURA_CORS_ORIGINS` *replaces* the dev-origin allowlist rather than
+  extending it, so a deployment that configures its real origins does not
+  silently keep trusting `localhost`. `allow_credentials` is never set on
+  `CORSMiddleware` (defaults `False`), so no cross-origin caller can have
+  the session cookie exposed to it even if `DETOURA_CORS_ORIGINS` is
+  misconfigured — strictly the safer default, not a gap. **PASS.**
+- **Session store**: `store_from_env()` refuses to start
+  (`SessionStoreError`) if more than one worker is declared
+  (`DETOURA_WORKERS`/`WEB_CONCURRENCY`) while the store is still
+  process-local — it does not silently serve incoherent sessions across
+  workers. Redis is opt-in (`DETOURA_SESSION_STORE=redis`); the
+  `redis://localhost:6379/0` default only ever applies when that opt-in is
+  already set. **PASS.**
+- **Communication**: `resolve_communication_provider()` returns the sandbox
+  adapter unconditionally — there is no live branch implemented at all yet,
+  confirmed by reading the function body directly; `COMMUNICATION_PROVIDER`/
+  `COMMUNICATION_LIVE_SENDING_ENABLED` currently have no effect on which
+  adapter is returned, matching this slice's explicit scope ("Do NOT
+  implement production email"). **PASS** (no live path exists to
+  misconfigure).
+- **Financial documents**: `FINANCIAL_DOCUMENTS_PRODUCTION_MODE` fails
+  closed — `validate_for_production()` raises `IncompleteCompanyMetadata`
+  rather than issuing an unmarked document if required company/legal fields
+  are missing; the sandbox default always carries a watermark. **PASS.**
+- **Dockerfile**: no baked-in secrets of any kind; runs as an unprivileged
+  user (`USER detoura`, uid 10001); `WEB_CONCURRENCY=1` by default, matching
+  the session-store guard above. **PASS.**
+- **Debug/test escape hatches**: grepped `src/detoura` (excluding tests) for
+  `DEBUG`/`TESTING`/`DISABLE_AUTH`/`SKIP_AUTH`/`verify=False`/`insecure`/
+  `debug=True` — the only hit is an unrelated docstring reference in
+  `models/debug.py`. `FastAPI()` is constructed with no `debug=` argument
+  anywhere. No development/test switch is reachable from production
+  configuration, let alone from consumer input. **PASS.**
+
+**Secrets/config review: PASS.**
+
+### Secret scanning
+
+No automated secret-scanning tool is declared anywhere in this repository
+(no pre-commit config, nothing in `pyproject.toml` naming `bandit`/
+`detect-secrets`/`gitleaks`/`trufflehog`), and none of those tools are
+installed locally. Per instruction, none were installed merely to
+manufacture a PASS.
+
+A manual, repository-wide static scan was run instead: `git grep` across
+every tracked file (backend, tests, docs, frontend source, config) for
+AWS-style keys, PEM private-key headers, Slack/GitHub tokens, Google API
+keys, and live-looking `sk_live_`/`duffel_live_`/`whsec_` values. The only
+matches are in `tests/test_v75_provider.py`,
+`tests/test_v9_phase4_providers.py`, and `tests/test_v9_phase6_payment_security.py`
+— obvious synthetic placeholders (`"duffel_live_SUPERSECRETVALUE"`,
+`"sk_live_secretvalue"`, `"sk_live_definitely_real_looking"`) that exist
+specifically to exercise the fail-closed key/token-shape rejection logic
+itself. No real secret value was found anywhere in the tracked repository.
+
+**AUTOMATED SCAN: BLOCKED** (no scanner tool available or configured).
+**MANUAL/STATIC REVIEW: PASS.**
+Automated-scanner unavailability alone is not treated as blocking Phase 6,
+per instruction, given the independent manual evidence above and no secret
+exposure found.
+
+### B. Phase 6 finding reconciliation ledger
+
+| Domain | Finding | Original severity | Reachability | Fix commit | Regression evidence | Independent QA | Status |
+|---|---|---|---|---|---|---|---|
+| Auth/abuse | Login/register limiter DoS via unbounded memory growth | MEDIUM | Live, consumer-reachable | Slice 1 (pre-`2fbf4a8`) | Targeted + full suite | Approved | CLOSED |
+| Auth/abuse | Ops shared-token exchange had no brute-force throttle | MEDIUM | Live, Ops-reachable | Slice 1 (pre-`2fbf4a8`) | Targeted + full suite | Approved | CLOSED |
+| Ownership/IDOR | Account→booking ownership wiring | HIGH | Live, consumer-reachable | `11f9eb1` | Targeted + full suite | Approved | CLOSED |
+| Booking/provider | Concurrent double-execution of booking confirmation | HIGH (headline) | Live, consumer-reachable | `b1a9c82` | Targeted + full suite | Approved | CLOSED |
+| Booking/provider | Uncertain provider outcomes recorded as definite failures | MEDIUM | Live, consumer-reachable | `b1a9c82` | Targeted + full suite | Approved | CLOSED |
+| Booking/provider | `guided_booking.py` bool/BookingState truthiness mismatch | LOW (deferred) | **Unreachable** — `duffel=None` hardcoded | Not fixed — deliberately deferred | N/A (inert) | Noted, not rejected | DEFERRED-NONBLOCKING |
+| Payment | `ops_capture` exception handling missed a plain `ValueError` | MEDIUM | Live, Ops-reachable | `d39bc2b` | Targeted + full suite | Approved | CLOSED |
+| Payment | `claim_for_execution` docstring overclaimed reachability coverage | LOW | N/A (doc) | `d39bc2b` | N/A (doc) | Approved | CLOSED |
+| Payment | `run_paid_booking` bypassed the atomic single-execution claim | HIGH | **Currently unreachable** (unwired to any endpoint), fixed proactively | `d39bc2b` | Targeted + full suite | Approved | CLOSED |
+| Network/SSRF | Duffel blind HTTP-level retry of non-idempotent mutations | HIGH | Live, reachable | `4c83778` | Targeted + full suite | Approved (2 rounds) | CLOSED |
+| Network/SSRF | No resolved-IP validation in Phase 2.5 acquisition engine | LOW | Unreachable today | `4c83778` | Targeted + full suite | Approved | CLOSED |
+| Network/SSRF | Redirect auto-follow in Wikimedia image tool | LOW | Unreachable today | `4c83778` | Targeted + full suite | Approved | CLOSED |
+| Network/SSRF | `_is_unsafe_ip` missed RFC 6598 CGNAT space (independent-review) | MEDIUM | Live (validator itself) | `4c83778` | Targeted + full suite | Approved | CLOSED |
+| Network/SSRF | Production transport (Duffel/Stripe/Amadeus) still auto-followed redirects (independent-review) | MEDIUM | Live, reachable | `4c83778` | Targeted + full suite | Approved | CLOSED |
+| PII/Privacy | `Traveler` redaction interface unused, docstring overclaimed | LOW | N/A (dead code, no leak) | `469ffc3` | Targeted + full suite | Approved | CLOSED |
+| PII/Privacy | `SENSITIVITY` dict incomplete (2 fields absent) (independent-review) | LOW | N/A (harmless — hand-written allowlists already excluded both) | `469ffc3` | Targeted + full suite | Approved | CLOSED |
+| PII/Privacy | `ticket_operations.py` embedded raw provider title in Ops note (independent-review) | LOW | Live, Ops-only-reachable | `469ffc3` | Targeted + full suite | Approved | CLOSED |
+| PII/Privacy | No account/session/traveler/booking/payment/document/communication deletion or retention-expiry lifecycle | N/A | Live (absence, not a defect) | Not fixed — explicitly out of scope | N/A | Reported honestly, not rejected | PRE-BETA / COMPLIANCE gap, not a vulnerability |
+| Secrets/config | (this pass) — no new finding | — | — | — | — | Approved for closure | CLOSED (nothing to fix) |
+
+No material Phase 6 finding has been silently omitted from this ledger; it
+mirrors the release-blocker ledger items 1-24 already carried in this
+report, cross-checked against every "Finding" heading in every slice
+section above.
+
+### C. Deferred technical debt — reconfirmed
+
+1. **`guided_booking.py` bool→BookingState mismatch.** Reconfirmed this
+   session: `prepare_journey` (`services/guided_booking.py:44`) still
+   unconditionally calls `_revalidate_item(run, item, duffel=None)` — no
+   code path anywhere passes a real `DuffelTransportProvider` to this call
+   site. `_revalidate_item` short-circuits to `(BookingState.READY, "")`
+   whenever `duffel is None` (`booking_orchestrator.py`), before the
+   truthiness bug's branch is ever reached with a differing outcome.
+   **Classification: DEFERRED-NONBLOCKING**, unchanged. Trigger: fix before
+   Basic/guided real fare revalidation is ever wired to a live provider.
+2. **Real Stripe Test Mode server E2E.** Still not run — no credentials
+   available in this environment, and none were fabricated.
+   **Classification: pre-Beta integration/release blocker, not a Phase 6
+   security blocker** — the fail-closed key/mode logic itself is unit-tested
+   directly (`StripeConfigurationError` on any non-test key, webhook-signature
+   verification, minor-unit conversion), independent of a live round-trip.
+3. **Payment↔Booking production coupling.** Confirmed unchanged:
+   `run_paid_booking`/`run_paid_booking_and_finalize`
+   (`services/payment_booking_orchestrator.py`) are not called from any live
+   API route (grepped fresh this session). Their own single-execution safety
+   is fixed and proven (Payment slice). **Classification: pre-Beta product
+   integration blocker, not a Phase 6 security blocker** — nothing insecure
+   happens; the orchestration simply does not exist yet.
+4. **Consumer `/api/v1/search` → Phase 3 intelligence wiring.** Confirmed
+   product/integration gap only — no security implication found or claimed.
+   **Not a Phase 6 security blocker.**
+5. **Account retention/deletion/export/session-purge lifecycle.** Confirmed
+   unchanged this session: no deletion/export/purge code path exists
+   anywhere in `src/detoura`. **Classification: pre-Beta privacy/product/
+   compliance requirement**, not a newly discovered security vulnerability.
+   This report does not claim GDPR compliance now or at any point.
+6. **Production email provider.** Confirmed not implemented —
+   `resolve_communication_provider()` always returns the sandbox adapter.
+   **Not a Phase 6 security blocker.**
+7. **Destination-image manual review backlog.** Unchanged, product/content
+   item. **Not a Phase 6 security blocker.**
+8. **Germany/EU legal/tax/package-travel/privacy specialist review.**
+   External, unstarted. **Not Phase 6 software-security closure** — a
+   pre-Beta/launch blocker outside this program's scope by definition.
+
+### D. Phase 6 closure criteria — checked
+
+- No open Critical finding. ✓ (ledger above)
+- No open High finding. ✓ (every HIGH item above is CLOSED)
+- No reachable unresolved security issue that materially threatens Beta. ✓
+- Ownership/IDOR protections intact. ✓ (re-verified fresh, PII slice)
+- Booking single-execution invariant intact. ✓ (Booking/provider slice)
+- Payment truth intact. ✓ (Payment slice)
+- SSRF/network protections intact. ✓ (Network slice, 2 independent-review rounds)
+- PII/privacy boundaries intact. ✓ (PII slice)
+- Secrets/config review found no blocker. ✓ (this pass)
+- Test/live behavior fails closed. ✓ (this pass, reconfirmed)
+- Independent QA evidence sufficient. — see final reviewer verdict below.
+- Certified full regression evidence exists. ✓ (PII slice's own run: exit 0,
+  0 F/E, 1 skip — valid evidence here since zero executable code changed
+  this session).
+
+Medium/Low technical debt deferred only with exact description,
+reachability, rationale and explicit trigger — see Section C.
+
+### E. Independent final review
+
+A fresh, read-only reviewer (separate from this pass's implementer) audited
+the closure claims above against the code directly rather than trusting the
+report's prose. Findings:
+
+1. **Critical/High open?** No. Read the full 24-item release-blocker ledger
+   directly; every item is CLOSED or explicitly non-Phase-6.
+2. **Any severity incorrectly downgraded?** Spot-checked three
+   (HIGH Duffel-retry fix, MEDIUM `ops_capture` fix, MEDIUM CGNAT fix)
+   directly against the current code — all three verified accurate, none
+   downgraded.
+3. **Reachability re-verified independently**, including one nuance this
+   report had not spelled out: `guided_booking.py:50`'s `if ok:` is checking
+   truthiness of a `BookingState` (a `str, Enum` — every member, including
+   `FAILED`/`UNAVAILABLE`/`TIMEOUT`, is a non-empty string and therefore
+   truthy). Today this is masked entirely because `duffel=None` forces
+   `_revalidate_item` to always return `BookingState.READY` before that
+   branch matters — genuinely inert, confirmed independently. The reviewer
+   flagged, and this report records, a concrete forward-looking risk: if
+   Basic/guided revalidation is ever wired to a real Duffel client **without
+   also** changing that comparison to `ok is BookingState.READY`, a failed
+   or expired revalidation would be silently treated as ready-to-book. This
+   does not change today's classification (still DEFERRED-NONBLOCKING, still
+   unreachable) but is now the explicit acceptance criterion for closing that
+   item: the truthiness fix must land in the same change that ever wires a
+   real provider in.
+4. **Secrets/config review independently corroborated**, including the
+   reviewer's own differently-patterned repo-wide grep (JWT-shaped strings,
+   PEM headers, a generic `key/secret/token = "<20+ chars>"` assignment
+   pattern, AWS/Slack/GitHub/Google token shapes) — zero hits, matching this
+   pass's own conclusion.
+5. **Test/live boundaries fail-closed** — confirmed, including a targeted
+   grep for `DISABLE_AUTH|SKIP_AUTH|BYPASS|INSECURE|NO_AUTH|AUTH_DISABLED|
+   verify=False|check_hostname=False|CERT_NONE` across `src/detoura`: zero
+   hits. `auth_config.is_production` was traced to confirm it only gates the
+   cookie `Secure` attribute, never an authentication/authorization decision.
+6. **Deferred items correctly classified** — confirmed, no pushback beyond
+   the guided_booking nuance already folded into Section C item 1 above.
+7. **Certified regression sufficient** — confirmed sufficient; the reviewer
+   independently verified `git status` is clean for `src/detoura/` and
+   `tests/` at this HEAD, i.e. zero code has changed since that suite ran,
+   and did not re-run it.
+8. **Can Phase 6 honestly be marked CLOSED?** Yes.
+
+**VERDICT: APPROVED FOR CLOSURE.**
+
+### FINAL REPORT
+
+**V9 PHASE 6 — FINAL SECURITY CLOSURE**
+
+Starting HEAD: `469ffc3`
+Final HEAD: `469ffc3` (no executable code changed this pass)
+
+Secrets/config review: **PASS**
+Automated secret scan: **BLOCKED** (no scanner tool available/configured)
+Manual/static secret review: **PASS**
+Test/live fail-closed: **PASS**
+
+Open Critical: **0**
+Open High: **0**
+Open Medium: **0**
+Open Low: **1** — `guided_booking.py` bool/BookingState truthiness mismatch
+(DEFERRED-NONBLOCKING, inert while `duffel=None` is hardcoded; acceptance
+criterion for closing it, per independent review: the `ok is
+BookingState.READY` fix must land in the same change that ever wires Basic/
+guided revalidation to a real Duffel client)
+
+Deferred technical debt: see Section C (8 items, all classified, none a
+Phase 6 security blocker).
+
+Certified full regression evidence: PII slice's own full `pytest tests/`
+run at this same HEAD (`469ffc3`) — exit code 0, zero failures/errors, one
+skip. Not re-run this session because zero executable code changed, and the
+independent reviewer confirmed `git status` clean for `src/detoura/` and
+`tests/` before relying on it.
+
+Independent final reviewer: **APPROVED FOR CLOSURE** (fresh, read-only,
+separate from this pass's implementer — see Section E for the full,
+evidence-cited review)
+
+PHASE 6 STATUS: **CLOSED**
+
+**V9 PHASE 6 SECURITY: CLOSED**
+
+Remaining PRE-BETA / RELEASE blockers (none reclassified as Phase 6
+security blockers):
+- Real Stripe Test Mode server E2E (credentials unavailable)
+- Payment → booking production orchestration wiring
+- Consumer search → Phase 3 live intelligence wiring
+- Account deletion/export/retention/session-purge lifecycle
+- Production transactional email integration
+- Destination-image review backlog
+- Germany/EU legal/tax/package-travel/privacy specialist review
+
+Files changed: `docs/V9_PHASE6_SECURITY_REPORT.md` only (no executable code
+changed this pass — the fresh secrets/config review found no new finding
+requiring a fix).
+
+Commits: one, this closure pass, exact-path staged
+(`docs/V9_PHASE6_SECURITY_REPORT.md`).
+
+Unrelated frontend preserved: YES
+Pushed: NO
+
+NEXT RECOMMENDED PRODUCT/ENGINEERING STEP: pick one pre-Beta blocker and
+close it deliberately rather than opening a new security slice — the
+highest-leverage next step is standing up the account
+deletion/export/session-purge lifecycle (release-blocker ledger item 24),
+since it is the only remaining item that is both entirely within this
+codebase's control and has no external dependency (unlike Stripe
+credentials or the EU legal review).
+
 ## Follow-up: PII / Privacy / Logging Security adversarial slice — CLOSED
 
 Starting HEAD `4c83778`. A fresh adversarial pass over how Detoura handles

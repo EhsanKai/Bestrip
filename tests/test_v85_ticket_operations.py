@@ -175,6 +175,27 @@ def test_cancel_non_refundable(client, H, monkeypatch):
     assert res["result"]["refund_status"] == "NONE"
 
 
+def test_cancel_unsupported_note_never_echoes_the_raw_provider_title(client, H, monkeypatch):
+    """V9 Phase 6 PII/Privacy slice (independent-review finding): the
+    eligibility note used to embed Duffel's raw ``title`` field verbatim
+    (``f"...: {e}"``) - inconsistent with the code-only pattern used
+    elsewhere, even though this path is Ops-only. Now it must carry the
+    provider's error CODE, never the free-text title."""
+    fake = FakeDuffel(cancel_unsupported=True)
+    monkeypatch.setattr("detoura.services.ticket_operations.duffel_for_ops",
+                        _fake_factory(fake))
+    bid = _seed_sandbox_booking(client, monkeypatch)
+
+    r = client.post(f"/api/v1/ops/bookings/{bid}/tickets/1/cancellation/eligibility",
+                    headers=H)
+    assert r.status_code == 200, r.text
+    op = r.json()
+    assert op["state"] == "INELIGIBLE"
+    note = op["quote"]["note"]
+    assert "not_cancellable" in note  # the provider's code
+    assert "cannot" not in note  # the raw title text, never echoed
+
+
 def test_cancel_refund_pending_is_not_refunded(client, H, monkeypatch):
     # provider confirms the cancellation but states no refund amount yet
     fake = FakeDuffel(refund=None)

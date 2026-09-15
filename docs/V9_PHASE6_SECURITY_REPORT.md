@@ -2,6 +2,361 @@
 
 Starting checkpoint: `2fbf4a8` (V9 Phase 5, APPROVED).
 
+## Follow-up: PII / Privacy / Logging Security adversarial slice — CLOSED
+
+Starting HEAD `4c83778`. A fresh adversarial pass over how Detoura handles
+personal/sensitive data end to end - not assuming any earlier ownership/IDOR
+work is sufficient, re-attacked from scratch.
+
+**This audit is technical, not legal.** It does not and cannot establish
+GDPR compliance, and nothing below claims it. Germany/EU legal/privacy/tax/
+package-travel review remains external and unstarted (tracked separately in
+the release-blocker ledger).
+
+### PII / PRIVACY DATA MAP
+
+**Account** - email, password hash, session/CSRF tokens, user_id.
+Source: `/auth/register`/`/auth/login`. Persistence: `user_accounts`
+(Argon2id `password_hash`, verified fresh this slice - capped input bytes,
+fails closed on any malformed hash); `auth_sessions` (SHA-256 `token_hash`/
+`csrf_token_hash` at rest, never the raw value - a correct choice given
+these are already full-entropy random tokens, not low-entropy secrets a
+slow KDF would protect). API exposure: login/register responses return
+only `{"user_id": ...}` - verified end to end this slice that no response
+body ever contains the raw session token, `password_hash`, or the password
+itself; the raw token travels ONLY via an HttpOnly cookie. Log exposure:
+none found (see Logging section). Authorization boundary: session
+cookie + CSRF double-submit. Sensitivity: SECRET (hash/tokens), PERSONAL
+(email). Retention: no deletion path exists (see Retention section).
+
+**Traveler** - given/family name, DOB, email, phone (PERSONAL/SENSITIVE
+per this model's own `SENSITIVITY` dict), gender, title, nationality,
+passport number/expiry/issuing country, document_type (SENSITIVE).
+Source: `POST /booking-intents/{id}/travelers`. Persistence: **only the
+lead traveler's name+email** are ever written to durable storage
+(`bookings.lead_name`/`lead_email`) - confirmed by reading
+`booking_persistence.py::_record` directly; DOB/gender/nationality/
+passport never reach SQL at all, for any traveler, lead or not - a
+genuine, deliberate data-minimization design already in place. API
+exposure: the booking-intent DTO returns only `party_size`
+(count)/`travelers_submitted` (bool) - never traveler fields; Ops booking
+summary/detail return only `lead_name`/`lead_email` (never DOB/passport/
+nationality, which were never persisted to begin with). A redaction
+interface (`Traveler.safe_summary()`/`public_summary()`, driven by
+`SENSITIVITY`) exists and is correctly designed but is currently unused by
+any caller - see Finding (LOW) below. Provider exposure: passport/DOB
+data is mapped to Duffel passenger objects only at the provider boundary
+(`duffel_passengers_from`), never logged (see Logging section) and never
+returned to the consumer. Authorization boundary: none needed for
+submission (booking_id capability, matching the established pattern);
+read access to the persisted lead name/email is owner-only (session +
+`trip_ownership`) or Ops-only. Sensitivity: SENSITIVE (DOB/passport/
+nationality/gender), PERSONAL (name/email/phone).
+
+**Booking** - booking_id, provider order IDs, itinerary, `owner_user_id`,
+recovery/error detail strings. Source: booking-intent creation/
+confirmation. Persistence: `bookings`/`booking_items` (SQLite). API
+exposure: `/me/trips/*` (owner-only, `require_session` + `trip_ownership`,
+re-verified fresh end to end this slice - see IDOR section), Ops (`require_ops`).
+`item.detail` (the only free-text field carried through from provider
+errors) was traced through every source that writes it
+(`_revalidate_item`/`_issue_item`) - always a short, developer-authored
+summary (`error.code`, `type(error).__name__`), never a raw provider
+payload or traveler data. Sensitivity: INTERNAL (identifiers), PERSONAL
+(via `lead_name`/`lead_email` only).
+
+**Payment** - payment_id, provider references, amount/currency, status,
+allocations. Already exhaustively covered by the Payment Security slice
+(ownership-checked reads, no raw card data anywhere, Stripe/sandbox
+provider abstraction never handles PAN/CVC). Not re-litigated here beyond
+confirming: no `client_secret`, PAN, CVC, or raw payment-method payload
+occurs anywhere in `src/detoura` (grepped fresh this slice, zero hits
+outside test files exercising the "reject a bad-looking key" logic itself,
+already-synthetic values). Sensitivity: INTERNAL (IDs/amounts), SECRET
+(none present - Detoura never touches raw card data by architecture, not
+merely by omission - see §5 below).
+
+**Financial documents** - document_id, document_type, document_number,
+`user_id`, amounts. Persistence: `financial_documents` (immutable, insert-
+only - "There is no update counterpart, by design"). API exposure:
+`/me/trips/{id}/documents[/{id}]` - ownership-checked at BOTH the booking
+level (`trip_ownership`) AND the document's own stored `user_id` field
+independently (defense in depth, confirmed by direct code read and by a
+fresh end-to-end IDOR test this slice - see below). PDF byte serving is
+not yet wired to any endpoint at all (confirmed: the code comment says so
+directly - "PDF byte serving can be added here once..."), so that surface
+does not exist to attack yet. Sensitivity: INTERNAL/PERSONAL (billing
+name/amount only - no traveler DOB/passport ever reaches a document).
+
+**Communication** - communication_id, recipient_address, channel/type/
+status, `user_id`, attempt/event history. Persistence: `customer_communications`
++ attempt/event tables. API exposure:
+`/me/trips/{id}/confirmation/resend` - ownership-checked (`trip_ownership`)
+before CSRF is even checked, confirmed end to end this slice. Provider:
+the sandbox email provider's own exception/detail strings are fixed,
+non-PII text (verified by reading `providers/sandbox_email.py` directly) -
+the recipient address is stored on the internal message record, never
+embedded in a `detail`/exception string. No production email provider is
+implemented or reachable (Phase 5's own scope, unchanged this slice - see
+scope note above). Sensitivity: PERSONAL (recipient email).
+
+### Findings
+
+**Finding (LOW) - the `Traveler` redaction interface is unused, and its
+docstring overclaimed enforcement it did not have.** `SENSITIVITY`/
+`safe_summary()`/`public_summary()` are well-designed and correctly
+implemented (verified directly this slice with new unit tests
+cross-checking the classification dict against what the summary methods
+actually exclude), but before this slice, nothing outside
+`models/traveler.py` imported or called any of them (confirmed via
+full-repo grep) - and the module's own docstring claimed "the API layer
+uses it to keep PERSONAL/SENSITIVE values out of logs, analytics, URLs and
+provider metrics", which was not true of any current code path. No actual
+leak resulted (every current serialization path was independently traced
+and manually, correctly, excludes SENSITIVE fields already - see the map
+above), so this is a documentation-accuracy/dead-code finding, not an
+exploit. **Fixed**: the docstring now states the honest, verified-this-slice
+status (designed, not yet wired anywhere) rather than an aspirational
+claim, and `safe_summary()`/`public_summary()` now have direct permanent
+regression tests locking in their correctness (including a cross-check
+against the `SENSITIVITY` dict itself) - both dead code no longer and
+proven correct for whenever a future caller needs them.
+
+**Finding (LOW, independent-review) - the `SENSITIVITY` dict itself was
+incomplete.** Found by the independent reviewer, not the implementer: the
+dict classified 10 of `Traveler`'s 12 fields, silently omitting
+`passport_issuing_country` and `document_type` entirely (not even
+`PUBLIC`) - directly contradicting the module's own "Every field is
+classified" claim. Harmless in practice (`safe_summary()`/`public_summary()`
+are hand-written allowlists that already excluded both fields regardless
+of the dict), but a real gap in the exact interface this slice just wrote
+regression tests for - and the cross-check test added above only iterates
+`SENSITIVITY.items()`, which cannot catch a field simply *absent* from the
+dict. **Fixed**: both fields added (`SENSITIVE`, matching their sibling
+document fields); a new test asserts
+`set(SENSITIVITY.keys()) == set(Traveler.model_fields.keys())` directly
+against the model's own field set, so a future field added to `Traveler`
+without a matching classification now fails loudly instead of silently
+drifting.
+
+**Finding (LOW, independent-review) - `ticket_operations.py` embedded a raw
+provider error string in an Ops-visible note.** Found by the independent
+reviewer: `check_cancellation_eligibility`'s `DuffelChangeUnsupported`
+handler built its note as `f"...: {e}"` - Duffel's raw `title` field,
+verbatim. Not a PII leak (Ops-only via `require_ops`, confirmed no
+consumer route reaches this module; Duffel is a fixed trusted provider,
+not attacker-influenced; the `title` is order/fare-rule policy text, never
+traveler data) - but inconsistent with the stricter code-only pattern
+`booking_orchestrator.py`'s `_revalidate_item`/`_issue_item` already
+established for exactly this class of provider-error surfacing. **Fixed**:
+now uses `e.code` (Duffel's own short error code, a genuinely separate
+attribute from the message - verified directly against the raise site)
+falling back to the exception's type name, matching the established
+pattern. New regression test exercises the real HTTP endpoint end to end
+with a scripted Duffel 422 response, asserting the code appears and the
+raw title text does not.
+
+### Passwords / auth secrets - PASS
+
+Argon2id (`argon2-cffi`, the OWASP-recommended default), input-length-capped
+against a DoS via an oversized "password", fails closed on any malformed/
+foreign hash rather than raising. Session/CSRF tokens are cryptographically
+random (`secrets.token_urlsafe`) and stored SHA-256-hashed, never in the
+clear. Verified end to end this slice: login/register API responses never
+contain the raw token, the password, or the hash (new regression test).
+The exactly 3 files in `src/detoura` that call the stdlib `logging` module
+were traced individually (see Logging section) - none log a password,
+token, or hash.
+
+### Logging - PASS (small, fully-traced surface)
+
+Exactly 3 files call `logging`'s `log`/`logger` methods anywhere in
+`src/detoura` (confirmed via grep, not assumed): `providers/duffel.py`
+(two calls - an offer-mapping debug/info line, both over pre-booking
+SEARCH-result data with no traveler identity attached at all - offers are
+anonymous flight options, not passengers), `services/booking_persistence.py`
+(one `logger.exception` on a `claim_trip` failure - interpolates only
+`booking_id`/`owner_user_id`, both server-generated opaque tokens), and
+`services/post_booking_finalizer.py` (two `logger.warning` calls on
+document-issuance/communication-send failure - interpolate `booking_id`
+and `str(error)`, and every exception type either of those calls can
+actually raise was traced to its raising site and confirmed to embed only
+internal identifiers/amounts/codes, never a recipient address, traveler
+name, or raw provider payload). All 3 files now have direct permanent
+regression tests (`caplog`-based) proving this holds, not just documenting
+it by inspection.
+
+### Log injection - PASS
+
+The only user-influenced values that reach any of the 3 real log call
+sites are `booking_id`/`user_id`/`owner_user_id`, which are exclusively
+server-generated via `secrets.token_urlsafe` (a fixed, injection-incapable
+character set - no newlines, no control characters, structurally) - never
+raw user text. Email addresses (which ARE user-submitted) are validated by
+a regex that excludes whitespace before they can become a valid `Traveler`/
+account field, and are never logged regardless (see Logging section). The
+account audit trail deliberately never records a failed login's *attempted*
+email at all (`actor="unknown"`, a fixed string, not the submission) -
+verified with a fresh end-to-end regression test this slice, closing the
+one place free-form attacker-chosen text could otherwise have reached a
+persisted record.
+
+### Error responses - PASS
+
+Every `HTTPException(detail=...)` site that echoes `str(error)` across
+`api/*.py` was enumerated (grep, not sampled) and individually traced:
+every one catches a narrow, developer-raised domain exception type
+(`ValueError`, `KeyError`, `RateLimitedError`, `AuthError`,
+`RevalidationLimitExceeded`, `EditConflict`, ...) with a fixed, hand-written
+message - never a bare `except Exception`. `me_trips.py`'s
+`resend_confirmation` has an explicit, commented allowlist of exactly two
+safe-to-echo exception types, with a comment recording a PAST incident this
+pattern was built to prevent ("that leaked a raw `sqlite3.IntegrityError`,
+including real table/column names, before this fix"). `FastAPI(...)` is
+constructed with no `debug=True`, so an unhandled exception falls through
+to Starlette's default `ServerErrorMiddleware`, which returns a generic
+500 with no traceback in the response body.
+
+### Ops privacy - PASS (spot-checked plus one fresh read)
+
+`GET /ops/bookings` (search-capable) and `GET /ops/bookings/{id}` (detail)
+both require `require_ops` and return only `lead_name`/`lead_email` for
+traveler identification - the same fields already persisted, never DOB/
+passport/nationality (which, per the map above, are never persisted at
+all). This matches genuine operational need (a support agent needs to find
+"this customer's" booking) without becoming a wider PII surface than what
+is already stored.
+
+### Documents / IDOR - PASS (fresh end-to-end verification)
+
+Re-attacked fresh, through the real HTTP API, not assumed from Phase 5's
+own closure: a document/confirmation belonging to user A is unreachable by
+user B (even via booking-id substitution using B's OWN owned booking),
+unreachable anonymously, and does not leak into B's own document listing.
+The `resend_confirmation` mutating endpoint is both ownership-checked (before
+CSRF) and CSRF-protected for the legitimate owner. **Note on prior test
+coverage**: `tests/test_v9_phase5_me_trips_api.py` predates the real
+confirmation/document/communication persistence modules being merged into
+this worktree and tests hand-built stub objects directly - it was never
+actually exercising the live API's ownership logic. New tests this slice
+(`test_v9_phase6_pii_security.py`) are the first tests to attack the REAL
+`/me/trips/*` endpoints with two genuinely separate authenticated sessions
+and real persisted rows.
+
+### Communications - PASS
+
+Covered above (Logging, Documents/IDOR sections) and in the PII map.
+`EMAIL SUCCESS != BOOKING SUCCESS`/`EMAIL FAILURE != BOOKING FAILURE`/
+`UNKNOWN != FAILED` (Phase 5's own invariants) are unchanged - this slice
+did not touch `communication_service.py`'s state machine, only verified
+its exception messages and the resend endpoint's authorization boundary.
+
+### Metrics / observability - N/A (no such system exists)
+
+Grepped for any metrics/telemetry/observability module in `src/detoura`:
+none exists. `providers/http.py`'s `HttpMetrics` is the closest thing
+present - request/retry/failure/rate-limited *counts* only, no labels of
+any kind, so it cannot carry a PII-shaped high-cardinality label by
+construction. Nothing to fix; reported honestly rather than inventing a
+finding where there is no system to have one.
+
+### Persistence - PASS
+
+Argon2id password hashes and SHA-256 session/CSRF token hashes confirmed
+at rest (never plaintext). No raw card data, provider secrets, or full
+request bodies found persisted anywhere. Traveler SENSITIVE fields (DOB/
+passport/nationality/gender) confirmed NOT persisted at all, for any
+traveler - the strongest form of minimization (data that was never written
+cannot later leak from storage).
+
+### Retention / deletion - reported honestly, not claimed as compliant
+
+**No account/session/traveler/booking/payment/document/communication
+deletion or retention-expiry lifecycle exists anywhere in this codebase**
+(confirmed via a full grep for `DELETE FROM`/`def delete_` across
+`persistence/*.py`: the only real deletions are `price_observations`/
+`search_traces` TTL cleanup - market-data tables, not PII - and an internal
+booking-items upsert-replace, not a user-facing deletion). Sessions have an
+`expires_at` TTL that is checked and enforced at validation time
+(`validate_session` rejects an expired session), but the row itself is
+never purged - a hashed token in an expired, unusable row persists in the
+database indefinitely. This is a **PRE-BETA / COMPLIANCE gap, not a
+security vulnerability**: an expired session's hashed token cannot be used
+to authenticate (checked, verified), and no currently-reachable code path
+lets one user delete or export another's data. Not fixed this slice (out
+of scope - "Do NOT redesign product behavior") and not claimed as
+compliant with any retention regulation. Recommended as a genuine, real
+pre-Beta product requirement (account deletion / data export / session
+purge), separate from and not blocking this security audit's closure.
+
+### Data minimization - PASS (already strong, verified not invented)
+
+The lead-only name/email persistence and the never-persisted SENSITIVE
+traveler fields (see map above) were already the design before this slice;
+verified directly by reading `booking_persistence.py::_record`, not
+assumed. No meaningful reachable duplication of sensitive data across
+models was found. No schema migration proposed or needed.
+
+### Secret scan - BLOCKED (no scanner installed; manual scan performed, PASS)
+
+No secret-scanning tool (`gitleaks`, `trufflehog`, or a project-configured
+equivalent) is installed in this environment or configured in this repo -
+per this slice's own instruction, that absence is reported as BLOCKED, not
+interpreted as a pass. A manual grep-based scan of `src/detoura` for
+Stripe/AWS/PEM-key-shaped secrets found nothing; the tracked diff for this
+slice's own changes was independently checked and contains no secrets.
+Test-fixture values that look like keys (`sk_live_...`, `duffel_live_...`)
+are all in files that deliberately test "reject a live-looking key"/
+"redact a key" logic - self-evidently synthetic, used adversarially by the
+tests themselves, not accidental exposure (per this slice's own
+instruction not to waste time replacing harmless synthetic examples).
+
+### Test fixtures - PASS (spot-checked, no unsafe propagation found)
+
+No tracked `.env`/secrets file exists (only `frontend/.env.example`, a
+template, out of this slice's backend scope). No fixture value found that
+could be mistaken for a real production secret or real personal data.
+
+### Full regression - CERTIFIED CLEAN
+
+Unlike the Booking/Payment/Network slices earlier in this session, this
+slice obtained a genuinely complete, from-scratch full-suite result: the
+independent reviewer ran the entire `pytest tests/` suite in its own
+separate process (started as a last-mile check after its targeted 499-test
+sweep) and it completed normally - **exit code 0, zero `F`/`E`/`FAILED`/
+`ERROR` occurrences anywhere in the output, one skipped test**. Combined
+with the implementer's own 20-test new-file run (4x, no flakiness) and the
+reviewer's own 4x runs of the two directly-affected files, this is a
+certified, not reconstructed-from-partial-output, full regression result.
+
+### Independent review
+
+Separate read-only agent (`security-architect`), two rounds. **Round 1**: a
+fresh, from-scratch attack on every invariant, not a re-check of this
+report's own draft - independently re-derived the PII map by reading the
+actual source (not trusting the report text), traced every claimed-safe
+exception path to its raise site, wrote and ran its own standalone script
+attacking the document IDOR boundary seven different ways (trailing slash,
+case mutation, whitespace/path-traversal encoding, booking-id
+substitution, query-string injection, a direct Python-level cross-user
+persistence call) against the real running app - none succeeded, manually
+re-audited all 24 `detail=str(...)` sites across `api/*.py` fresh. Found 2
+LOW findings (both above, both fixed) and confirmed every other claim in
+this report independently, including the "stub-only, never exercised the
+live API" characterization of the pre-existing
+`test_v9_phase5_me_trips_api.py`. **Round 2 (fixes re-checked)**:
+independently re-derived both fixes against the current source (enumerated
+`Traveler`'s actual field list from the class body and compared to the
+dict; traced `DuffelChangeError.code`'s raise site to confirm it is
+genuinely a separate attribute from the message text), ran the two
+directly-affected test files 4 times (no flakiness) plus a 499-test
+targeted sweep covering everything touching `Traveler`/`SENSITIVITY`/
+`ticket_operations.py`/Phase 5-6 PII/Ops/ownership: all green. No
+CRITICAL/HIGH/MEDIUM findings in either round.
+
+**PII / PRIVACY / LOGGING SECURITY SLICE: APPROVED** (round 1); **FOLLOW-UP
+FIXES: APPROVED** (round 2).
+
 ## Follow-up: Network / SSRF Security adversarial slice — CLOSED
 
 Starting HEAD `d39bc2b`. A fresh adversarial pass over Detoura's outbound
@@ -761,10 +1116,21 @@ exercised — see the per-slice breakdown below.
   redirect-following) found and fixed after independent review flagged
   them. Independently reviewed across two rounds, no CRITICAL findings,
   no regressions in booking/payment security.
-- **Slices 6 (PII/logging), 7 (secrets/config), 8 (dependencies):
-  spot-checked, not a full fresh adversarial pass.** Slice 8 is complete
-  (dependency scan is a point-in-time check, genuinely finished). Slices
-  6-7 had existing controls read and spot-verified sound.
+- **Slice 6 (PII/privacy/logging): DONE.** A fresh, evidence-first
+  adversarial pass over account/traveler/booking/payment/document/
+  communication data handling, logging, error responses, Ops exposure,
+  retention reality, and secret hygiene (see "Follow-up: PII / Privacy /
+  Logging Security adversarial slice" above) - no CRITICAL/HIGH/MEDIUM
+  findings; 2 LOW findings fixed (an unwired-but-now-tested redaction
+  interface's docstring/completeness, a raw-provider-string leak into an
+  Ops-only note). Retention/deletion reality reported honestly as a
+  PRE-BETA/COMPLIANCE gap, not a vulnerability, and not claimed as GDPR
+  compliant. Independently reviewed across two rounds.
+- **Slice 7 (secrets/config), 8 (dependencies): spot-checked/complete.**
+  Slice 8 is complete (dependency scan is a point-in-time check, genuinely
+  finished). Slice 7 had existing controls read and spot-verified sound;
+  this slice's own fresh secret scan (manual, no scanner installed -
+  reported as BLOCKED, not PASS, per instruction) found nothing.
 
 ## Slice 1 — Auth abuse / login limiter hardening
 
@@ -986,9 +1352,10 @@ New items opened this session:
 9. No request body size cap - **CLOSED** this slice.
 10. Ops shared-token exchange had no brute-force throttle - **CLOSED**
     this slice.
-11. Slice 6 needs a genuine fresh adversarial pass (not just a spot-check)
-    before Phase 6 can be declared APPROVED. (Slices 3, 5 - **CLOSED**, see
-    items 3 and 18 below.)
+11. Slices 3, 5, 6 needed a genuine fresh adversarial pass (not just a
+    spot-check) before Phase 6 can be declared APPROVED - **all CLOSED**
+    (see items 3 and 18 below for 3/5; Slice 6 closed this session, see
+    "Follow-up: PII / Privacy / Logging Security adversarial slice" above).
 12. Slice 4 (booking/provider security) - **CLOSED** this session (see
     "Booking / provider execution security" section above). The rest of
     Slice 9 (ops recovery/reconciliation visibility beyond the login fix)
@@ -1038,6 +1405,25 @@ New items opened this session:
     redirects (the no-redirect fix had only been applied to the two
     already-unreachable components) - both **CLOSED** this session, see
     the two independent-review Finding sections above.
+22. `Traveler.SENSITIVITY`/`safe_summary()`/`public_summary()` (the
+    traveler-PII redaction interface) existed but was entirely unused/
+    unwired, and its docstring overclaimed enforcement - **CLOSED** this
+    session (see "Follow-up: PII / Privacy / Logging Security adversarial
+    slice" above; no actual leak resulted, docstring corrected, the
+    interface now has permanent regression tests).
+23. Independent-review findings on the PII slice's own work: the
+    `SENSITIVITY` dict itself omitted two fields entirely
+    (`passport_issuing_country`, `document_type`), and
+    `ticket_operations.py` embedded a raw Duffel provider `title` string
+    into an Ops-only note - both **CLOSED** this session, see the two
+    independent-review Finding sections above.
+24. No account/session/traveler/booking/payment/document/communication
+    deletion or retention-expiry lifecycle exists anywhere in this
+    codebase - **PRE-BETA / COMPLIANCE gap, not a vulnerability**,
+    reported honestly this session (see "Retention / deletion" above), not
+    fixed (out of this slice's scope - "Do NOT redesign product
+    behavior"). A genuine product requirement before a real Beta launch:
+    account deletion / data export / session-row purge.
 
 ## Tests / build / secret scan
 

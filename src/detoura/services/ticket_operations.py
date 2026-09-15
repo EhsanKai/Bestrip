@@ -225,9 +225,17 @@ def check_cancellation_eligibility(
             quote={"note": "The provider no longer recognises this order."},
         )
     except (DuffelChangeUnsupported,) as e:
+        # V9 Phase 6 PII/Privacy slice (independent-review finding): `{e}`
+        # was the raw provider `title` string - never a secret or traveler
+        # PII here (Ops-only, a fixed trusted provider), but inconsistent
+        # with the stricter code-only pattern booking_orchestrator.py's
+        # _revalidate_item/_issue_item already established. `e.code` is
+        # Duffel's own short error code where one exists, falling back to
+        # the exception's class name - matching that same pattern.
         return ops_store.update(
             db, op.operation_id, state=CancellationState.INELIGIBLE.value,
-            quote={"note": f"The provider will not cancel this order: {e}"},
+            quote={"note": f"The provider will not cancel this order "
+                           f"({e.code or type(e).__name__})."},
         )
     except (DuffelChangeError, DuffelConfigurationError, ProviderHttpError,
             TimeoutError, OSError) as e:

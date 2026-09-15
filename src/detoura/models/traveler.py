@@ -13,9 +13,20 @@ travel-document detail are collected *only* when a provider flow actually
 demands them, so the fields exist but default to absent and a caller decides.
 Over-collecting passport data "in case" is how a demo becomes a breach.
 
-**Every field is classified.** `SENSITIVITY` maps each field to a data class,
-and the API layer uses it to keep PERSONAL/SENSITIVE values out of logs,
-analytics, URLs and provider metrics.
+**Every field is classified.** `SENSITIVITY` maps each field to a data class
+- the reference this module's own `safe_summary()`/`public_summary()` are
+built against, so "what may Ops/a progress screen show" has one answer to
+check them against, not a judgement call at each call site.
+
+V9 Phase 6 PII/Privacy slice, verified honestly: as of this audit, nothing
+outside this module actually imports `SENSITIVITY` or calls
+`safe_summary()`/`public_summary()` - no current caller was found to leak a
+SENSITIVE field regardless (each serializes only the specific fields it
+needs, by hand), but the classification is not yet a load-bearing,
+programmatically-enforced boundary anywhere. Treat it as the intended
+shape for any future traveler-data surface (logging, analytics, an Ops
+traveler view) to build against, not as a guarantee already wired
+everywhere.
 """
 
 from __future__ import annotations
@@ -43,6 +54,18 @@ class DataSensitivity(str, Enum):
 
 
 #: field name -> data class. The API redaction layer reads this.
+#:
+#: V9 Phase 6 PII/Privacy slice (independent-review finding): this dict
+#: must cover every field on :class:`Traveler`, or "Every field is
+#: classified" (this module's own claim, above) is false - two fields,
+#: ``passport_issuing_country`` and ``document_type``, were missing
+#: entirely (not even ``PUBLIC``) until this fix. A dedicated test
+#: (``test_sensitivity_dict_covers_every_traveler_field``,
+#: tests/test_v9_phase6_pii_security.py) asserts
+#: ``set(SENSITIVITY) == set(Traveler.model_fields)`` so a future field
+#: added to the model without a matching entry here fails loudly instead
+#: of silently drifting - the cross-check test that already existed only
+#: iterated ``SENSITIVITY.items()``, which cannot catch an *absent* key.
 SENSITIVITY: dict[str, DataSensitivity] = {
     "given_name": DataSensitivity.PERSONAL,
     "family_name": DataSensitivity.PERSONAL,
@@ -54,6 +77,8 @@ SENSITIVITY: dict[str, DataSensitivity] = {
     "nationality": DataSensitivity.SENSITIVE,
     "passport_number": DataSensitivity.SENSITIVE,
     "passport_expiry": DataSensitivity.SENSITIVE,
+    "passport_issuing_country": DataSensitivity.SENSITIVE,
+    "document_type": DataSensitivity.SENSITIVE,
 }
 
 _NAME_RE = re.compile(r"^[\w' .\-]{1,60}$", re.UNICODE)

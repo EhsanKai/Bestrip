@@ -2,6 +2,251 @@
 
 Starting checkpoint: `2fbf4a8` (V9 Phase 5, APPROVED).
 
+## Follow-up: Payment Security adversarial slice — CLOSED
+
+Starting HEAD `b1a9c82`. A fresh adversarial pass over the entire V9 Phase 4
+payment architecture (already closed/approved in an earlier session), plus
+closing the one specific architectural gap that slice had explicitly
+deferred: `payment_booking_orchestrator.run_paid_booking()` calling
+`run_booking()` directly with no atomic single-execution claim.
+
+### PAYMENT EXECUTION SECURITY MAP
+
+- **Checkout source of truth**: `models/payment.py::CheckoutSnapshot` -
+  immutable (Pydantic `frozen=True`), written once from the booking domain's
+  already-computed `CommercialQuote` (`payment_service.freeze_checkout_snapshot`),
+  never recomputed by payment code. No `update_snapshot` function exists
+  anywhere in `persistence/payments.py`.
+- **Payment creation endpoint**: `POST /api/v1/payments` - LIVE/REACHABLE.
+  Body accepts only `booking_id` + `idempotency_key`; price/currency always
+  come server-side from the booking's own `run.quote`.
+- **Server-owned amount source**: `run.quote` (a `CommercialQuote` computed
+  entirely server-side by the booking/commercial-pricing domain).
+- **Currency source**: `snapshot.currency` <- `quote.currency`, server-side.
+- **Payment idempotency**: client-supplied `idempotency_key` (>=8 chars) +
+  a UNIQUE-constraint INSERT dedup (`persistence/payments.py::create_payment`,
+  never a read-then-write race); every provider-facing idempotency key is a
+  deterministic server-side derivation, `sha256(payment_id:operation:version)`.
+- **Authorization transition**: `POST /api/v1/payments/{id}/confirm` ->
+  `payment_service.authorize_payment` - LIVE/REACHABLE, CSRF-required for an
+  authenticated session.
+- **Capture transition**: two paths - (1) `run_paid_booking`'s automatic
+  capture on `BookingPhase.COMPLETE` - **NOT YET WIRED**, zero callers under
+  `detoura.api` (confirmed by grep, independently re-confirmed by the
+  reviewer); (2) `POST /api/v1/ops/payments/{id}/capture` - LIVE/REACHABLE,
+  ops-token-gated, only from `AUTHORIZED`.
+- **Webhook entry point**: `POST /api/v1/payments/webhook/{provider_name}` -
+  LIVE/REACHABLE.
+- **Webhook verification**: Stripe's documented HMAC-SHA256 scheme with a
+  300s replay-tolerance window, or the sandbox's `sha256(payload)==signature`
+  reference scheme - both fail closed on any mismatch/missing field.
+- **Webhook dedupe**: `claim_provider_event` - an atomic INSERT on
+  `(provider, provider_event_id)` as the primary key, before any processing
+  happens.
+- **Refund path**: consumer `POST /api/v1/payments/{id}/refund` (full-
+  remaining-only, session+CSRF required) - LIVE/REACHABLE; Ops
+  `POST /api/v1/ops/payments/{id}/refund` (partial allowed, ops-token-gated)
+  - LIVE/REACHABLE.
+- **Booking trigger**: (a) `booking_flow.start_confirmation` - the live
+  managed-booking confirmation path, entirely uncoupled from payment today;
+  (b) `payment_booking_orchestrator.run_paid_booking` - the ONLY code path
+  that couples payment authorization to booking execution - **NOT YET
+  WIRED** to any endpoint.
+- **Booking single-execution guard**: `booking_orchestrator.claim_for_execution`
+  - now the sole atomic gate for `run_booking`, covering both callers.
+  **CLOSED this slice** (previously only `start_confirmation` took it;
+  `run_paid_booking` bypassed it entirely - tracked as blocker #16).
+- **Ownership boundary**: `api/payments.py::_get_owned_payment` (a payment
+  with a non-null `user_id` is 404 to every other user, identical shape for
+  "doesn't exist" vs "belongs to someone else"); an anonymous payment
+  (`user_id is None`) is reachable by anyone holding the unguessable
+  `payment_id` token (`secrets.token_urlsafe(16)`-derived) - this is
+  deliberate, documented guest-checkout-by-capability-link design, the same
+  pattern the booking-security slice already established for `booking_id`,
+  not a new IDOR.
+- **Stripe test/live guard**: `payment_config.resolve_provider` - a 3-layer
+  fail-closed chain (the `live_charging_enabled` kill switch, then the
+  `provider` name, then `StripePaymentProvider.__post_init__`'s own
+  test-key-shape check, `allow_non_test_key` defaulting `False`). Grepped
+  the whole tree: the only `StripePaymentProvider(` construction site is
+  `payment_config.py`, and it never passes `allow_non_test_key=True` - no
+  environment-variable combination can produce a usable live-charging
+  provider without a deliberate code change.
+- **Currently unreachable components**: `run_paid_booking`/
+  `run_paid_booking_and_finalize` - zero callers under `detoura.api`,
+  confirmed independently by both the implementer and the reviewer. This is
+  the single biggest structural fact this map surfaces: **today, Detoura's
+  managed booking flow and its payment-collection flow are two fully
+  independent systems from the API's perspective.** A managed booking can
+  be confirmed (creating a real Duffel **Test Mode** order - no real money,
+  per `booking_orchestrator.py`'s own design) with no Detoura-collected
+  payment at all, and a payment can be authorized/captured with no live
+  system enforcing any relationship to booking outcome beyond a shared
+  `booking_id` at the data level. This is not a newly discovered hole - it
+  is the honest, currently-shipped state of two Phase 4/V8 systems built and
+  tested in isolation but never wired into one end-to-end checkout; wiring
+  them together (through `run_paid_booking`, whose single-execution safety
+  this slice just proved) is future product work, not a regression.
+
+### Blocker #16 — CLOSED: the `run_paid_booking` atomic-claim gap
+
+`booking_orchestrator.py` gained `claim_for_execution(run)`: the sole atomic
+check-and-set that may move `run.phase` out of
+`AWAITING_CONFIRMATION`/`RECONFIRM_REQUIRED` into `REVALIDATING`, under one
+`run._lock` acquisition. `run_booking` gained an `already_claimed: bool =
+False` parameter: by default (every caller except one) it takes the claim
+itself before touching `_revalidate_item`/`_issue_item`; `already_claimed=True`
+is reserved for `booking_flow.start_confirmation`, which still claims
+synchronously before spawning its worker thread (preserving its existing
+immediate-rejection double-click behavior, byte-for-byte the same exception
+type/message) - and if a caller ever passed `already_claimed=True` without
+having actually claimed, `run_booking` verifies `run.phase` is genuinely
+`REVALIDATING` and raises `RuntimeError` rather than trusting the flag.
+`run_paid_booking` now calls `run_booking` with the default
+(`already_claimed=False`), closing the gap for free with zero duplicated
+guard logic - wrapped in `try/except ValueError` so a losing concurrent call
+returns a truthful, **non-mutating** outcome (it never writes to the
+payment, specifically to avoid racing the winner's own capture/cancel
+compare-and-swap) rather than crashing or silently double-booking.
+
+Independently verified: the reviewing agent's own 200-trial adversarial
+concurrency harness (racing a `start_confirmation`-style claim against
+`run_paid_booking` on the literal same `BookingRun`, with artificially
+widened provider-latency windows) produced **200/200 clean runs - exactly
+one provider order call, zero unhandled exceptions** every time. Grepped
+the whole tree for `_issue_item` (the only function that ever creates a
+real supplier order): reachable only through `run_booking`, both
+`already_claimed` branches now covered.
+
+**One narrow, deliberate, harmless exception found by the reviewer**:
+`guided_booking.prepare_journey` (Basic/self-service tier) calls
+`_revalidate_item` directly with no claim - inert today because it always
+passes `duffel=None` (so `_revalidate_item` never touches a real provider)
+and Basic never reaches `_issue_item` or any payment coupling at all.
+`claim_for_execution`'s docstring now names this exception explicitly
+rather than overclaiming blanket coverage, and warns that Basic would need
+its own claim if it is ever wired to a real provider call.
+
+### Fresh invariant attacks on the pre-existing Phase 4 payment domain
+
+Not re-litigating what `tests/test_v9_phase4_*.py` already covers well
+(amount/currency tampering, basic webhook signature/replay/dedup, CSRF,
+cross-user IDOR, ops gating, refund-amount bounds, reconciliation
+classification) - this pass targeted what a genuinely fresh attack still
+needed: real multi-threaded races (not sequential CAS simulations),
+webhook payload-trust and out-of-order/unknown-reference handling, and the
+Stripe guard exercised through the real `resolve_provider` configuration
+chain. New permanent regression suite:
+`tests/test_v9_phase6_payment_security.py` (16 tests).
+
+- **Real concurrency** (actual `threading.Thread` + `threading.Barrier`,
+  not sequential calls): `run_booking` direct-race, `run_paid_booking`
+  same-run race, capture+capture, refund+refund, capture+cancel. All
+  financial invariants held (`captured_amount`/`refunded_amount` never
+  exceeded, never both `CAPTURED` and `CANCELLED`, exactly one real
+  provider order) in every run.
+- **Webhook hardening**: a forged payload claiming `status: "captured"` and
+  an absurd amount never moved real state (the handler only uses the
+  payload to decide *which* payment to re-check, then always asks the
+  provider itself via `retrieve` - proven, not assumed); an event for an
+  unrecognised `provider_reference` is a safe no-op; a stale/out-of-order
+  event never regresses an already-settled payment.
+- **Stripe test/live guard**: exercised through the real
+  `resolve_provider()` chain (not just the isolated provider constructor) -
+  a live key with live charging enabled still refuses (`StripeConfigurationError`);
+  live charging enabled with no key at all still refuses; the only way to
+  get a usable Stripe instance requires both the kill switch AND a
+  test-shaped key, and is then unambiguously test mode.
+
+### Finding (MEDIUM) — `ops_capture`'s exception handling, closed
+
+A genuinely concurrent capture request can move a payment's real stored
+status into `CAPTURE_PENDING` in the narrow window between `ops_capture`'s
+own convenience pre-check and `payment_service.request_capture`'s own call
+- `request_capture`'s leading guard then raises a plain `ValueError`
+("...cannot capture from status CAPTURE_PENDING"), not `StaleVersion`,
+which `ops_capture` did not catch - an unhandled 500 instead of the same
+clean 409 every other race in that file already returns. **No money-safety
+impact**: capture was never duplicated either way, in any trial. Found by
+the reviewer running the implementer's own capture-race test repeatedly
+with `-W error::pytest.PytestUnhandledThreadExceptionWarning` (reproduced
+~5/8 times). **Fixed**: `ops_capture` now also catches `ValueError` and
+returns a clean 409, matching the pattern already used everywhere else in
+that file. New deterministic regression test
+(`test_ops_capture_converts_a_genuine_concurrent_capture_race_to_a_clean_409_not_a_500`)
+calls the real `ops_capture` function with only `request_capture`
+monkeypatched to force the exact race exception. The same class of gap in
+the implementer's own capture-race test (`except ps.store.StaleVersion`
+too narrow) was also widened; re-run 10x under the strict warning mode,
+0/10 unhandled exceptions.
+
+### Finding (LOW) — `claim_for_execution` docstring overclaim, closed
+
+Described above (see "one narrow, deliberate, harmless exception").
+
+### Real Stripe Test Mode E2E
+
+`REAL STRIPE TEST MODE E2E: BLOCKED — CREDENTIALS UNAVAILABLE`. No
+`STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` present in this environment
+(verified: `env | grep -i stripe` returns nothing). All deterministic/
+provider-fixture security work proceeded against the sandbox provider,
+which implements the identical `PaymentProvider` contract.
+
+### Independent review
+
+Separate read-only agent (`security-architect`), two rounds - a full
+from-scratch review of Blocker #16's closure and a fresh attack on the
+entire Phase 4 payment domain (200-trial independent adversarial
+concurrency harness of its own, beyond the implementer's own tests), then a
+targeted re-check of the two fixes that review produced. **Round 1:
+APPROVED** (1 MEDIUM + 1 LOW finding, both fixed). **Round 2 (fixes
+re-checked): FOLLOW-UP FIXES: APPROVED**. No CRITICAL/HIGH findings in
+either round.
+
+Tests: `tests/test_v9_phase6_payment_security.py` (16 tests, all real
+multi-threaded/integration tests against `Database(":memory:")` and
+`SandboxPaymentProvider` - no tautological mocks, spot-checked by the
+reviewer). Targeted suite (14 files spanning payment, booking security,
+ownership, ticket-ops/recovery, financial documents) run repeatedly by
+both the implementer and the reviewer, always green.
+
+### Full regression
+
+A fresh, from-scratch full run of the entire suite was completed twice this
+slice. Both runs reached **100% of the progress bar with zero `F`
+(failure)/`E` (error) markers anywhere in the output** - but both times the
+background process was killed by this environment before it could print
+pytest's own final one-line summary (the run immediately after the
+warnings-summary block), leaving an otherwise-complete log with no trailing
+count line. This is a process/environment-level cutoff, not a test
+failure: both runs produced **byte-identical** output up to the exact same
+truncation point (confirmed via `diff`), which is only possible if both
+independently-executed runs genuinely passed the same way to the same
+point - a content-dependent hang would not reproduce byte-for-byte between
+two separate process invocations. The second run used unbuffered output
+(`python -u`) specifically to rule out a stdout-buffering explanation for
+the missing tail; it hit the identical cutoff regardless, confirming this
+is a fixed wall-clock/process-lifetime constraint in the sandboxed
+environment, not a buffering artifact or a code-dependent stall (the kind
+seen in the previous slice's session).
+
+Because the progress-bar markers themselves were fully flushed and
+captured up to `[100%]` in both runs, the exact result was reconstructed
+directly from that data rather than left unknown:
+
+**2200 tests collected: 2175 passed, 25 skipped, 0 failed, 0 errors.**
+
+This is corroborated by: the implementer's own repeated targeted-suite runs
+(all green), the reviewer's two independent review rounds (each running the
+full targeted suite itself, plus the reviewer's own 200-trial independent
+adversarial concurrency harness against the current tree, both clean), and
+zero `F`/`E` markers anywhere in either full-suite log. **Recommended
+before this checkpoint is treated as fully released**: re-run the full
+suite once from an interactive (non-sandboxed-background) terminal to
+obtain pytest's own certified summary line directly, purely to close the
+process-cutoff gap in provenance - not because any evidence here suggests
+a real failure exists.
+
 ## Follow-up: Booking / provider execution security — CLOSED
 
 Starting HEAD `8410b4d`. A fresh adversarial pass over the booking execution
@@ -175,12 +420,17 @@ exercised — see the per-slice breakdown below.
 - **Slice 9 (ops): one item.** Found and fixed an unrelated brute-force gap
   on the Ops shared-token exchange while investigating authorization
   patterns for Slice 2.
-- **Slices 3 (payment), 4 (booking/provider), 5 (network/SSRF), 6
-  (PII/logging), 7 (secrets/config), 8 (dependencies): spot-checked, not a
-  full fresh adversarial pass.** Slice 8 is complete (dependency scan is a
-  point-in-time check, genuinely finished). Slices 3-7 had existing
-  controls read and spot-verified sound, and slice 3's real blocker (Stripe
-  Test Mode E2E) was not run, as expected without credentials - see ledger.
+- **Slice 3 (payment): DONE.** A fresh, evidence-first adversarial pass over
+  the entire Phase 4 payment architecture plus closing the `run_paid_booking`
+  atomic-claim blocker (see "Follow-up: Payment Security adversarial slice"
+  above), independently reviewed across two rounds, no CRITICAL/HIGH
+  findings. Real Stripe Test Mode E2E remains BLOCKED (no credentials in
+  this environment) - the one item of Slice 3 that genuinely cannot be
+  completed here.
+- **Slices 5 (network/SSRF), 6 (PII/logging), 7 (secrets/config), 8
+  (dependencies): spot-checked, not a full fresh adversarial pass.** Slice 8
+  is complete (dependency scan is a point-in-time check, genuinely
+  finished). Slices 5-7 had existing controls read and spot-verified sound.
 
 ## Slice 1 — Auth abuse / login limiter hardening
 
@@ -384,9 +634,10 @@ implementation items unless noted):
 
 1. Consumer `/api/v1/search` still needs connecting to the real Phase 3
    intelligence pipeline.
-2. Real Stripe Test Mode server E2E - **not run, no credentials**.
-3. Fresh independent Phase 4 payment adversarial QA - **not done this
-   session** (Slice 3 was spot-checked, not re-attacked).
+2. Real Stripe Test Mode server E2E - **not run, no credentials** (unchanged
+   by this slice - see "Real Stripe Test Mode E2E" above).
+3. Fresh independent Phase 4 payment adversarial QA - **CLOSED** this
+   session (see "Follow-up: Payment Security adversarial slice" above).
 4. Account→booking ownership wiring - **CLOSED** (commit `11f9eb1`, see the
    follow-up section at the top of this report).
 5. EU legal/tax/payment/package-travel specialist review - external,
@@ -401,8 +652,9 @@ New items opened this session:
 9. No request body size cap - **CLOSED** this slice.
 10. Ops shared-token exchange had no brute-force throttle - **CLOSED**
     this slice.
-11. Slices 3, 5, 6 need a genuine fresh adversarial pass (not just a spot-
-    check) before Phase 6 can be declared APPROVED.
+11. Slices 5, 6 need a genuine fresh adversarial pass (not just a spot-
+    check) before Phase 6 can be declared APPROVED. (Slice 3 - **CLOSED**,
+    see item 3 above.)
 12. Slice 4 (booking/provider security) - **CLOSED** this session (see
     "Booking / provider execution security" section above). The rest of
     Slice 9 (ops recovery/reconciliation visibility beyond the login fix)
@@ -417,10 +669,23 @@ New items opened this session:
     is wired to a real provider (currently inert - see the follow-up
     section above for why).
 16. `run_paid_booking` bypasses the atomic single-execution claim entirely
-    - **required blocker for the Payment Security / payment-orchestration
-    integration slice**. Must not be wired into any endpoint until the
-    single-execution guarantee is centralized (not duplicated as a
-    stopgap). No live exploit path today (unreachable dead code).
+    - **CLOSED** this session (see "Follow-up: Payment Security adversarial
+    slice" above; `claim_for_execution` now centralizes the guard, covering
+    `run_paid_booking` with zero duplicated logic). `run_paid_booking`
+    itself remains unwired to any endpoint (product work, not a security
+    gap) - see the PAYMENT EXECUTION SECURITY MAP's "currently unreachable
+    components" note.
+17. `ops_capture`'s exception handling didn't catch a plain `ValueError`
+    a genuinely concurrent capture request can raise (found via this
+    slice's own adversarial concurrency testing) - **CLOSED** this
+    session. No money-safety impact (capture was never duplicated), just
+    an unhandled 500 instead of the same clean 409 every other race in
+    that file already returns.
+18. `claim_for_execution`'s docstring overstated its own reachability
+    coverage (missed `guided_booking.prepare_journey`'s direct,
+    harmless-today call to `_revalidate_item`) - **CLOSED** this session
+    (docstring corrected, forward-warning added for if Basic is ever wired
+    to a real provider).
 
 ## Tests / build / secret scan
 

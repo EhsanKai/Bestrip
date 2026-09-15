@@ -33,6 +33,7 @@ from .booking_orchestrator import (
     BookingPhase,
     BookingRun,
     ItemProgress,
+    claim_for_execution,
     item_from_selected,
     run_booking,
 )
@@ -303,6 +304,12 @@ def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -
     now sees the already-claimed phase and is rejected with the same
     ``ValueError`` it always raised for "already confirmed", just
     correctly instead of by chance.
+
+    The claim itself is :func:`booking_orchestrator.claim_for_execution`
+    (V9 Phase 6 Payment Security slice, added when the same guard was
+    centralized so ``payment_booking_orchestrator.run_paid_booking`` - which
+    calls ``run_booking`` directly, bypassing this function entirely -
+    cannot skip it either; see that module's own docstring).
     """
     from ..models.commercial import ServiceTier
 
@@ -320,16 +327,7 @@ def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -
             + ", ".join(str(i) for i in missing)
         )
 
-    with run._lock:
-        if run.phase not in (BookingPhase.AWAITING_CONFIRMATION, BookingPhase.RECONFIRM_REQUIRED):
-            raise ValueError(f"cannot confirm from phase {run.phase.value}")
-        # The claim. run_booking still sets this itself as its own first
-        # locked action once the worker thread actually runs - redundant
-        # with what we just did, and deliberately left alone: this is what
-        # makes claiming here safe to add without touching the orchestrator
-        # loop's own invariants, rather than a second, subtly different
-        # source of truth for "has issuance started".
-        run.phase = BookingPhase.REVALIDATING
+    claim_for_execution(run)
 
     try:
         duffel = duffel_factory() if run.mode is PassMode.SANDBOX_BOOKED else None
@@ -347,7 +345,7 @@ def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -
 
     def _worker() -> None:
         try:
-            run_booking(run, duffel=duffel)
+            run_booking(run, duffel=duffel, already_claimed=True)
         except Exception:  # defensive: a run thread must not die silently
             with run._lock:
                 run.phase = BookingPhase.FAILED

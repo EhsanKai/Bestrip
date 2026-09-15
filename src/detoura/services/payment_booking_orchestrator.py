@@ -28,6 +28,15 @@ provider (and most real providers) has no way to know, from the payment
 side alone, how much of a partially-delivered trip a customer should
 actually be charged for - that is a human, product/policy decision, and
 §G explicitly forbids guessing it via a speculative refund.
+
+**Reachability (V9 Phase 6 Payment Security slice)**: as of this module's
+last audit, :func:`run_paid_booking`/:func:`run_paid_booking_and_finalize`
+have no caller anywhere under ``detoura.api`` - this is a NOT YET WIRED
+integration seam, exercised only by this project's own test suite, not a
+live endpoint. Its single-execution safety (see :func:`run_paid_booking`'s
+own docstring) is proven now, ahead of it being wired, precisely so wiring
+it later never reopens the ``run_paid_booking`` atomic-claim gap that used
+to exist here.
 """
 
 from __future__ import annotations
@@ -81,6 +90,20 @@ def run_paid_booking(
     synchronous here on purpose: every failure-injection scenario in the
     test suite needs a deterministic, directly-assertable return value, not
     a polled background state.
+
+    **Single-execution guarantee** (V9 Phase 6 Payment Security slice): this
+    function calls ``run_booking`` with no pre-claim, so ``run_booking``
+    itself takes the atomic single-execution claim
+    (``booking_orchestrator.claim_for_execution``) before touching any
+    provider - the same guard ``booking_flow.start_confirmation`` takes
+    explicitly for its own call. Two concurrent ``run_paid_booking`` calls
+    for the same ``run`` therefore still result in exactly one
+    ``run_booking`` execution; the loser raises ``ValueError`` from the
+    claim before authorizing a second time or touching a supplier. This
+    function has no production caller today (see module docstring) - the
+    guarantee is proven directly against ``run_booking``/``run_paid_booking``
+    in ``tests/test_v9_phase6_payment_security.py``, in advance of this
+    module being wired to an endpoint.
     """
     cfg = cfg or payment_config()
     now = now or datetime.now(timezone.utc)
@@ -122,7 +145,42 @@ def run_paid_booking(
         raise RuntimeError(f"unexpected payment status before booking: {payment.status.value}")
 
     # --- payment authorized: now, and only now, touch the supplier side ---
-    run_booking(run, duffel=duffel)
+    try:
+        run_booking(run, duffel=duffel)
+    except ValueError as error:
+        # V9 Phase 6 Payment Security: the single-execution claim
+        # (`booking_orchestrator.claim_for_execution`) rejected this call -
+        # a genuinely concurrent duplicate `run_paid_booking`/
+        # `start_confirmation` for the SAME run already claimed it, or this
+        # run is not in a claimable phase at all. Exactly one execution
+        # still happened (proven in
+        # tests/test_v9_phase6_payment_security.py); this call is simply
+        # not it.
+        #
+        # Deliberately does NOT write to the payment here (no
+        # `mark_reconciliation_required`/capture/cancel call): `payment` in
+        # this function's local scope was read before the race, and the
+        # call that DID win the claim is, right now, concurrently working
+        # towards its own capture/cancel of this exact row. A write from
+        # this losing call - even a well-intentioned "hold for review" one -
+        # would compete with the winner's own compare-and-swap for the same
+        # payment and could turn a clean win into an unhandled
+        # `StaleVersion` for the winner. Re-read only, and describe the
+        # authorization truthfully as still-open money-at-risk that this
+        # call did not (and must not) resolve, never silently discarded and
+        # never retried blindly (§K) - the WINNER's own outcome is what
+        # ultimately decides this payment's fate.
+        current = ps.store.get_payment(db, payment.payment_id) or payment
+        return PaidBookingOutcome(
+            payment=current, booking_phase=run.phase, requires_ops_recovery=True,
+            requires_customer_reconfirmation=False,
+            summary=(
+                "payment authorized, but booking execution was already claimed by a "
+                "concurrent call for this run; this call made no further payment or "
+                "booking state change - check current status before assuming anything "
+                "needs recovery, the concurrent call that won the claim owns the outcome"
+            ),
+        )
 
     if run.phase is BookingPhase.COMPLETE:
         captured = ps.request_capture(db, payment=payment, provider=provider, now=now)

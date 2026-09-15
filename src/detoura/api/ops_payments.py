@@ -158,6 +158,21 @@ def ops_capture(payment_id: str, actor: str = Depends(require_ops)) -> dict:
         updated = ps.request_capture(db, payment=payment, provider=provider)
     except store.StaleVersion:
         raise HTTPException(status_code=409, detail={"message": "This payment changed concurrently; re-fetch and retry."})
+    except ValueError as error:
+        # V9 Phase 6 Payment Security: the status check above is a
+        # convenience pre-check, not a guard against a genuine race -
+        # between that read and this call, a concurrent capture attempt for
+        # the SAME payment (e.g. an Ops user double-clicking, or a retried
+        # request) can have already moved the payment to CAPTURE_PENDING (or
+        # any other non-AUTHORIZED status), and `request_capture`'s own
+        # leading guard then raises a plain `ValueError`, not
+        # `StaleVersion`. Found via real multi-threaded adversarial testing
+        # (tests/test_v9_phase6_payment_security.py) - the financial
+        # invariant itself was never violated (capture is never duplicated
+        # either way), but an unhandled `ValueError` here was an unhandled
+        # 500 instead of the same clean, retryable 409 every other race in
+        # this file already returns.
+        raise HTTPException(status_code=409, detail={"message": str(error)})
     # V9 Phase 5: a payment can settle AFTER its booking already reached a
     # terminal phase (today's only live capture path is this Ops action -
     # see post_booking_finalizer.py's module docstring). Re-running the

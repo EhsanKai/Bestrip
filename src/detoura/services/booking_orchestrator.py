@@ -261,21 +261,86 @@ _PACE = {
 }
 
 
+def claim_for_execution(run: BookingRun) -> None:
+    """The single-execution claim (V9 Phase 6 Payment Security slice).
+
+    Atomic check-and-set, under one ``run._lock`` acquisition: the ONLY way
+    ``run.phase`` may leave ``AWAITING_CONFIRMATION``/``RECONFIRM_REQUIRED``
+    into ``REVALIDATING``. Raises :class:`ValueError` if ``run`` is not in a
+    claimable phase - covering both a genuine concurrent duplicate (the
+    loser sees the winner's already-claimed ``REVALIDATING`` phase) and a
+    sequential retry against a run that has already reached a terminal
+    phase (``COMPLETE``/``FAILED``/``PARTIAL_FAILURE``) or is still mid-run.
+
+    :func:`run_booking` calls this itself unless its caller passes
+    ``already_claimed=True`` - see that function's docstring. Every path
+    that reaches ``_issue_item`` (the only function that ever creates a
+    real supplier order) goes through one or the other, which is what
+    closes the historical gap where
+    ``payment_booking_orchestrator.run_paid_booking`` called ``run_booking``
+    directly with no claim at all.
+
+    One narrow, deliberate exception, independently verified by this
+    slice's adversarial review as harmless: ``guided_booking.prepare_journey``
+    (the Basic/self-service tier) calls ``_revalidate_item`` directly with
+    no claim, since Basic never creates a Detoura-side Order or reaches
+    ``_issue_item`` at all - it always passes ``duffel=None``, so
+    ``_revalidate_item`` never touches a real provider either, and Basic
+    runs never reach ``run_paid_booking`` or any payment coupling. If Basic
+    is ever wired to a real provider call, that call site needs this claim
+    too - it does not get it for free the way every ``run_booking`` caller
+    does.
+    """
+    with run._lock:
+        if run.phase not in (BookingPhase.AWAITING_CONFIRMATION, BookingPhase.RECONFIRM_REQUIRED):
+            # Message text preserved verbatim (V9 Phase 6 booking-security
+            # tests assert on it) even though this now also guards non-
+            # confirmation callers (e.g. run_paid_booking) - "confirm" here
+            # means "confirm this execution may proceed", not specifically
+            # the confirm-endpoint flow.
+            raise ValueError(f"cannot confirm from phase {run.phase.value}")
+        run.phase = BookingPhase.REVALIDATING
+
+
 def run_booking(
     run: BookingRun,
     *,
     duffel: DuffelTransportProvider | None,
     sleep=time.sleep,
+    already_claimed: bool = False,
 ) -> None:
     """Execute ``run`` in place: revalidate, then issue leg by leg.
 
     Blocking. The caller runs this on a background thread and polls ``run``.
     ``duffel`` is required for ``SANDBOX_BOOKED`` and unused for ``DEMO_ONLY``.
     Every state change takes the run's lock so a poll never sees a torn state.
+
+    ``already_claimed`` (V9 Phase 6 Payment Security slice): pass ``True``
+    ONLY when the caller has already, itself, synchronously taken
+    :func:`claim_for_execution` before scheduling this call - today, that is
+    exactly ``booking_flow.start_confirmation``, which must claim before it
+    spawns its worker thread so a double-click is rejected immediately in
+    the request handler rather than silently inside a background thread.
+    Every other caller - including
+    ``payment_booking_orchestrator.run_paid_booking`` - leaves this at the
+    default ``False`` and gets the claim taken here, for free, with no way
+    to bypass it. A caller that passes ``True`` without having actually
+    claimed is caught: this function verifies ``run.phase`` is really
+    already ``REVALIDATING`` and raises loudly otherwise, rather than
+    silently trusting the flag.
     """
     pace = _PACE[run.mode]
+    if already_claimed:
+        with run._lock:
+            if run.phase is not BookingPhase.REVALIDATING:
+                raise RuntimeError(
+                    f"{run.booking_id}: run_booking(already_claimed=True) but phase "
+                    f"is {run.phase.value}, not REVALIDATING - the caller did not "
+                    "actually take the single-execution claim"
+                )
+    else:
+        claim_for_execution(run)
     with run._lock:
-        run.phase = BookingPhase.REVALIDATING
         for item in run.items:
             item.state = BookingState.REVALIDATING
 

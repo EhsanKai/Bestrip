@@ -78,6 +78,13 @@ def _run(items: list[ItemProgress], *, booking_id="bk_e2e", total: float = 200.0
         trip_label="test trip", route_cities=("BER", "LHR"), currency="EUR",
         discovered_total=total, tolerance=PriceTolerance(absolute=5.0, percentage=5.0),
         items=items, party=TravelerParty(travelers=(_traveler(),)),
+        # V9 Phase 6 Payment Security: a run with a party already attached
+        # is, in production, exactly what `booking_flow.attach_travelers`
+        # leaves at AWAITING_CONFIRMATION - `run_booking`'s single-execution
+        # claim now enforces that a run must genuinely be in that phase (or
+        # RECONFIRM_REQUIRED) before it can execute, so this fixture must
+        # reflect the same real pre-state rather than the dataclass default.
+        phase=BookingPhase.AWAITING_CONFIRMATION,
     )
 
 

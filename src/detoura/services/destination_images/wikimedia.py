@@ -36,8 +36,11 @@ from ...providers.http import (
     ProviderHttpError,
     RateLimiter,
     RetryingHttpClient,
+    UnsafeHostError,
     UrllibHttpClient,
     _build_ssl_context,
+    assert_safe_public_host,
+    build_no_redirect_opener,
 )
 
 __all__ = [
@@ -75,13 +78,28 @@ class DomainNotAllowed(RuntimeError):
     pass
 
 
-def _check_domain(url: str, allowed: str | tuple[str, ...]) -> None:
+def _check_domain(url: str, allowed: str | tuple[str, ...], *, resolver=None) -> None:
+    """``resolver`` (V9 Phase 6 Network/SSRF slice) is passed straight
+    through to :func:`assert_safe_public_host` - ``None`` uses its own
+    default (real ``socket.getaddrinfo``), which is fine for Commons' own
+    small set of stable, well-known domains; tests attacking an unsafe
+    target inject a fake one instead of depending on real DNS."""
     allowed_domains = (allowed,) if isinstance(allowed, str) else allowed
     host = (urlparse(url).hostname or "").lower()
     if not any(host == a or host.endswith("." + a) for a in allowed_domains):
         raise DomainNotAllowed(f"{host} is not an allowed domain {allowed_domains!r}")
     if urlparse(url).scheme != "https":
         raise DomainNotAllowed("non-https URL")
+    # V9 Phase 6 Network/SSRF slice, Invariant 2/3: the domain-suffix check
+    # above only inspects the hostname STRING - it says nothing about what
+    # address that name actually resolves to at connect time. Resolve and
+    # validate the real destination before ever connecting, same reasoning
+    # as services/network_adapter.py's _check_host.
+    kwargs = {} if resolver is None else {"resolver": resolver}
+    try:
+        assert_safe_public_host(host, **kwargs)
+    except UnsafeHostError as exc:
+        raise DomainNotAllowed(str(exc)) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +137,9 @@ class WikimediaCommonsClient:
     http_client: HttpClient = field(default_factory=UrllibHttpClient)
     min_request_interval_seconds: float = 1.0
     requests_made: int = field(default=0, init=False)
+    #: DNS resolver for the IP-safety check (V9 Phase 6 Network/SSRF slice)
+    #: - ``None`` uses the real resolver; tests inject a fake one.
+    resolver: object = None
 
     def __post_init__(self) -> None:
         self._rate_limiter = RateLimiter(min_interval_seconds=self.min_request_interval_seconds)
@@ -126,7 +147,7 @@ class WikimediaCommonsClient:
 
     def search_candidates(self, query: str, *, limit: int = 8, thumb_width: int = 1600) -> list[Candidate]:
         url = f"https://{API_DOMAIN}/w/api.php"
-        _check_domain(url, API_DOMAIN)
+        _check_domain(url, API_DOMAIN, resolver=self.resolver)
         params = {
             "action": "query", "format": "json",
             "generator": "search", "gsrsearch": query, "gsrnamespace": "6",
@@ -192,12 +213,21 @@ class WikimediaCommonsClient:
         download needs the raw bytes, so this goes around that abstraction
         deliberately rather than corrupting a binary body through a text
         decode."""
-        _check_domain(url, MEDIA_DOMAINS)
+        _check_domain(url, MEDIA_DOMAINS, resolver=self.resolver)
         self._rate_limiter.acquire()
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        # V9 Phase 6 Network/SSRF slice, Invariant 4: the bare
+        # `urllib.request.urlopen` global function follows a 3xx
+        # automatically via its own default opener, with no chance for
+        # `_check_domain`'s allowlist/IP-safety checks to run again against
+        # the redirect target. This URL comes from Commons' own API
+        # response (`Candidate.download_url`), not a hardcoded constant -
+        # a redirect off the allowed media CDN must be rejected, never
+        # silently followed. A no-redirect opener turns any 3xx into an
+        # HTTPError below instead.
         try:
-            with urllib.request.urlopen(
-                request, timeout=DEFAULT_TIMEOUT_SECONDS, context=_build_ssl_context(),
+            with build_no_redirect_opener(_build_ssl_context()).open(
+                request, timeout=DEFAULT_TIMEOUT_SECONDS,
             ) as response:
                 self.requests_made += 1
                 if response.status != 200:

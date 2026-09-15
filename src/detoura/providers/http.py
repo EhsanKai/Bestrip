@@ -34,8 +34,10 @@ budgeting live here so every provider inherits the same behaviour.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import socket
 import ssl
 import time
 import urllib.error
@@ -68,6 +70,117 @@ def _build_ssl_context() -> ssl.SSLContext:
     except ImportError:
         return ssl.create_default_context()
     return ssl.create_default_context(cafile=certifi.where())
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Declines to auto-follow a 3xx. ``urlopen``'s default opener follows
+    301/302/303/307/308 itself, re-requesting a possibly different host with
+    no chance for the caller to validate it first - the redirect-escape SSRF
+    risk V9 Phase 6's Network/SSRF slice (Invariant 4) calls out. Returning
+    ``None`` tells urllib "do not build a follow-up request"; the 3xx status
+    and ``Location`` header come back to the caller as an ``HTTPError``
+    instead, to validate and decide whether to follow."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def build_no_redirect_opener(context: "ssl.SSLContext | None" = None) -> urllib.request.OpenerDirector:
+    """An opener that never follows a redirect on its own - see
+    :class:`_NoRedirectHandler`. Shared by any caller that fetches a URL
+    whose destination is not a fixed, hardcoded, trusted host (see
+    ``services/network_adapter.py`` and
+    ``services/destination_images/wikimedia.py``)."""
+    return urllib.request.build_opener(
+        _NoRedirectHandler(), urllib.request.HTTPSHandler(context=context or _build_ssl_context()),
+    )
+
+
+class UnsafeHostError(RuntimeError):
+    """A hostname/IP literal is, or resolves to, a non-public address
+    (loopback, private/RFC1918, link-local - including the
+    169.254.0.0/16 cloud-metadata range, multicast, reserved, or
+    unspecified). Raised instead of ever connecting (V9 Phase 6
+    Network/SSRF slice, Invariant 2/3)."""
+
+
+def _is_unsafe_ip(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
+    """True for anything that is not an ordinary public/routable address.
+
+    An IPv4-mapped IPv6 address (``::ffff:a.b.c.d``) is unwrapped and its
+    embedded IPv4 address checked too, so wrapping a private/loopback IPv4
+    in IPv6 syntax is not a way past this check.
+
+    ``not ip.is_global`` (V9 Phase 6, independent-review finding), not a
+    manual OR-chain of ``is_loopback``/``is_private``/``is_link_local``/
+    ``is_reserved``/``is_unspecified``: that chain was found, empirically,
+    to miss RFC 6598 Carrier-Grade NAT space (``100.64.0.0/10``) - some
+    cloud/container network fabrics route this range internally
+    specifically because naive RFC1918-only filters miss it, a known real
+    SSRF-filter-bypass class. ``ipaddress``'s own ``is_global`` already
+    excludes CGNAT along with everything the old chain listed (verified
+    directly, not assumed) - EXCEPT two categories ``is_global`` reports
+    ``True`` for and so must stay as explicit extra conditions: multicast
+    (globally-scoped addressing, not a private range) and a couple of
+    IPv6 reserved-but-``is_global``-true prefixes (e.g. the ``64:ff9b::/96``
+    NAT64 translation prefix, which can embed an arbitrary IPv4 address in
+    its low bits - a real class of IPv6-notation SSRF-filter bypass)."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        mapped = ip.ipv4_mapped
+        if mapped is not None and _is_unsafe_ip(mapped):
+            return True
+    return not ip.is_global or ip.is_multicast or ip.is_reserved
+
+
+def assert_safe_public_host(host: str, *, resolver=socket.getaddrinfo) -> None:
+    """Fail closed unless ``host`` - a literal IP, or a hostname resolved
+    through ``resolver`` - is (or resolves only to) an ordinary public
+    address. Raises :class:`UnsafeHostError` otherwise.
+
+    This is deliberately a separate check from "is this hostname on an
+    allowed domain list" (see e.g. ``services/network_adapter.py``'s
+    ``_check_host``): a domain-suffix allowlist says which NAME may be
+    requested, never what IP ADDRESS that name actually resolves to at
+    connect time. A mistyped, malicious, or later-compromised DNS record
+    for an otherwise-allowlisted domain (the trivial case: a registered
+    source's ``base_domain`` is literally ``"localhost"``, or a private-
+    network hostname) is invisible to a hostname-string check alone - only
+    resolving and inspecting the actual address catches it. Every resolved
+    address is checked, not just the first: a DNS answer with several
+    records where even one is unsafe is rejected outright, since a
+    connecting library may pick any of them.
+
+    This closes the reachable, practical gap (a bad or hostile DNS answer
+    *at request time*) - it does not fully close a textbook DNS-rebinding
+    race (a different answer between this check and the transport's own,
+    separate resolution moments later in the same request), which would
+    need IP-level connection pinning to close completely. That residual
+    gap is documented, not claimed fixed - see
+    docs/V9_PHASE6_SECURITY_REPORT.md's Network/SSRF slice section.
+    """
+    try:
+        literal = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if _is_unsafe_ip(literal):
+            raise UnsafeHostError(f"{host} is not a public address")
+        return
+    try:
+        infos = resolver(host, None)
+    except OSError as exc:
+        raise UnsafeHostError(f"{host} could not be resolved: {exc}") from exc
+    if not infos:
+        raise UnsafeHostError(f"{host} resolved to no addresses")
+    for info in infos:
+        sockaddr = info[4]
+        raw_addr = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(raw_addr.split("%")[0])  # strip an IPv6 zone id
+        except ValueError:
+            raise UnsafeHostError(f"{host} resolved to an unparseable address {raw_addr!r}")
+        if _is_unsafe_ip(ip):
+            raise UnsafeHostError(f"{host} resolves to non-public address {ip}")
+
 
 #: Status codes worth trying again. 408 and 429 are explicit "come back later";
 #: 5xx is the server having a bad moment. Everything else is a bug in the
@@ -166,6 +279,24 @@ class UrllibHttpClient:
         # Built once: loading a CA bundle per request is wasted work, and the
         # trust configuration cannot change under a running process anyway.
         self._ssl_context = _build_ssl_context()
+        # V9 Phase 6 Network/SSRF slice (independent-review finding): every
+        # provider built on this client (Duffel, Amadeus, Stripe) previously
+        # went through urllib's global `urlopen`, which installs the
+        # DEFAULT redirect handler - it follows a 3xx automatically and
+        # forwards every request header, `Authorization` included, onto the
+        # follow-up request with no same-host check at all (confirmed
+        # directly against CPython's own `HTTPRedirectHandler` source). The
+        # destination for these providers is a hardcoded, trusted host, not
+        # attacker-influenced - but a compromised/DNS-hijacked upstream
+        # could still exfiltrate these bearer credentials to an attacker
+        # host via a single redirect. A no-redirect opener (already used by
+        # services/network_adapter.py and destination_images/wikimedia.py
+        # this same slice) turns a 3xx into an ordinary ``HttpResponse``
+        # instead - every existing caller's own `response.ok`/status-code
+        # handling already treats an unexpected 3xx as a failure, so this
+        # is a behavior-preserving change for the normal case (these APIs
+        # do not redirect) and a fail-closed one for the abnormal case.
+        self._opener = build_no_redirect_opener(self._ssl_context)
 
     def request(
         self,
@@ -185,12 +316,8 @@ class UrllibHttpClient:
             data=body.encode("utf-8") if body is not None else None,
             headers={"User-Agent": self.user_agent, **(headers or {})},
         )
-        # The context is used only for https:// URLs; urllib ignores it for
-        # plain http, so passing it unconditionally is safe.
         try:
-            with urllib.request.urlopen(
-                request, timeout=timeout, context=self._ssl_context
-            ) as response:
+            with self._opener.open(request, timeout=timeout) as response:
                 return HttpResponse(
                     status=response.status,
                     body=response.read().decode("utf-8", errors="replace"),

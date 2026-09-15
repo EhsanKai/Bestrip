@@ -34,7 +34,9 @@ from ..providers.http import (
     RateLimiter,
     RateLimitExceeded,
     RetryingHttpClient,
+    UnsafeHostError,
     _build_ssl_context,
+    assert_safe_public_host,
 )
 
 if TYPE_CHECKING:
@@ -216,8 +218,18 @@ class AuthorizedHttpFetcher:
     metrics: dict = field(default_factory=lambda: {
         "requests": 0, "blocked": 0, "redirects_followed": 0,
     })
+    #: DNS resolver used by the IP-safety check in ``_check_host`` (V9 Phase
+    #: 6 Network/SSRF slice) - ``socket.getaddrinfo`` by default. Injectable
+    #: so tests never perform a real DNS lookup (a fake resolver stands in
+    #: for the network entirely, matching how ``db``/``job_id`` are injected
+    #: for the same reason).
+    resolver: object = None
 
     def __post_init__(self) -> None:
+        if self.resolver is None:
+            import socket
+
+            self.resolver = socket.getaddrinfo
         pol = self.registration.rate_limit_policy
         if self.db is not None and self.job_id is not None:
             gated = _budget_gated_client(
@@ -252,6 +264,22 @@ class AuthorizedHttpFetcher:
         if not base or not _domain_allowed(host, base):
             self.metrics["blocked"] += 1
             raise AccessBlocked(StopReason.DOMAIN_NOT_ALLOWED, f"{host} is outside allowed domain {base!r}")
+        # V9 Phase 6 Network/SSRF slice, Invariant 2/3: the two checks above
+        # only ever look at the HOSTNAME STRING - "not a bare IP literal"
+        # and "matches the allowed domain suffix". Neither says anything
+        # about what IP ADDRESS this hostname actually resolves to at
+        # connect time. A registered source's `base_domain` is Ops-supplied
+        # free text with no format validation (see
+        # api/ops_market_prior_acquisition.py's RegisterSourceRequest) - it
+        # could be "localhost", a private-network hostname, or a legitimate
+        # external domain whose DNS is later mistyped/compromised, and this
+        # check would have let all of them through before this fix. Resolve
+        # and validate the real destination now, every hop, fail closed.
+        try:
+            assert_safe_public_host(host, resolver=self.resolver)
+        except UnsafeHostError as exc:
+            self.metrics["blocked"] += 1
+            raise AccessBlocked(StopReason.DOMAIN_NOT_ALLOWED, str(exc)) from exc
         return host
 
     def fetch(

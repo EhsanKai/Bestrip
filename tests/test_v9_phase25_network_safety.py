@@ -29,6 +29,50 @@ def _reg(**kw) -> SourceRegistration:
     return SourceRegistration(**base)
 
 
+#: V9 Phase 6 Network/SSRF slice: AuthorizedHttpFetcher now resolves and
+#: validates every hostname's real IP address before connecting (see
+#: providers/http.py's assert_safe_public_host). A test must never depend on
+#: real DNS - this is a closed, deterministic fake resolver standing in for
+#: it entirely, keyed by exactly the hostnames this file's tests use plus
+#: a handful of deliberately-unsafe targets the new SSRF tests below attack.
+#: Anything not listed here raises a DNS-failure-shaped OSError, matching a
+#: real resolver's behavior for a name with no record.
+_FAKE_DNS: dict[str, list[str]] = {
+    "example.com": ["93.184.216.34"],
+    "api.example.com": ["93.184.216.34"],
+    "safe.example.com": ["93.184.216.34"],
+    # Deliberately-unsafe targets for the Invariant 1/2/3 tests - all still
+    # pass the domain-allowlist (base_domain="example.com"), so only the
+    # resolved-IP check can catch them.
+    "loopback.example.com": ["127.0.0.1"],
+    "loopback6.example.com": ["::1"],
+    "private.example.com": ["10.1.2.3"],
+    "linklocal.example.com": ["169.254.169.254"],  # the cloud-metadata range
+    "multihomed.example.com": ["93.184.216.34", "127.0.0.1"],  # one bad record among good ones
+    "mapped-private.example.com": ["::ffff:10.1.2.3"],  # IPv4-mapped IPv6 wrapping a private address
+    "rebinds.example.com": ["127.0.0.1"],  # simulates a compromised/rebound authorized domain
+}
+
+
+def _fake_resolver(host, port, *args, **kwargs):
+    import socket as _socket
+
+    addrs = _FAKE_DNS.get(host)
+    if not addrs:
+        raise OSError(f"[fake resolver] no record for {host!r}")
+    return [
+        (_socket.AF_INET6 if ":" in a else _socket.AF_INET, _socket.SOCK_STREAM, 6, "", (a, 0))
+        for a in addrs
+    ]
+
+
+def _fetcher(reg, client, **kw) -> AuthorizedHttpFetcher:
+    """Every test's ``AuthorizedHttpFetcher`` construction, routed through
+    the fake resolver above - never a real DNS lookup."""
+    kw.setdefault("resolver", _fake_resolver)
+    return AuthorizedHttpFetcher(reg, client, **kw)
+
+
 class _StubClient:
     def __init__(self, plan):
         self.plan = list(plan)
@@ -50,7 +94,7 @@ class _StubClient:
 ])
 def test_unauthorized_source_never_makes_a_request(status):
     stub = _StubClient([HttpResponse(200, "ok")])
-    fetcher = AuthorizedHttpFetcher(_reg(authorization_status=status), stub)
+    fetcher = _fetcher(_reg(authorization_status=status), stub)
     with pytest.raises(AccessBlocked) as exc:
         fetcher.fetch("https://example.com/x")
     assert exc.value.reason is StopReason.AUTHORIZATION_DISABLED
@@ -59,7 +103,7 @@ def test_unauthorized_source_never_makes_a_request(status):
 
 def test_approved_source_can_fetch():
     stub = _StubClient([HttpResponse(200, "fine")])
-    fetcher = AuthorizedHttpFetcher(_reg(), stub)
+    fetcher = _fetcher(_reg(), stub)
     assert fetcher.fetch("https://example.com/x").status == 200
 
 
@@ -67,7 +111,7 @@ def test_approved_source_can_fetch():
 # Domain allowlist / SSRF guard - §29, §59
 # ======================================================================
 def test_off_domain_url_is_blocked():
-    fetcher = AuthorizedHttpFetcher(_reg(), _StubClient([HttpResponse(200, "x")]))
+    fetcher = _fetcher(_reg(), _StubClient([HttpResponse(200, "x")]))
     with pytest.raises(AccessBlocked) as exc:
         fetcher.fetch("https://evil.com/x")
     assert exc.value.reason is StopReason.DOMAIN_NOT_ALLOWED
@@ -75,34 +119,34 @@ def test_off_domain_url_is_blocked():
 
 def test_subdomain_of_allowed_domain_is_allowed():
     stub = _StubClient([HttpResponse(200, "ok")])
-    fetcher = AuthorizedHttpFetcher(_reg(), stub)
+    fetcher = _fetcher(_reg(), stub)
     assert fetcher.fetch("https://api.example.com/x").status == 200
 
 
 def test_lookalike_domain_is_not_allowed():
     # "notexample.com" must not match base_domain "example.com" via naive
     # substring/suffix matching without a dot boundary.
-    fetcher = AuthorizedHttpFetcher(_reg(), _StubClient([HttpResponse(200, "x")]))
+    fetcher = _fetcher(_reg(), _StubClient([HttpResponse(200, "x")]))
     with pytest.raises(AccessBlocked):
         fetcher.fetch("https://notexample.com/x")
 
 
 def test_ip_literal_host_is_blocked():
-    fetcher = AuthorizedHttpFetcher(_reg(base_domain="127.0.0.1"), _StubClient([HttpResponse(200, "x")]))
+    fetcher = _fetcher(_reg(base_domain="127.0.0.1"), _StubClient([HttpResponse(200, "x")]))
     with pytest.raises(AccessBlocked) as exc:
         fetcher.fetch("https://127.0.0.1/x")
     assert exc.value.reason is StopReason.DOMAIN_NOT_ALLOWED
 
 
 def test_non_https_scheme_is_blocked():
-    fetcher = AuthorizedHttpFetcher(_reg(), _StubClient([HttpResponse(200, "x")]))
+    fetcher = _fetcher(_reg(), _StubClient([HttpResponse(200, "x")]))
     with pytest.raises(AccessBlocked):
         fetcher.fetch("http://example.com/x")
 
 
 def test_redirect_escaping_the_allowed_domain_is_blocked():
     stub = _StubClient([HttpResponse(302, "", headers={"Location": "https://evil.com/steal"})])
-    fetcher = AuthorizedHttpFetcher(_reg(), stub)
+    fetcher = _fetcher(_reg(), stub)
     with pytest.raises(AccessBlocked) as exc:
         fetcher.fetch("https://example.com/x")
     assert exc.value.reason is StopReason.DOMAIN_NOT_ALLOWED
@@ -114,7 +158,7 @@ def test_redirect_staying_on_domain_is_followed_once():
         HttpResponse(301, "", headers={"Location": "https://example.com/final"}),
         HttpResponse(200, "final content"),
     ])
-    fetcher = AuthorizedHttpFetcher(_reg(), stub)
+    fetcher = _fetcher(_reg(), stub)
     resp = fetcher.fetch("https://example.com/x")
     assert resp.status == 200 and resp.body == "final content"
     assert stub.calls == ["https://example.com/x", "https://example.com/final"]
@@ -122,7 +166,7 @@ def test_redirect_staying_on_domain_is_followed_once():
 
 def test_too_many_redirects_is_blocked():
     hops = [HttpResponse(302, "", headers={"Location": f"https://example.com/{i}"}) for i in range(6)]
-    fetcher = AuthorizedHttpFetcher(_reg(), _StubClient(hops), max_redirects=3)
+    fetcher = _fetcher(_reg(), _StubClient(hops), max_redirects=3)
     with pytest.raises(AccessBlocked):
         fetcher.fetch("https://example.com/0")
 
@@ -132,7 +176,7 @@ def test_too_many_redirects_is_blocked():
 # ======================================================================
 def test_oversized_response_is_blocked():
     big = "x" * 50_000
-    fetcher = AuthorizedHttpFetcher(_reg(), _StubClient([HttpResponse(200, big)]), max_response_bytes=1000)
+    fetcher = _fetcher(_reg(), _StubClient([HttpResponse(200, big)]), max_response_bytes=1000)
     with pytest.raises(AccessBlocked) as exc:
         fetcher.fetch("https://example.com/x")
     assert exc.value.reason is StopReason.RESPONSE_TOO_LARGE
@@ -143,7 +187,7 @@ def test_oversized_response_is_blocked():
 # ======================================================================
 def test_captcha_body_is_detected():
     stub = _StubClient([HttpResponse(200, "<html>Please verify you are human</html>")])
-    fetcher = AuthorizedHttpFetcher(_reg(), stub)
+    fetcher = _fetcher(_reg(), stub)
     with pytest.raises(AccessBlocked) as exc:
         fetcher.fetch("https://example.com/x")
     assert exc.value.reason is StopReason.CAPTCHA_DETECTED
@@ -151,7 +195,7 @@ def test_captcha_body_is_detected():
 
 def test_persistent_403_without_challenge_markers_is_access_denied():
     stub = _StubClient([HttpResponse(403, "no thanks")])
-    fetcher = AuthorizedHttpFetcher(_reg(), stub)
+    fetcher = _fetcher(_reg(), stub)
     with pytest.raises(AccessBlocked) as exc:
         fetcher.fetch("https://example.com/x")
     assert exc.value.reason is StopReason.ACCESS_DENIED
@@ -161,7 +205,7 @@ def test_persistent_429_after_retry_budget_is_rate_limited():
     # RetryingHttpClient exhausts its retry budget on 429 and raises
     # RateLimitExceeded; the fetcher must translate that into AccessBlocked.
     stub = _StubClient([HttpResponse(429, "slow down")] * 10)
-    fetcher = AuthorizedHttpFetcher(_reg(), stub)
+    fetcher = _fetcher(_reg(), stub)
     with pytest.raises(AccessBlocked) as exc:
         fetcher.fetch("https://example.com/x")
     assert exc.value.reason is StopReason.RATE_LIMITED
@@ -169,7 +213,7 @@ def test_persistent_429_after_retry_budget_is_rate_limited():
 
 def test_connection_failure_surfaces_as_access_denied_not_a_crash():
     stub = _StubClient([ProviderHttpError("could not reach host")] * 10)
-    fetcher = AuthorizedHttpFetcher(_reg(), stub)
+    fetcher = _fetcher(_reg(), stub)
     with pytest.raises(AccessBlocked) as exc:
         fetcher.fetch("https://example.com/x")
     assert exc.value.reason is StopReason.ACCESS_DENIED
@@ -199,7 +243,7 @@ def test_fetcher_paces_requests_by_the_configured_rate_limit():
         clock["t"] += s
 
     reg = _reg(rate_limit_policy=RateLimitPolicy(requests_per_minute=60, min_delay_seconds=0))
-    fetcher = AuthorizedHttpFetcher(reg, _StubClient([HttpResponse(200, "a"), HttpResponse(200, "b")]))
+    fetcher = _fetcher(reg, _StubClient([HttpResponse(200, "a"), HttpResponse(200, "b")]))
     fetcher._rate_limiter._clock = fake_clock
     fetcher._rate_limiter._sleep = fake_sleep
     fetcher.fetch("https://example.com/1")
@@ -226,7 +270,7 @@ def test_retry_attempts_all_succeed_within_budget_three():
     stub = _StubClient([
         HttpResponse(503, "try again"), HttpResponse(503, "try again"), HttpResponse(200, "ok"),
     ])
-    fetcher = AuthorizedHttpFetcher(reg, stub, db=d, job_id=job_id)
+    fetcher = _fetcher(reg, stub, db=d, job_id=job_id)
     fetcher._client._sleep = lambda s: None  # no real backoff wait in the test
 
     response = fetcher.fetch("https://example.com/x")
@@ -241,7 +285,7 @@ def test_third_retry_is_never_sent_once_the_budget_is_two():
     stub = _StubClient([
         HttpResponse(503, "try again"), HttpResponse(503, "try again"), HttpResponse(200, "ok"),
     ])
-    fetcher = AuthorizedHttpFetcher(reg, stub, db=d, job_id=job_id)
+    fetcher = _fetcher(reg, stub, db=d, job_id=job_id)
     fetcher._client._sleep = lambda s: None
 
     with pytest.raises((BudgetExhausted, ProviderHttpError)):

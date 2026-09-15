@@ -2,6 +2,330 @@
 
 Starting checkpoint: `2fbf4a8` (V9 Phase 5, APPROVED).
 
+## Follow-up: Network / SSRF Security adversarial slice — CLOSED
+
+Starting HEAD `d39bc2b`. A fresh adversarial pass over Detoura's outbound
+network surface, independent of any earlier Phase 2.5 SSRF work - re-derived
+and attacked from scratch rather than assumed sufficient.
+
+### NETWORK SECURITY MAP
+
+- **`providers/duffel.py` (`DuffelTransportProvider`)** — FIXED TRUSTED
+  PROVIDER. Host is `DEFAULT_HOST = "https://api.duffel.com"`, a
+  constructor default overridable only by whoever constructs the provider
+  in Python code (`booking_flow.py`, `api/v1.py`, `ticket_operations.py`,
+  all hardcoded, never from a request/env value). Production reachable:
+  YES, for every real booking search/revalidation/issuance. Host
+  validation: N/A (fixed host). Redirect policy: the underlying
+  `UrllibHttpClient` uses urllib's default opener, which WOULD auto-follow
+  a redirect with no re-validation if Duffel's API ever issued one -
+  residual, low-priority risk given the destination is a hardcoded, long-
+  trusted host, not attacker-influenced (not fixed this slice - see
+  Findings). Timeout: `self.timeout` (constructor param, default from
+  `DEFAULT_TIMEOUT_SECONDS`). Response-size limit: NONE - the whole body is
+  read into memory unbounded (shared with every `UrllibHttpClient` user;
+  low priority here since Duffel's JSON responses are inherently small and
+  it is a trusted host). Retry policy: **THE HEADLINE FINDING** - every
+  call went through an auto-retrying `RetryingHttpClient` with zero
+  HTTP-method awareness, including genuinely irreversible mutations
+  (Order creation, cancellation confirmation, order-change confirmation) -
+  **fixed this slice**, see below.
+- **`providers/amadeus.py`** — FIXED TRUSTED PROVIDER, same shape as
+  Duffel (`DEFAULT_HOST` constructor default, never request-influenced).
+  Not touched this slice - no non-idempotent mutation exists on this
+  provider today (search-only).
+- **`providers/stripe_payment.py`** — FIXED TRUSTED PROVIDER
+  (`API_BASE` constant). Verified fresh this slice: `self.http` defaults to
+  a bare `UrllibHttpClient()`, **never wrapped in `RetryingHttpClient`** -
+  authorize/capture/refund (all POSTs) make exactly one attempt each, a
+  timeout/connection failure is mapped straight to `ProviderResult(unknown=True)`
+  and left there for `reconcile_payment` to resolve (the Phase 4 payment
+  slice's own, correct pattern) - confirms the Duffel gap below was a
+  specific, isolated omission, not a systemic codebase pattern.
+- **`services/network_adapter.py` (`AuthorizedHttpFetcher`, the Phase 2.5
+  acquisition engine)** — ALLOWLIST CONTROLLED, Ops-configured. Caller:
+  `services/bootstrap_fetchers.py`'s `SimulatedAuthorizedWebFetcher`.
+  URL source: `SourceRegistration.base_domain` (Ops-supplied free text via
+  `POST /api/v1/ops/acquisition/sources`, `RegisterSourceRequest.base_domain:
+  str | None`, **no format validation whatsoever** - not even "must look
+  like a domain, not an IP or 'localhost'"). Authorization: fail-closed,
+  requires `authorization_status == APPROVED` (a separate, audited action
+  from registration) AND `network_allowed`. Host validation: domain-suffix
+  allowlist (`_domain_allowed`) - string-only, pre-existing. IP validation:
+  **NONE, before this slice** - only "not a bare IP literal in the URL" was
+  checked; the actual resolved address was never inspected. **Fixed this
+  slice**: `_check_host` now also calls the new
+  `providers.http.assert_safe_public_host`. Redirect policy: `_NoRedirectHandler`
+  + a manual per-hop revalidation loop, already correct pre-existing design
+  (now benefits from the IP check on every hop too). Response-size limit:
+  checked, but AFTER the full body is already read into memory
+  unbounded by the underlying transport (a real, if lower-priority, gap -
+  see Findings). Retry/budget: `RetryingHttpClient` + a persisted,
+  cross-process request-budget/rate-limit gate charging every real attempt
+  including retries (`_budget_gated_client`) - pre-existing, correct,
+  unaffected by this slice. **Production reachable: NO** - confirmed via
+  full-repo grep (`grep -rn "AuthorizedHttpFetcher(" --include="*.py" .`):
+  every construction site is a test file. `services/bootstrap_registry.py`'s
+  own module docstring states it directly: "Phase 2.5 ships exactly one
+  fetcher wired up end to end: a deterministic fixture source. No
+  AUTHORIZED_WEB_SOURCE is registered by default because none has been
+  reviewed to APPROVED" - `_FACTORIES` (the only way a `source_id` maps to
+  an actual fetcher) has exactly one entry, the offline fixture, in
+  production code. This is DEAD/UNREACHABLE code today, fixed anyway so the
+  gap can never become live the moment a real source is wired (the same
+  reasoning the Payment Security slice applied to `run_paid_booking`).
+- **`services/destination_images/wikimedia.py` (`WikimediaCommonsClient`)**
+  — CONFIGURATION CONTROLLED / OPERATOR-RUN OFFLINE TOOLING, not a live
+  request path. URL source: Commons' own third-party API JSON response
+  (`Candidate.download_url`), constrained to two explicitly-allowlisted
+  media domains (`upload.wikimedia.org`, `thumb.wikimedia.org`) regardless
+  of what that JSON claims. Host validation: domain allowlist (pre-existing)
+  + **new this slice**: `assert_safe_public_host`. Redirect policy: **was a
+  real gap** - `download()` used the bare `urllib.request.urlopen()` global
+  function, whose default opener auto-follows a 3xx with zero
+  re-validation of the target; **fixed this slice** via
+  `build_no_redirect_opener`. Production reachable: **NO** - confirmed via
+  grep, `ImagePipeline`/`WikimediaCommonsClient.download` are invoked only
+  by `scripts/acquire_destination_images.py`, an operator-run offline CLI;
+  the live `GET /api/v1/destination-images/*` endpoints only ever read a
+  pre-built static manifest from disk, never call this client at request
+  time. Fixed anyway (operator-run tooling against third-party content is
+  still a real, if narrow and privileged, scenario).
+- **Consumer API surface (`api/*.py`)** — searched every request schema for
+  a url/uri/host/domain/endpoint/callback/redirect/image_url/source_url-
+  shaped field reachable by an ordinary (non-Ops) consumer: **none found**.
+  No endpoint lets a consumer request accept a URL Detoura would then fetch.
+
+### Finding (HIGH, reachable in production) — blind HTTP-level retry of non-idempotent Duffel mutations, CLOSED
+
+`DuffelTransportProvider.http` is unconditionally a `RetryingHttpClient`
+(`self.http = http_client if isinstance(http_client, RetryingHttpClient)
+else RetryingHttpClient(http_client or UrllibHttpClient())`), and
+`RetryingHttpClient` retries a POST on any 408/425/429/500/502/503/504 or
+connection failure with **zero HTTP-method awareness** - exactly like a
+GET. Duffel gives Detoura no idempotency key for Order creation (an
+established fact from the Booking/Provider Security slice). A lost
+RESPONSE - not necessarily a lost effect - during `create_test_order`'s
+POST could trigger an automatic second real Order for the same leg,
+invisible to `booking_orchestrator.py`'s own single-execution guarantees
+(which govern when the call happens, not how many raw HTTP attempts happen
+inside it). The same gap existed for `confirm_order_cancellation`
+(irreversible cancellation confirmation) and the confirm/charge step of
+`create_and_confirm_order_change`. Exploit precondition: **none required -
+this is ordinary network flakiness** (a timeout, a 503, a dropped
+connection during a real production call), not an attacker action -
+arguably more concerning than a classic attacker-triggered bug since it
+will happen from normal unreliability over time. Classified HIGH per this
+slice's own rubric ("duplicate provider booking/order" is explicitly named
+under HIGH), reachable today whenever a real Duffel test token is
+configured (the live SANDBOX_BOOKED issuance path).
+
+**Fixed**: `_request_json()` gained `retry: bool = True`; `False` routes
+the call through `self.http.inner` (the raw, non-retrying transport)
+instead of `self.http`. Applied to the three genuinely irreversible
+mutations: `create_test_order`'s inline POST, `confirm_order_cancellation`,
+and the confirm/charge call inside `create_and_confirm_order_change`. Left
+unchanged (retry-enabled, correctly): `fetch_offers`/`get_offer` (reads)
+and the preview/quote steps (`create_order_cancellation`, the first call in
+`create_and_confirm_order_change`) - Duffel's own docs distinguish these
+explicitly as "does NOT cancel/change anything yet". A single attempt now
+surfaces a failure/timeout once, as one typed exception, which
+`_issue_item`'s existing TIMEOUT/PROVIDER_FAILURE uncertain-outcome
+handling (Booking/Provider Security slice) already treats correctly -
+never silently turned into a second real attempt underneath it.
+
+### Finding (LOW, unreachable today) — no resolved-IP validation in the Phase 2.5 acquisition engine, CLOSED
+
+Detailed in the map above. `_check_host` validated only the hostname
+STRING (not an IP literal, matches the `base_domain` allowlist) - never
+what IP address that hostname actually resolves to at connect time. A
+trivial concrete case: an Ops-registered source's `base_domain` (free
+text, no format validation) set to `"localhost"` would have been accepted
+by every existing check and connected straight to loopback. **Fixed**: a
+new shared `providers.http.assert_safe_public_host` resolves the hostname
+(or validates an IP literal) and rejects loopback/private/link-local
+(including the 169.254.0.0/16 cloud-metadata range)/multicast/reserved/
+unspecified addresses, including IPv4-mapped IPv6 wrapping an unsafe IPv4 -
+checking EVERY resolved address, not just the first, since a connecting
+library may pick any of them. Wired into both `network_adapter.py`'s
+`_check_host` (every redirect hop, not just the first request) and
+`wikimedia.py`'s `_check_domain`. **Severity is LOW, not HIGH, because this
+engine has zero production callers today** (see map) - fixed proactively so
+the gap can never become live the moment a real `AUTHORIZED_WEB_SOURCE` is
+wired, matching the same "close it before it's reachable" reasoning the
+Payment Security slice applied to `run_paid_booking`.
+
+**Residual, explicitly NOT claimed fixed**: this closes the *reachable,
+practical* gap (a bad/hostile DNS answer *at the moment of this check*) -
+it does not fully close a textbook DNS-rebinding race (a *different*
+answer between this check and the transport's own, separate resolution
+moments later in the same request), which would need full IP-level
+connection pinning to close completely. That residual gap is real but
+requires an attacker who ALREADY controls DNS for an Ops-approved
+`base_domain` to win a narrow timing race within one request's lifetime -
+a materially harder precondition than the "just register `base_domain:
+localhost`" gap this fix fully closes. Documented as tracked, low-priority
+hardening, not claimed as closed.
+
+### Finding (LOW, unreachable today) — redirect auto-follow in Wikimedia image download, CLOSED
+
+Detailed in the map above. `download()`'s bare `urllib.request.urlopen()`
+auto-followed a 3xx from the (third-party-influenced) media URL with no
+re-validation. **Fixed** via `build_no_redirect_opener` - a redirect now
+surfaces as a catchable `ProviderHttpError`, never silently followed.
+
+### Verified, not a finding — subdomain-suffix matching is working as designed
+
+Attacked "subdomain confusion" (`evil.example.allowed.example` against
+`base_domain="allowed.example"`) directly: `_domain_allowed`'s suffix
+check correctly treats this as an authorized subdomain, not a bypass -
+which is the INTENTIONAL, already-tested design (`base_domain` represents
+authorization over an entire DNS zone, and anyone who controls that zone's
+DNS can create any subdomain label, "evil"-looking or not, entirely
+legitimately). Userinfo confusion (`https://allowed@evil/`), trailing-dot,
+mixed-case, and unsupported-scheme (file:/ftp:/gopher:/data:/javascript:)
+attacks were all independently re-verified as already correctly rejected
+by the existing `urlparse().hostname`-based logic and the `scheme != "https"`
+gate - regression tests added, not fixes (nothing was broken).
+
+### Verified, not a finding — numeric IP-notation SSRF-filter bypass is closed by design, not by luck
+
+Classic filter-bypass trick: `ipaddress.ip_address()` (what the IP-literal
+fast-path in `_check_host` uses) does not parse decimal/hex/octal IP
+notation (`2130706433`, `0x7f000001`, `017700000001` for `127.0.0.1`).
+Verified directly that this platform's own resolver DOES interpret these as
+`127.0.0.1`. Because `assert_safe_public_host` falls through to a REAL
+resolution (not a second string-pattern check) whenever the literal-parse
+fails, it catches this class transparently, as a natural consequence of
+resolving through the same mechanism a real connection would use - not
+because of any special-casing that could itself be incomplete.
+
+### Finding (MEDIUM, independent-review) — `_is_unsafe_ip` missed RFC 6598 Carrier-Grade NAT space, CLOSED
+
+Found by the independent reviewer, not by the implementer. The original
+manual OR-chain (`is_loopback or is_private or is_link_local or
+is_multicast or is_reserved or is_unspecified`) does not cover
+`100.64.0.0/10` - verified empirically that Python's `ipaddress.is_private`
+excludes this range entirely, so `assert_safe_public_host` treated the
+whole CGNAT block as an ordinary public address. Some cloud/container
+network fabrics route this range internally specifically because naive
+RFC1918-only filters miss it - a known real SSRF-filter-bypass class, not
+theoretical. Exploit precondition: same as the engine's own reachability
+(currently unreachable in production - see map), but a real gap in the
+check itself, worth closing regardless. **Fixed**: `_is_unsafe_ip` now uses
+`not ip.is_global or ip.is_multicast or ip.is_reserved` - `is_global`
+already excludes CGNAT along with everything the old chain covered, plus
+`is_multicast` (which `is_global` reports `True` for) and `is_reserved`
+(covering the IPv6 `64:ff9b::/96` NAT64 translation prefix, which can
+embed an arbitrary IPv4 address in its low bits - another IPv6-notation
+bypass class, closed as a side-effect of restoring parity with the
+original chain rather than narrowing it). Independently re-verified by the
+reviewer against 27 addresses spanning every category plus the CGNAT
+boundaries (confirmed not overbroad) - no false positives against real
+public IPv4/IPv6 introduced.
+
+### Finding (MEDIUM, independent-review) — the actual credential-bearing production transport still auto-followed redirects, CLOSED
+
+Found by the independent reviewer: the SSRF-safety work above was applied
+only to the two components confirmed unreachable/near-unreachable in
+production (the acquisition engine, the Wikimedia offline tool). The
+shared `UrllibHttpClient` - the real transport Duffel, Amadeus, AND Stripe
+all construct directly, carrying real bearer credentials on every live
+production call - still used the bare `urllib.request.urlopen()` global
+function, whose default opener auto-follows a 3xx and forwards every
+request header (`Authorization` included) to the new host with no
+same-origin check at all (confirmed directly against CPython's own
+`HTTPRedirectHandler` source). Exploit precondition: the destination is a
+hardcoded, trusted host for all three providers (no env var or request
+path overrides it), so this requires the trusted upstream itself
+(`api.duffel.com`/`api.stripe.com`/Amadeus's host) to be compromised or
+DNS-hijacked - not directly attacker-reachable from an ordinary request,
+but real credential-exfiltration impact (Invariant 10) if that precondition
+is met, and the more consequential of the two independent-review findings
+since it covers live production traffic rather than dead/near-dead code.
+**Fixed**: `UrllibHttpClient` now builds `build_no_redirect_opener(...)`
+once at construction and uses it for every request - the same shared
+no-redirect mechanism already used by the acquisition engine and
+Wikimedia, so this closes the gap at its root with zero duplicated logic
+and zero provider-file changes. A 3xx now comes back as an ordinary
+`HttpResponse`, which every provider's own existing status-code handling
+already treats as a failure (behavior-preserving for the normal case,
+since none of these APIs redirect in practice - confirmed via grep, no
+provider file has any redirect-dependent logic; Stripe's own
+`automatic_payment_methods[allow_redirects]=never` param independently
+confirms a 3xx is never an expected shape there either).
+
+### Tests
+
+`tests/test_v9_phase6_network_security.py` (44 tests): `assert_safe_public_host`
+unit coverage (every unsafe IPv4/IPv6 class including CGNAT and its exact
+boundaries, the NAT64 prefix, IPv4-mapped IPv6, multi-record
+one-bad-record rejection, unresolvable-host rejection, the numeric-notation
+case against this platform's real resolver); `AuthorizedHttpFetcher`
+SSRF-target integration tests via a self-contained fake DNS resolver (no
+test depends on real/private network access); `WikimediaCommonsClient`
+IP-safety + redirect-block tests; the Duffel retry-safety tests (both the
+fix and explicit regression proof that read-only `get_offer`/`fetch_offers`
+still retry normally, unaffected); a real-`http.server`-based test proving
+`UrllibHttpClient` genuinely blocks a redirect and never forwards
+`Authorization` to the redirect target end to end, not mocked.
+`tests/test_v9_phase25_network_safety.py` (pre-existing, 24 tests) updated
+to inject the same kind of fake resolver (`AuthorizedHttpFetcher` now
+performs real DNS resolution by default, which one existing test's fake
+subdomain did not survive) - every original test's own assertions verified
+unchanged by the reviewer, only the DNS dependency removed.
+
+### Independent review
+
+Separate read-only agent (`security-architect`), two rounds. **Round 1**: a
+fresh, from-scratch attack on every invariant (not just the diff) -
+independently re-verified every reachability claim via its own greps, ran
+a real local HTTP server to prove `build_no_redirect_opener` genuinely
+blocks a redirect (rather than trusting the mocked unit test), traced
+`booking_orchestrator.py` directly to confirm the Duffel retry-safety fix
+does not regress the Booking/Payment slices' uncertain-outcome handling,
+and checked Stripe/Amadeus for the same blind-retry pattern (found none -
+Stripe was never exposed to it). Found 2 MEDIUM findings (both above, both
+fixed) and confirmed every reachability/severity claim in this report
+independently. **Round 2 (fixes re-checked)**: independently re-derived
+both formulas/mechanisms against the actual current code (27-address
+battery for the CGNAT fix, source-level confirmation of CPython's
+`ipaddress`/`urllib` internals for both), ran the full 23-file targeted
+suite itself: **538 passed, 2 skipped, 0 failed**. No CRITICAL/HIGH
+findings in either round.
+
+**FOLLOW-UP FIXES: APPROVED.**
+
+### Full regression
+
+Two from-scratch attempts at the complete ~2200-test suite, each killed
+after stalling severely (18-35 lines of progress after 25-31 minutes wall
+clock, versus ~13-14 minutes for a full clean run earlier in this same
+session). Diagnosed, not just assumed: `vm_stat` showed free memory
+dropping from ~30k pages (~120MB) to ~17k pages (~68MB) with load average
+climbing 2.9→4.1 between the two attempts, and killing the first stalled
+attempt immediately freed memory back up (~30k→~82k pages) - concrete
+evidence of genuine, worsening machine-wide memory pressure after this
+session's many hours of continuous multi-agent activity, not a hang
+introduced by this diff. Zero `F`/`E` markers appeared in either partial
+run's output before it was killed.
+
+Per this slice's own explicit instruction ("if resource conditions again
+prevent pytest from printing a certified summary, report that honestly"),
+not claiming a full-suite result this session. The available evidence
+instead: the independent reviewer's own **from-scratch, separate-process**
+run of the full 23-file targeted suite spanning every file this slice
+touches or could affect (network/SSRF, Phase 2.5 acquisition, all
+Duffel/provider tests, booking security, payment security,
+ticket-operations, destination images) - run twice, in two independent
+review rounds, both clean: **538 passed, 2 skipped, 0 failed**, 0
+regressions. Combined with the implementer's own repeated clean runs of
+the same suite, this is treated as strong, if not fully from-scratch-whole-
+suite-certified, evidence. **Recommended before this checkpoint is treated
+as fully released**: re-run the full suite once in a fresh/idle
+environment (matching the same recommendation carried from the Booking
+Security and Payment Security slices earlier this session).
+
 ## Follow-up: Payment Security adversarial slice — CLOSED
 
 Starting HEAD `b1a9c82`. A fresh adversarial pass over the entire V9 Phase 4
@@ -427,10 +751,20 @@ exercised — see the per-slice breakdown below.
   findings. Real Stripe Test Mode E2E remains BLOCKED (no credentials in
   this environment) - the one item of Slice 3 that genuinely cannot be
   completed here.
-- **Slices 5 (network/SSRF), 6 (PII/logging), 7 (secrets/config), 8
-  (dependencies): spot-checked, not a full fresh adversarial pass.** Slice 8
-  is complete (dependency scan is a point-in-time check, genuinely
-  finished). Slices 5-7 had existing controls read and spot-verified sound.
+- **Slice 5 (network/SSRF): DONE.** A fresh, evidence-first adversarial pass
+  over the entire outbound network surface (see "Follow-up: Network / SSRF
+  Security adversarial slice" above) - one HIGH finding (blind HTTP-level
+  retry of non-idempotent Duffel mutations, live/reachable) plus two
+  LOW findings (unreachable-today gaps in the Phase 2.5 acquisition engine
+  and the Wikimedia offline tool, closed proactively) fixed by the
+  implementer, plus two MEDIUM findings (CGNAT coverage, credential-bearing
+  redirect-following) found and fixed after independent review flagged
+  them. Independently reviewed across two rounds, no CRITICAL findings,
+  no regressions in booking/payment security.
+- **Slices 6 (PII/logging), 7 (secrets/config), 8 (dependencies):
+  spot-checked, not a full fresh adversarial pass.** Slice 8 is complete
+  (dependency scan is a point-in-time check, genuinely finished). Slices
+  6-7 had existing controls read and spot-verified sound.
 
 ## Slice 1 — Auth abuse / login limiter hardening
 
@@ -652,9 +986,9 @@ New items opened this session:
 9. No request body size cap - **CLOSED** this slice.
 10. Ops shared-token exchange had no brute-force throttle - **CLOSED**
     this slice.
-11. Slices 5, 6 need a genuine fresh adversarial pass (not just a spot-
-    check) before Phase 6 can be declared APPROVED. (Slice 3 - **CLOSED**,
-    see item 3 above.)
+11. Slice 6 needs a genuine fresh adversarial pass (not just a spot-check)
+    before Phase 6 can be declared APPROVED. (Slices 3, 5 - **CLOSED**, see
+    items 3 and 18 below.)
 12. Slice 4 (booking/provider security) - **CLOSED** this session (see
     "Booking / provider execution security" section above). The rest of
     Slice 9 (ops recovery/reconciliation visibility beyond the login fix)
@@ -686,6 +1020,24 @@ New items opened this session:
     harmless-today call to `_revalidate_item`) - **CLOSED** this session
     (docstring corrected, forward-warning added for if Basic is ever wired
     to a real provider).
+19. `DuffelTransportProvider` blindly HTTP-retried non-idempotent Order
+    creation/cancellation-confirmation/change-confirmation POSTs via the
+    generic `RetryingHttpClient`, live/reachable, HIGH - **CLOSED** this
+    session (see "Follow-up: Network / SSRF Security adversarial slice"
+    above; `retry=False` now bypasses the transport-level retry for the
+    three genuinely irreversible mutations, reads/previews unaffected).
+20. The Phase 2.5 acquisition engine (`network_adapter.py`) and the
+    Wikimedia offline image-acquisition tool validated only the hostname
+    STRING, never the resolved IP address, and the latter also
+    auto-followed redirects - **CLOSED** this session, proactively (both
+    are currently unreachable/near-unreachable in production - see the
+    Network Security Map above - fixed before either becomes live).
+21. Independent-review findings on the Network/SSRF slice's own fix:
+    `_is_unsafe_ip` missed RFC 6598 CGNAT space, and the actual
+    credential-bearing Duffel/Stripe/Amadeus transport still auto-followed
+    redirects (the no-redirect fix had only been applied to the two
+    already-unreachable components) - both **CLOSED** this session, see
+    the two independent-review Finding sections above.
 
 ## Tests / build / secret scan
 

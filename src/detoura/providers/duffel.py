@@ -596,7 +596,19 @@ class DuffelTransportProvider:
                 "passengers": passengers,
             }
         }
-        response = self.http.request(
+        # V9 Phase 6 Network/SSRF slice, Invariant 9: bypass self.http (a
+        # RetryingHttpClient) for this ONE call - Order creation is
+        # irreversible and Duffel gives no idempotency key for it (the same
+        # fact booking_orchestrator.py's single-execution claim exists to
+        # guard at the booking layer). RetryingHttpClient retries a POST
+        # exactly like a GET on any timeout/5xx; a lost RESPONSE after
+        # Duffel already created the Order would trigger an automatic
+        # second Order for the same leg, invisibly to the booking layer's
+        # own duplicate-execution guarantees. A single attempt here surfaces
+        # a failure/timeout once, which _issue_item already treats as an
+        # uncertain (never auto-retried) outcome - never silently turned
+        # into two real Orders by this transport layer.
+        response = self.http.inner.request(
             "POST",
             f"{self.host}{ORDER_PATH}",
             headers=self._headers(),
@@ -651,8 +663,24 @@ class DuffelTransportProvider:
         self.search_calls += 1
 
     def _request_json(self, method: str, path: str, *, body: dict | None = None,
-                      params: dict | None = None) -> dict:
-        response = self.http.request(
+                      params: dict | None = None, retry: bool = True) -> dict:
+        """``retry=False`` (V9 Phase 6 Network/SSRF slice, Invariant 9) sends
+        this call through ``self.http.inner`` - the raw, non-retrying
+        transport - instead of ``self.http`` itself. ``self.http`` is always
+        a :class:`RetryingHttpClient`; its retry logic is method-agnostic
+        (a POST is retried on a timeout/5xx exactly like a GET), which is
+        correct for a read/quote and wrong for an irreversible mutation:
+        Duffel gives Detoura no idempotency key for these calls (the same
+        fact ``booking_orchestrator.py``'s own single-execution claim exists
+        to work around at the booking layer), so an automatic retry after a
+        request whose RESPONSE was lost - not necessarily whose effect
+        failed - can duplicate a real action Duffel already completed. A
+        single failed/timed-out attempt here surfaces to the caller exactly
+        once, as one typed exception, which the booking/ticket-ops layer
+        already treats as an uncertain (never auto-retried) outcome - never
+        silently turned into two real attempts by this transport layer."""
+        client = self.http.inner if not retry else self.http
+        response = client.request(
             method, f"{self.host}{path}", headers=self._headers(),
             body=json.dumps(body) if body is not None else None,
             params=params, timeout=self.timeout,
@@ -717,7 +745,10 @@ class DuffelTransportProvider:
         )
 
     def confirm_order_cancellation(self, cancellation_id: str) -> dict:
-        """Step 2: actually cancel. Irreversible at the provider."""
+        """Step 2: actually cancel. Irreversible at the provider.
+
+        ``retry=False`` (Invariant 9): this is the irreversible action, not
+        the preview - never auto-retried at the transport layer."""
         if not ORDER_CANCELLATION_ID_RE.match(cancellation_id or ""):
             raise DuffelConfigurationError(
                 "cancellation id is not a Duffel order-cancellation id"
@@ -726,6 +757,7 @@ class DuffelTransportProvider:
         return self._request_json(
             "POST",
             f"{ORDER_CANCELLATION_PATH}/{cancellation_id}/actions/confirm",
+            retry=False,
         )
 
     def create_order_change_request(
@@ -778,9 +810,14 @@ class DuffelTransportProvider:
         if pending and float(pending or 0) > 0:
             payments = [{"type": "balance", "amount": pending, "currency": currency}]
         self._guard_mutation("confirm an order change")
+        # retry=False (Invariant 9): this call moves real money against the
+        # test balance and is irreversible at the provider - never
+        # auto-retried at the transport layer, same reasoning as
+        # create_test_order/confirm_order_cancellation.
         return self._request_json(
             "POST", f"{ORDER_CHANGE_PATH}/{change_id}/actions/confirm",
             body={"data": {"payment": payments[0]}} if payments else {"data": {}},
+            retry=False,
         )
 
     # ------------------------------------------------------------------

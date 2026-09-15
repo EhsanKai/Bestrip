@@ -281,19 +281,22 @@ def run_booking(
 
     changed: list[str] = []
     for item in run.items:
-        ok, note = _revalidate_item(run, item, duffel=duffel)
+        new_state, note = _revalidate_item(run, item, duffel=duffel)
         with run._lock:
-            if not ok:
-                item.state = BookingState.FAILED if item.state is BookingState.REVALIDATING else item.state
-                item.detail = note
-            else:
-                item.state = BookingState.READY
-                if note:
-                    changed.append(f"{item.origin_city} → {item.destination_city}: {note}")
+            if item.state is BookingState.REVALIDATING:  # don't clobber a state set elsewhere meanwhile
+                item.state = new_state
+            item.detail = note
+            if new_state is BookingState.READY and note:
+                changed.append(f"{item.origin_city} → {item.destination_city}: {note}")
         sleep(pace["revalidate"])
 
     with run._lock:
-        failed_reval = [i for i in run.required_items if i.state is BookingState.FAILED]
+        # Any required item that did not reach READY stops the run - whether
+        # it is a definite FAILED, a fare that's UNAVAILABLE, or an uncertain
+        # TIMEOUT/PROVIDER_FAILURE (V9 Phase 6: previously collapsed to a
+        # blind FAILED here, losing exactly the distinction the domain model
+        # carries these states to make - see _revalidate_item/_issue_item).
+        failed_reval = [i for i in run.required_items if i.state is not BookingState.READY]
         if failed_reval:
             run.phase = BookingPhase.FAILED
             _mark_unattempted(run)
@@ -312,9 +315,31 @@ def run_booking(
     for item in run.items:
         if stop:
             with run._lock:
-                if item.state not in (BookingState.CONFIRMED, BookingState.FAILED):
+                # Only a still-READY item (never reached issuance because an
+                # earlier *required* leg failed first) becomes NOT_ATTEMPTED.
+                # An item that already has its own resolved outcome from
+                # revalidation - UNAVAILABLE/FAILED/TIMEOUT/PROVIDER_FAILURE,
+                # reachable here when a *non-required* leg's revalidation
+                # failed without itself stopping the run - keeps that
+                # outcome (V9 Phase 6: the sibling of the same fix applied
+                # to _mark_unattempted above; this branch had the identical
+                # gap - independently caught by adversarial review).
+                if item.state is BookingState.READY:
                     item.state = BookingState.NOT_ATTEMPTED
                     item.detail = "not attempted - an earlier leg could not be booked"
+            continue
+        if item.state is not BookingState.READY:
+            # A non-required item that did not pass revalidation
+            # (UNAVAILABLE/FAILED/TIMEOUT/PROVIDER_FAILURE) - required items
+            # are already guaranteed READY here by the `failed_reval` gate
+            # above, which stops the run before issuance for any that
+            # aren't. Re-attempting issuance for an offer already known
+            # unavailable/uncertain is not a retry of the same attempt, it's
+            # an independent new one with its own chance of an effect at the
+            # provider - it must not happen silently just because this leg
+            # is optional (V9 Phase 6, caught by adversarial review). Its
+            # revalidation-time state and detail are left exactly as they
+            # were; nothing here overwrites them.
             continue
         with run._lock:
             item.state = BookingState.USER_CONFIRMED
@@ -322,15 +347,18 @@ def run_booking(
         with run._lock:
             item.state = BookingState.BOOKING
         sleep(pace["issue_mid"])
-        ok, note, order_id = _issue_item(run, item, duffel=duffel)
+        new_state, note, order_id = _issue_item(run, item, duffel=duffel)
         with run._lock:
-            if ok:
+            item.detail = note
+            if new_state is BookingState.CONFIRMED:
                 item.state = BookingState.CONFIRMED
                 item.provider_order_id = order_id
-                item.detail = note
             else:
-                item.state = BookingState.FAILED
-                item.detail = note
+                # Definite (FAILED/UNAVAILABLE) or uncertain (TIMEOUT/
+                # PROVIDER_FAILURE) - either way this leg did not confirm and
+                # a required one stops the run (V9 Phase 6: previously always
+                # recorded as a blind FAILED regardless of which).
+                item.state = new_state
                 if item.required:
                     stop = True
         sleep(pace["issue_post"])
@@ -346,8 +374,18 @@ def run_booking(
 
 
 def _mark_unattempted(run: BookingRun) -> None:
+    """Called when a required leg's *revalidation* fails and the run stops
+    before issuance ever starts. Only a ``READY`` item - one that passed
+    revalidation but will now never be issued - is downgraded to
+    NOT_ATTEMPTED. Anything that already has a specific, resolved
+    revalidation outcome (FAILED, UNAVAILABLE, TIMEOUT, PROVIDER_FAILURE)
+    keeps it (V9 Phase 6: an earlier version's exemption list only
+    protected FAILED, so an item revalidated as TIMEOUT/PROVIDER_FAILURE -
+    the exact uncertain-outcome case this state split exists to preserve -
+    would have been immediately overwritten right back to NOT_ATTEMPTED
+    here, erasing the distinction the moment it was recorded)."""
     for i in run.items:
-        if i.state not in (BookingState.CONFIRMED, BookingState.FAILED):
+        if i.state is BookingState.READY:
             i.state = BookingState.NOT_ATTEMPTED
 
 
@@ -362,23 +400,38 @@ def _breaches_tolerance(run: BookingRun) -> bool:
 
 def _revalidate_item(
     run: BookingRun, item: ItemProgress, *, duffel: DuffelTransportProvider | None,
-) -> tuple[bool, str]:
-    """Returns (ok, note). ``ok`` False means this leg cannot be booked."""
+) -> tuple[BookingState, str]:
+    """Returns ``(new_state, note)``. ``READY`` means this leg may proceed to
+    issuance; anything else means it may not - see ``_issue_item`` for why
+    the *specific* non-READY state matters (V9 Phase 6): a network timeout
+    or an unreachable provider is not the same fact as the fare being gone,
+    and collapsing both into one generic "can't book this" value is how an
+    uncertain outcome gets treated exactly like a definite one downstream.
+    """
     if run.mode is PassMode.DEMO_ONLY or duffel is None or item.provider != "duffel":
         item.current_price = item.quoted_price
-        return True, ""
+        return BookingState.READY, ""
     try:
         current = duffel.revalidate_offer(
             item.offer_id, item.origin_airport, item.destination_airport,
             travelers=item.travelers,
         )
     except DuffelOfferGone:
-        return False, "the fare is no longer available"
-    except (DuffelOrderError, ProviderHttpError, TimeoutError, OSError) as error:
-        return False, f"could not re-check the fare ({type(error).__name__})"
+        return BookingState.UNAVAILABLE, "the fare is no longer available"
+    except DuffelOrderError as error:
+        # A definite response from the provider, not a connectivity/timeout
+        # uncertainty - treated as FAILED like any other outright refusal.
+        return BookingState.FAILED, f"could not re-check the fare ({error.code or 'error'})"
+    except TimeoutError as error:
+        # TimeoutError is itself an OSError subclass - caught first so it
+        # gets its own, more specific state rather than falling into the
+        # OSError branch below.
+        return BookingState.TIMEOUT, f"could not re-check the fare in time ({type(error).__name__})"
+    except (ProviderHttpError, OSError) as error:
+        return BookingState.PROVIDER_FAILURE, f"could not re-check the fare ({type(error).__name__})"
     ref = current.provider_ref
     if ref and ref.is_expired_at():
-        return False, "the fare expired before it could be booked"
+        return BookingState.FAILED, "the fare expired before it could be booked"
     # Per person, like `quoted_price` - the party total is always
     # ``price * travelers`` and nothing multiplies it in twice.
     item.current_price = round(current.price_per_person, 2)
@@ -396,18 +449,33 @@ def _revalidate_item(
         item.operating_flight_number = getattr(ref, "operating_flight_number", "") or ""
     delta = item.current_price - item.quoted_price
     if abs(delta) < 0.01:
-        return True, ""
-    return True, f"fare now {item.current_price:.2f} {item.currency} ({delta:+.2f})"
+        return BookingState.READY, ""
+    return BookingState.READY, f"fare now {item.current_price:.2f} {item.currency} ({delta:+.2f})"
 
 
 def _issue_item(
     run: BookingRun, item: ItemProgress, *, duffel: DuffelTransportProvider | None,
-) -> tuple[bool, str, str | None]:
-    """Returns (ok, note, provider_order_id)."""
+) -> tuple[BookingState, str, str | None]:
+    """Returns ``(new_state, note, provider_order_id)``.
+
+    ``new_state`` is ``CONFIRMED`` or one of the domain's own "did not
+    confirm" states - never a bare boolean collapsed back to plain FAILED
+    (V9 Phase 6). Duffel gives Detoura no client-supplied idempotency key
+    for Order creation (verified: nothing in ``providers/duffel.py``
+    negotiates one), so *Detoura's own* concurrency control - one execution
+    per confirmation, see ``booking_flow.start_confirmation`` - is what
+    prevents a double-submit, not the provider. A timeout or an unreachable
+    provider here means Detoura genuinely does not know whether an Order
+    was created; that must read as ``TIMEOUT``/``PROVIDER_FAILURE`` (which
+    the domain routes toward ``RECOVERY_REQUIRED`` - a person decides,
+    checking with the provider first) rather than a plain ``FAILED`` (which
+    reads as "definitely nothing happened, safe to just try again" - the
+    one thing that is not true here).
+    """
     if run.mode is PassMode.DEMO_ONLY or duffel is None or item.provider != "duffel":
-        return True, "test booking item prepared (demo mode - no Duffel Order)", None
+        return BookingState.CONFIRMED, "test booking item prepared (demo mode - no Duffel Order)", None
     if run.party is None:
-        return False, "no traveller details", None
+        return BookingState.FAILED, "no traveller details", None
     try:
         offer = duffel.get_offer(item.offer_id)
         passengers = duffel_passengers_from(offer, run.party.travelers[: item.travelers])
@@ -418,9 +486,25 @@ def _issue_item(
             expected_amount=amount, expected_currency=currency,
         )
     except DuffelOfferGone:
-        return False, "the fare was gone by the time we tried to book it", None
+        return BookingState.UNAVAILABLE, "the fare was gone by the time we tried to book it", None
     except DuffelOrderError as error:
-        return False, f"the provider refused the sandbox order ({error.code or 'order_failed'})", None
-    except (ProviderHttpError, TimeoutError, OSError) as error:
-        return False, f"the provider could not be reached ({type(error).__name__})", None
-    return True, "Duffel Test Mode Order created", str(order.get("id"))
+        # A definite response from the provider (including "price_changed" -
+        # create_test_order's own re-check just before the write, see
+        # providers/duffel.py) - not an uncertain outcome.
+        return BookingState.FAILED, f"the provider refused the sandbox order ({error.code or 'order_failed'})", None
+    except TimeoutError as error:
+        # Caught ahead of the OSError branch below (TimeoutError is itself
+        # an OSError subclass) so a timeout gets its own state rather than
+        # the more generic PROVIDER_FAILURE - both route to RECOVERY_REQUIRED
+        # (never a blind retry), but keeping them distinct preserves the
+        # domain's own vocabulary for whoever reconciles this by hand.
+        return BookingState.TIMEOUT, (
+            "the provider did not respond in time - whether an order was "
+            "created cannot be confirmed from here"
+        ), None
+    except (ProviderHttpError, OSError) as error:
+        return BookingState.PROVIDER_FAILURE, (
+            f"the provider could not be reached ({type(error).__name__}) - "
+            "whether an order was created cannot be confirmed from here"
+        ), None
+    return BookingState.CONFIRMED, "Duffel Test Mode Order created", str(order.get("id"))

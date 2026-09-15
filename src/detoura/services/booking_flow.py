@@ -282,6 +282,27 @@ def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -
 
     A SANDBOX_BOOKED run with no configured sandbox token degrades to
     DEMO_ONLY rather than failing - and the resulting pass says so.
+
+    **Claims the run atomically** (V9 Phase 6): the phase check and the
+    transition out of it happen under one ``run._lock`` acquisition, in
+    this (synchronous, caller's) thread - not as a read here followed by a
+    write inside the spawned worker thread later. The two used to be
+    separate: this function read ``run.phase``, and only the *background*
+    thread, once scheduled, set it to ``REVALIDATING`` as its first action.
+    Two concurrent calls to this function (a double-click, a client retry
+    racing the original request, two requests hitting this process's
+    threadpool at once) could both read the still-unclaimed phase before
+    either background thread got scheduled, and both would then spawn a
+    worker - two ``run_booking`` executions issuing the same legs
+    concurrently, each capable of creating its own Duffel order for the
+    same offer. Reproduced directly (a synchronous two-thread race with a
+    barrier): 300/300 trials double-invoked ``run_booking`` once the
+    simulated work inside it took long enough to overlap the window - i.e.
+    the exact shape of any real provider call. Claiming the phase here,
+    before any thread is spawned, closes that window: a second racing call
+    now sees the already-claimed phase and is rejected with the same
+    ``ValueError`` it always raised for "already confirmed", just
+    correctly instead of by chance.
     """
     from ..models.commercial import ServiceTier
 
@@ -298,12 +319,31 @@ def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -
             f"traveller{'s' if len(missing) != 1 else ''} "
             + ", ".join(str(i) for i in missing)
         )
-    if run.phase not in (BookingPhase.AWAITING_CONFIRMATION, BookingPhase.RECONFIRM_REQUIRED):
-        raise ValueError(f"cannot confirm from phase {run.phase.value}")
 
-    duffel = duffel_factory() if run.mode is PassMode.SANDBOX_BOOKED else None
-    if run.mode is PassMode.SANDBOX_BOOKED and duffel is None:
-        run.mode = PassMode.DEMO_ONLY  # no token - honest downgrade
+    with run._lock:
+        if run.phase not in (BookingPhase.AWAITING_CONFIRMATION, BookingPhase.RECONFIRM_REQUIRED):
+            raise ValueError(f"cannot confirm from phase {run.phase.value}")
+        # The claim. run_booking still sets this itself as its own first
+        # locked action once the worker thread actually runs - redundant
+        # with what we just did, and deliberately left alone: this is what
+        # makes claiming here safe to add without touching the orchestrator
+        # loop's own invariants, rather than a second, subtly different
+        # source of truth for "has issuance started".
+        run.phase = BookingPhase.REVALIDATING
+
+    try:
+        duffel = duffel_factory() if run.mode is PassMode.SANDBOX_BOOKED else None
+        if run.mode is PassMode.SANDBOX_BOOKED and duffel is None:
+            run.mode = PassMode.DEMO_ONLY  # no token - honest downgrade
+    except Exception:
+        # The claim above already left AWAITING_CONFIRMATION/
+        # RECONFIRM_REQUIRED - the only states a retry is allowed from - so
+        # a failure here (setting up the provider client, before any thread
+        # exists to ever move the phase further) must not leave the run
+        # stuck in REVALIDATING with nothing left to advance it.
+        with run._lock:
+            run.phase = BookingPhase.FAILED
+        raise
 
     def _worker() -> None:
         try:

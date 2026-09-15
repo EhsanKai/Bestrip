@@ -230,7 +230,11 @@ def test_a_gone_offer_at_revalidation_fails_before_any_order():
                                      http_client=_DuffelLegScript(plan), max_calls=40)
     run_booking(run, duffel=duffel, sleep=lambda _s: None)
     assert run.phase is BookingPhase.FAILED
-    assert run.items[1].state is BookingState.FAILED
+    # UNAVAILABLE, not a bare FAILED (V9 Phase 6): the domain carries this
+    # state specifically for "the fare is gone", distinct from a definite
+    # provider refusal or an uncertain timeout - see booking_orchestrator's
+    # _revalidate_item and models/booking.py's BookingState docstring.
+    assert run.items[1].state is BookingState.UNAVAILABLE
     # nothing was ordered
     assert all(i.provider_order_id is None for i in run.items)
 

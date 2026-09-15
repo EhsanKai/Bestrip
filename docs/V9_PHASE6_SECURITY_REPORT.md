@@ -2,6 +2,133 @@
 
 Starting checkpoint: `2fbf4a8` (V9 Phase 5, APPROVED).
 
+## Follow-up: Booking / provider execution security — CLOSED
+
+Starting HEAD `8410b4d`. A fresh adversarial pass over the booking execution
+path (`services/booking_flow.py`, `services/booking_orchestrator.py`) found
+and fixed two headline issues plus two sibling bugs caught while fixing the
+second, all independently reviewed (separate read-only agent, not
+self-approved) across two rounds.
+
+**Finding 1 (the headline finding) — concurrent double-execution of booking
+confirmation.** `start_confirmation`'s "can this be confirmed?" check was a
+plain unlocked read of `run.phase`; the only place that actually *claimed*
+the run - transitioning it out of AWAITING_CONFIRMATION/RECONFIRM_REQUIRED -
+was the background worker thread, once scheduled. Two callers racing
+`start_confirmation` for the same run (double-click, a client retry
+overlapping the original request) could both pass the stale read before
+either worker ran, and both would spawn one - two independent
+`run_booking` executions against the same legs, each capable of
+independently calling `duffel.create_test_order` for the same offer
+(confirmed Duffel's own API gives Detoura no idempotency key for order
+creation - nothing in `providers/duffel.py` negotiates one, so Detoura's
+own single-execution guarantee is the *only* thing preventing a duplicate
+Order). Reproduced directly before fixing: 300/300 barrier-synchronized
+trials double-invoked `run_booking` once the simulated work inside it
+overlapped the window (i.e. the shape of any real provider call). **Fixed**:
+the phase check-and-claim now happens atomically under `run._lock`, in the
+caller's own thread, before any worker is spawned. Independent review
+re-derived the fix from scratch and additionally stress-tested it beyond
+the shipped test - 40 trials × 8 racing threads (320 calls), 0 failures.
+
+**Finding 2 — an uncertain provider outcome (timeout/connection failure)
+was recorded identically to a definite failure.** `models/booking.py`'s
+`BookingState` enum already carries `TIMEOUT` and `PROVIDER_FAILURE`,
+deliberately kept apart from `FAILED` and routed toward `RECOVERY_REQUIRED`
+(a person decides) rather than silent resolution - but the orchestrator
+collapsed every non-success into a plain `FAILED` regardless of whether the
+underlying cause was a definite provider rejection or a timeout where
+Detoura genuinely does not know what happened. **Fixed**: `_issue_item`/
+`_revalidate_item` now return the actual resulting `BookingState` instead
+of a bare bool, mapped from the specific exception
+(`DuffelOfferGone`→UNAVAILABLE, `DuffelOrderError`→FAILED,
+`TimeoutError`→TIMEOUT, `ProviderHttpError`/`OSError`→PROVIDER_FAILURE).
+Independent review confirmed every value produced is a domain-legal
+transition (cross-checked against `ALLOWED_TRANSITIONS`) and that
+`_breaches_tolerance`/`journey_intent().outcome`/`build_travel_pass` all
+treat the new states correctly as "not settled."
+
+**Sibling bug 1 (caught fixing Finding 2) — `_mark_unattempted` clobbered
+the very states it just recorded.** Called when a required leg's
+revalidation fails, to mark other not-yet-issued legs NOT_ATTEMPTED - its
+exemption list only protected FAILED/CONFIRMED, so a TIMEOUT/
+PROVIDER_FAILURE item would have been immediately overwritten back to
+NOT_ATTEMPTED the instant it was recorded. **Fixed**: only a still-READY
+item is downgraded now.
+
+**Sibling bug 2 (caught by independent review's first pass, fixed in a
+second round) — the ISSUING loop's own `stop`-skip branch had the
+identical clobber bug, untouched by the first fix.** Same exemption-list
+pattern, same fix: only READY→NOT_ATTEMPTED. **Also fixed in the same
+round**: a related gap where a *non-required* item that failed
+revalidation (UNAVAILABLE/TIMEOUT/PROVIDER_FAILURE) was still silently
+pushed through `USER_CONFIRMED → BOOKING → _issue_item` anyway when no
+*required* leg had failed (so `stop` was never set) - now gated on
+`item.state is BookingState.READY` before issuance is attempted at all.
+Independent review confirmed no live duplicate-order risk from the old
+behavior (each item issues at most once per `run_booking` call regardless),
+judged the fix correct and complete, confirmed the `failed_reval` guarantee
+(every required item is READY by the time the issuing loop starts) still
+holds, and confirmed a READY optional item still issues normally. Second
+review round: **APPROVED**, 141/141 targeted tests passing (up from 134).
+
+**Deferred, tracked as debt (not fixed this slice, by explicit decision):**
+- `guided_booking.py`'s `_revalidate_item` call still unpacks the return as
+  a bare `bool` (`if ok:`) rather than comparing to `BookingState.READY`.
+  Harmless today - Basic/guided always calls with `duffel=None`, which
+  forces `_revalidate_item`'s unconditional `READY` short-circuit, so `ok`
+  is always `BookingState.READY` (truthy either way) - but if guided fare-
+  checking is ever wired to a real Duffel client, every revalidation
+  failure would silently read as success. **Fix when guided/Basic real
+  fare revalidation is wired**, not before.
+- `services/payment_booking_orchestrator.py::run_paid_booking` calls
+  `run_booking` directly with no phase guard at all - Finding 1's atomic
+  claim lives only in `start_confirmation`, not in `run_booking` itself.
+  Confirmed via full-repo search: **no caller anywhere in `src/detoura/api/*.py`**
+  - dead/not-yet-integrated code, no live exploit path today. **Required
+    blocker for the Payment Security / payment-orchestration integration
+    slice**: do not wire `run_paid_booking` into any endpoint without first
+    centralizing the single-execution guarantee (e.g. moving the atomic
+    claim into `run_booking` itself, or a shared helper both call) so the
+    protection isn't caller-dependent. Do not patch this by duplicating the
+    guard as a stopgap.
+
+Tests: `tests/test_v9_phase6_booking_security.py` (17 tests) - the
+concurrency repro as a permanent test, provider-order-count proof under
+concurrent confirmation, timeout/connection-error state mapping for both
+revalidation and issuance, the `_mark_unattempted`/stop-skip preservation
+tests (parametrized over TIMEOUT/PROVIDER_FAILURE/UNAVAILABLE with
+`required=False` items), the optional-leg re-attempt-gate tests (same three
+behaviors, proving no provider order is created), a READY-optional-still-
+issues-normally test, and one authorization-boundary test proving
+booking_id-capability execution is intentional product design, separate
+from (and not affecting) My Trips' ownership-gated visibility. One
+pre-existing test updated (`test_v8_booking.py`: a gone-offer-at-
+revalidation assertion corrected from the old, less precise `FAILED` to
+`UNAVAILABLE` - independent review confirmed this is a legitimate
+correction, not a weakening; the test's core invariants are unchanged).
+
+Full regression: **not completed this session** - three attempts at the
+full ~2170-test suite each stalled to a crawl partway through (13-95%,
+minutes of CPU across tens of minutes of wall clock) on a machine that had
+been running this entire multi-slice Phase 6 session for 15+ hours (load
+average climbing past 5, memory pressure visible); a clean, isolated run of
+the specific files this slice touches plus their alphabetical neighbors
+(`test_v9_phase5_ops_confirmations_api.py` through
+`test_v9_search_recorder.py`, 8 files) completed normally in 52.68s with
+118 passed, 1 skipped, 0 failed - evidence the slowdown is environmental,
+not a hang introduced by this diff. Targeted coverage is comprehensive and
+independently verified: the reviewing agent ran and reported the full
+targeted suite (`test_v9_phase6_booking_security.py`, `test_v8_booking.py`,
+`test_v85_tiers.py`, `test_v85_reoptimize_ui.py`,
+`test_v85_commercial_security.py`, `test_v85_release_blockers.py`,
+`test_v85_ticket_operations.py`, `test_v9_phase4_domain.py`,
+`test_v9_phase4_orchestrator.py`) green twice, independently, in its own
+process (134/134, then 141/141 after the follow-up fixes) - a stronger
+signal than a from-scratch full run this session couldn't obtain reliably.
+**Recommended before this checkpoint is treated as fully released**: re-run
+the full suite once in a fresh/idle environment to confirm.
+
 ## Follow-up (commit `11f9eb1`): account → booking ownership — CLOSED
 
 The item below ("Account → booking ownership: VERIFIED, NOT FIXED
@@ -274,11 +401,26 @@ New items opened this session:
 9. No request body size cap - **CLOSED** this slice.
 10. Ops shared-token exchange had no brute-force throttle - **CLOSED**
     this slice.
-11. Slices 3-6 need a genuine fresh adversarial pass (not just a spot-
+11. Slices 3, 5, 6 need a genuine fresh adversarial pass (not just a spot-
     check) before Phase 6 can be declared APPROVED.
-12. Slice 4 (booking/provider security) and the rest of Slice 9 (ops
-    recovery/reconciliation visibility beyond the login fix) not yet
-    started.
+12. Slice 4 (booking/provider security) - **CLOSED** this session (see
+    "Booking / provider execution security" section above). The rest of
+    Slice 9 (ops recovery/reconciliation visibility beyond the login fix)
+    not yet started.
+13. Concurrent double-execution of booking confirmation (duplicate provider
+    orders) - **CLOSED** this session.
+14. Uncertain provider outcomes (timeout/connection failure) recorded as
+    definite failures, losing the RECOVERY_REQUIRED signal - **CLOSED**
+    this session.
+15. `guided_booking.py` bool/BookingState truthiness mismatch - **tracked
+    debt, deliberately deferred** until guided/Basic real fare revalidation
+    is wired to a real provider (currently inert - see the follow-up
+    section above for why).
+16. `run_paid_booking` bypasses the atomic single-execution claim entirely
+    - **required blocker for the Payment Security / payment-orchestration
+    integration slice**. Must not be wired into any endpoint until the
+    single-execution guarantee is centralized (not duplicated as a
+    stopgap). No live exploit path today (unreachable dead code).
 
 ## Tests / build / secret scan
 

@@ -65,6 +65,9 @@ from ..services.revalidation import RevalidationLimitExceeded, revalidate_select
 from ..services.selection_store import selection_store
 from ..data.destinations import acquisition_catalog
 from ..services.live_search import live_search
+from ..services.acquisition import ProviderCallBudget
+from ..services.search_intel_recorder import SearchIntelRecorder
+from ..search_intel_config import search_intel_config
 from .assembler import build_response, recommendation_dto
 from .contracts import (
     BookingIntentResponse,
@@ -485,11 +488,35 @@ def _try_live_search(
     provider E2E verified" - this wiring is verified against injected test
     doubles in this codebase's test suite, not against a real Duffel Test
     Mode account, since no credentials are available in this environment).
+
+    V9 Search Intelligence Slice 1.5: also constructs a
+    :class:`~detoura.services.search_intel_recorder.SearchIntelRecorder` and
+    passes it, together with the process database, into
+    ``live_search(recorder=..., portfolio_db=...)`` - the two parameters
+    that were always accepted but never supplied from any production call
+    site before this slice (confirmed by a fresh repo-wide audit: zero
+    non-test constructions of ``SearchIntelRecorder`` existed anywhere).
+    This is what actually turns the live search on from "a bare Duffel
+    fetch" into "the full Phase 3 candidate-funnel / attractiveness /
+    EXPLOIT-EXPLORE / market-prior / recommendation-portfolio pipeline",
+    reusing every one of those existing, already-tested components exactly
+    as ``live_search`` already wires them - nothing about their own logic
+    changes here. One recorder per request (never shared across requests or
+    across users - see ``SearchIntelRecorder.__init__``'s own per-instance
+    state), and the SAME :class:`ProviderCallBudget` instance is passed to
+    both the recorder and ``live_search`` so the two can never silently
+    disagree about the request's own provider-call ceiling.
     """
     duffel = _search_live_duffel_or_none()
     if duffel is None:
         return None
     try:
+        budget = ProviderCallBudget()
+        db = get_db()
+        recorder = SearchIntelRecorder(
+            db, request, mode=mode.value, provider="duffel",
+            provider_call_budget=budget.max_offer_requests, cfg=search_intel_config(),
+        )
         return live_search(
             request,
             duffel=duffel,
@@ -498,7 +525,10 @@ def _try_live_search(
             airports=airports,
             days=[request.date_from],
             mode=mode,
+            budget=budget,
             origin_resolver=origin_resolver,
+            recorder=recorder,
+            portfolio_db=db,
         )
     except Exception as error:  # noqa: BLE001 - a provider/network fault, not a bug
         failures.record(

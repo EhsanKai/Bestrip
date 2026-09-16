@@ -1,0 +1,432 @@
+{
+  "generated_at": "2026-09-16T18:53:08.610415+00:00",
+  "prior_data_model": "A sparse (origin_airport, destination_airport) matrix, further bucketed by season / horizon_bucket / weekday_class / duration_bucket - not a dense per-calendar-date matrix, and not geo-cell based. Each stored row (table `market_priors`) is one historical statistics bucket for one route, from one import source; nothing here is ever a bookable quote (`not_a_quote` is stamped on every row and signal, and no accessor yields a bookable amount - see models/market_prior.py).",
+  "catalog_destinations": 203,
+  "eligible_destinations": 203,
+  "origins": 30,
+  "possible_pairs": 6090,
+  "usable_prior_pairs": 6,
+  "unknown_pairs": 6084,
+  "coverage_pct": 0.0985,
+  "by_origin": [
+    {
+      "origin_airport": "AMS",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "ARN",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "ATH",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "BCN",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "BER",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "BRU",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "BUD",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "CDG",
+      "destinations_covered": 3,
+      "rows": 5
+    },
+    {
+      "origin_airport": "CGN",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "CPH",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "DUB",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "DUS",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "EDI",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "FCO",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "FRA",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "GVA",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "HEL",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "LHR",
+      "destinations_covered": 3,
+      "rows": 5
+    },
+    {
+      "origin_airport": "LIS",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "MAD",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "MAN",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "MUC",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "MXP",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "OSL",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "OTP",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "PRG",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "STN",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "VIE",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "WAW",
+      "destinations_covered": 0,
+      "rows": 0
+    },
+    {
+      "origin_airport": "ZRH",
+      "destinations_covered": 0,
+      "rows": 0
+    }
+  ],
+  "by_country": [
+    {
+      "country": "Italy",
+      "destinations_covered": 1,
+      "rows": 2
+    },
+    {
+      "country": "Spain",
+      "destinations_covered": 2,
+      "rows": 8
+    }
+  ],
+  "destinations_with_no_prior": [
+    "AAR",
+    "ABZ",
+    "ADB",
+    "AES",
+    "AGP",
+    "AHO",
+    "AJA",
+    "ALC",
+    "AMS",
+    "ANR",
+    "ARN",
+    "ATH",
+    "AYT",
+    "BDS",
+    "BEG",
+    "BER",
+    "BES",
+    "BFS",
+    "BGO",
+    "BHX",
+    "BIO",
+    "BIQ",
+    "BLL",
+    "BLQ",
+    "BNX",
+    "BOD",
+    "BOJ",
+    "BRE",
+    "BRI",
+    "BRN",
+    "BRQ",
+    "BRS",
+    "BRU",
+    "BSL",
+    "BTS",
+    "BUD",
+    "CAG",
+    "CDG",
+    "CFE",
+    "CFU",
+    "CGN",
+    "CHQ",
+    "CLJ",
+    "CND",
+    "CPH",
+    "CRL",
+    "CTA",
+    "CWL",
+    "DBV",
+    "DEB",
+    "DRS",
+    "DTM",
+    "DUB",
+    "DUS",
+    "EAS",
+    "EDI",
+    "EFL",
+    "EIN",
+    "ERF",
+    "FAO",
+    "FDH",
+    "FKB",
+    "FLR",
+    "FMM",
+    "FMO",
+    "FNC",
+    "FRA",
+    "GDN",
+    "GLA",
+    "GOA",
+    "GOT",
+    "GRO",
+    "GRQ",
+    "GRX",
+    "GRZ",
+    "GVA",
+    "HAJ",
+    "HAM",
+    "HEL",
+    "HER",
+    "IAS",
+    "IBZ",
+    "IEV",
+    "INI",
+    "INN",
+    "INV",
+    "IST",
+    "JMK",
+    "JTR",
+    "KEF",
+    "KGS",
+    "KIV",
+    "KLR",
+    "KLU",
+    "KLX",
+    "KRK",
+    "KSC",
+    "KTW",
+    "KUN",
+    "KVA",
+    "LBA",
+    "LCA",
+    "LCJ",
+    "LEJ",
+    "LHR",
+    "LIL",
+    "LIS",
+    "LJU",
+    "LNZ",
+    "LPA",
+    "LPL",
+    "LUX",
+    "LUZ",
+    "LYS",
+    "MAN",
+    "MJT",
+    "MLA",
+    "MMX",
+    "MPL",
+    "MRS",
+    "MST",
+    "MUC",
+    "MXP",
+    "NAP",
+    "NCE",
+    "NCL",
+    "NOC",
+    "NTE",
+    "NUE",
+    "OHD",
+    "OLB",
+    "OPO",
+    "ORK",
+    "OSL",
+    "OSR",
+    "OTP",
+    "OUL",
+    "OVD",
+    "PDL",
+    "PDV",
+    "PFO",
+    "PGF",
+    "PLQ",
+    "PMI",
+    "PMO",
+    "POZ",
+    "PRG",
+    "PRN",
+    "PSA",
+    "PVK",
+    "RHO",
+    "RIX",
+    "RMU",
+    "RNS",
+    "RTM",
+    "RVN",
+    "RZE",
+    "SCQ",
+    "SDR",
+    "SJJ",
+    "SKG",
+    "SKP",
+    "SNN",
+    "SOF",
+    "SOU",
+    "SPU",
+    "STR",
+    "SUF",
+    "SVG",
+    "SVQ",
+    "SXB",
+    "SZG",
+    "SZZ",
+    "TFS",
+    "TGD",
+    "TIA",
+    "TIV",
+    "TKU",
+    "TLL",
+    "TLS",
+    "TMP",
+    "TOS",
+    "TPS",
+    "TRD",
+    "TRN",
+    "TRS",
+    "TSR",
+    "VAR",
+    "VCE",
+    "VGO",
+    "VIE",
+    "VLC",
+    "VNO",
+    "VRN",
+    "WAW",
+    "WRO",
+    "ZAD",
+    "ZAG",
+    "ZRH",
+    "ZTH"
+  ],
+  "origins_with_no_prior": [
+    "AMS",
+    "ARN",
+    "ATH",
+    "BCN",
+    "BER",
+    "BRU",
+    "BUD",
+    "CGN",
+    "CPH",
+    "DUB",
+    "DUS",
+    "EDI",
+    "FCO",
+    "FRA",
+    "GVA",
+    "HEL",
+    "LIS",
+    "MAD",
+    "MAN",
+    "MUC",
+    "MXP",
+    "OSL",
+    "OTP",
+    "PRG",
+    "STN",
+    "VIE",
+    "WAW",
+    "ZRH"
+  ],
+  "freshness": {
+    "oldest_source_date": null,
+    "newest_source_date": null,
+    "last_import_at": "2026-09-11T13:14:51.444990+00:00",
+    "rows_missing_source_date": 10
+  },
+  "provenance": {
+    "total_rows": 10,
+    "by_source": {
+      "fixture-europe-demo": {
+        "rows": 10,
+        "version": "fixture-v1"
+      }
+    },
+    "by_confidence": {
+      "LOW": 10
+    },
+    "sample_count_distribution": {
+      "unknown": 0,
+      "1-2": 0,
+      "3-9": 0,
+      "10+": 10
+    }
+  },
+  "note": "Coverage is measured against this audit's own denominator (30 configured bootstrap origins x 203 acquisition-eligible catalog destinations); a market_priors row outside that set (e.g. from a manual/ad-hoc import) is excluded from every count above, not silently folded in. Zero rows means exactly what it says: no prior has ever been imported for that route, not that one was imported and found empty."
+}

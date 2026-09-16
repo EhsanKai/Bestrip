@@ -18,6 +18,12 @@ from ..data.destinations import (
     OriginAirport,
     canonical_key,
 )
+from .origin_intelligence import (
+    NearbyAirportPolicy,
+    OriginPlace,
+    nearby_airports,
+    resolve_origin_exact,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,3 +95,56 @@ class StaticOriginResolver:
             )
         # Stable, code-sorted output keeps downstream iteration deterministic.
         return sorted(selected, key=lambda c: c.code)
+
+
+class CatalogOriginResolver:
+    """Resolves an origin against the full ~203-city discovery catalog
+    (V9 Post-Phase-6 Origin Intelligence slice), instead of
+    :class:`StaticOriginResolver`'s closed 7-city/5-airport table.
+
+    This is the resolution the product problem statement asked for: any
+    catalog city, alias or IATA code can be an origin, with nearby airports
+    computed from real coordinates
+    (:func:`~detoura.services.origin_intelligence.nearby_airports`) rather
+    than a hand-maintained distance table. It implements the same
+    :class:`OriginResolver` protocol and returns the same
+    :class:`OriginCandidate` shape as :class:`StaticOriginResolver`, so
+    :class:`~detoura.services.planner.TravelPlanner` needs no change at all
+    to use it - only the resolver passed to its constructor differs.
+
+    Typo matching never happens here (only exact/normalized/alias/airport-
+    code matches resolve - see
+    :func:`~detoura.services.origin_intelligence.resolve_origin_exact`), so
+    swapping this in changes *which* origins are accepted, never silently
+    *which* origin an ambiguous or misspelled input resolves to.
+    """
+
+    def __init__(self, places: tuple[OriginPlace, ...] | None = None) -> None:
+        self._places = places
+
+    def resolve(self, origin: str, config: PlannerConfig) -> list[OriginCandidate]:
+        place = resolve_origin_exact(origin, places=self._places)
+        if place is None:
+            raise ValueError(
+                f"unknown origin {origin!r}; try a city name, a common alias, "
+                "or a 3-letter airport code"
+            )
+        policy = NearbyAirportPolicy(
+            max_radius_km=config.max_origin_distance_km,
+            max_candidates=config.max_origin_airports,
+        )
+        nearby = nearby_airports(
+            place.latitude, place.longitude, places=self._places, policy=policy,
+        )
+        if not nearby:
+            # Cannot happen in practice - a resolved place is always within
+            # 0 km of itself - but a resolver must never return an empty
+            # candidate list silently (mirrors StaticOriginResolver's own
+            # guard for the equivalent case).
+            raise ValueError(
+                f"no departure airport within {config.max_origin_distance_km} km of {origin!r}"
+            )
+        return [
+            OriginCandidate(code=a.code, name=a.name, city=a.city, distance_km=a.distance_km)
+            for a in nearby
+        ]

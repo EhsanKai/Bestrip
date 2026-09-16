@@ -574,6 +574,13 @@ class SearchDiagnostics(BaseModel):
     rounds: int = 1
     deeper_search_available: bool = False
     notes: list[str] = Field(default_factory=list)
+    supply_source: str = "SYNTHETIC"
+    """Where these recommendations' prices came from (V9 Post-Phase-6 Search
+    Integration): ``"SYNTHETIC"`` (the deterministic demo network, always
+    labelled as such - see the app description's "All data is synthetic"),
+    or ``"LIVE"`` (a real Duffel Test Mode search ran and produced these
+    recommendations). Never fabricated: this reflects which path actually
+    ran, not a hope about what a client might prefer to hear."""
 
 
 class ProviderIssueDTO(BaseModel):
@@ -632,6 +639,63 @@ class TripSearchResponse(BaseModel):
     diagnostics: SearchDiagnostics
     issues: list[ProviderIssueDTO] = Field(default_factory=list)
     no_results: NoResultsGuidance | None = None
+
+
+# ---------------------------------------------------------------------------
+# Origin Intelligence (V9 Post-Phase-6 Search Integration Slice 1)
+# ---------------------------------------------------------------------------
+
+#: Query-length bound shared with the origin-intelligence layer's own
+#: validation (services/origin_intelligence.py::MAX_QUERY_LENGTH) - kept in
+#: sync deliberately so the API rejects an oversized query before it is even
+#: matched against the catalog, and the service layer's own check is a
+#: second, defence-in-depth guard for any non-API caller.
+MAX_ORIGIN_QUERY_LENGTH = MAX_ORIGIN_LENGTH
+
+
+class OriginSuggestionDTO(BaseModel):
+    """One ranked candidate for an origin-autocomplete box (§6)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    canonical_name: str
+    country: str
+    country_code: str | None = None
+    primary_airport: str
+    match_type: str
+    """One of ``AIRPORT_CODE / EXACT_NAME / NORMALIZED_NAME / ALIAS / PREFIX
+    / FUZZY`` - see ``services.origin_intelligence.MatchType``. A fuzzy or
+    prefix match is a suggestion only; it never changes a search's origin by
+    itself (§5)."""
+
+
+class OriginSuggestionsResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    query: str
+    suggestions: list[OriginSuggestionDTO] = Field(default_factory=list)
+
+
+class NearbyAirportDTO(BaseModel):
+    """One airport near a coordinate, with the distance that put it there
+    (§9/§13 - never collapsed away, since a cheap-flight/expensive-transfer
+    comparison later needs it)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    code: str
+    name: str
+    city: str
+    country: str
+    distance_km: float
+
+
+class NearbyAirportsResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    latitude: float
+    longitude: float
+    airports: list[NearbyAirportDTO] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

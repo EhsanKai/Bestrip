@@ -11,9 +11,33 @@ the trip out.
 from __future__ import annotations
 
 from ..models.transfer import GroundTransferMode, GroundTransferOption
+from ..services.geo import haversine_km
 from .destinations import ORIGIN_DISTANCES_KM, canonical_key
 
 TRAIN = GroundTransferMode.TRAIN
+
+
+def _catalog_distance_km(origin: str, airport: str) -> float | None:
+    """Real great-circle distance between ``origin`` (resolved against the
+    full catalog) and ``airport``'s own place, or ``None`` when either side
+    cannot be resolved. Imported lazily: :mod:`detoura.services.origin_intelligence`
+    imports from this module's own sibling (:mod:`detoura.data.destinations`),
+    so importing it at module load time here would be a cycle; a lazy import
+    inside the function body is not."""
+    from ..services.origin_intelligence import catalog_places, resolve_origin_exact
+
+    origin_place = resolve_origin_exact(origin)
+    if origin_place is None:
+        return None
+    airport_place = next(
+        (p for p in catalog_places() if p.primary_airport == airport), None
+    )
+    if airport_place is None:
+        return None
+    return haversine_km(
+        origin_place.latitude, origin_place.longitude,
+        airport_place.latitude, airport_place.longitude,
+    )
 BUS = GroundTransferMode.BUS
 
 #: ``origin key -> airport -> (mode, price per person, minutes)``.
@@ -79,10 +103,33 @@ FALLBACK_MINUTES_PER_KM = 0.55
 
 
 def _fallback(origin: str, airport: str) -> tuple[GroundTransferMode, float, int] | None:
+    """The same linear price/time-per-km estimate either way; only where the
+    distance comes from differs.
+
+    Deliberately a **pure function of ``(origin, airport)`` alone** (V9
+    Post-Phase-6 Origin Intelligence slice - independent-review finding:
+    an earlier version of this function accepted an optional caller-supplied
+    ``distance_km`` as an alternative to self-deriving one, on the claim
+    that it was "a pure function... regardless of caller/cache ordering".
+    That claim was false: the real call sites supply different-precision
+    distances for the same pair (the beam-search hot path and
+    ``services/baseline.py`` never passed one, so it was always
+    self-derived at full precision; ``/api/v1/origins/{query}`` passed one
+    rounded to 2 decimal places), and
+    :class:`~detoura.providers.cache.CachingGroundTransferProvider` caches
+    by ``(origin, airport)`` alone - so whichever call site reached a given
+    pair *first* silently determined the cached price for every caller
+    thereafter, occasionally by a cent, depending on process history. Taking
+    away the parameter entirely removes the possibility, rather than relying
+    on every future caller to compute it identically.
+    """
     distances = ORIGIN_DISTANCES_KM.get(canonical_key(origin))
-    if not distances or airport not in distances:
+    if distances and airport in distances:
+        km = distances[airport]
+    else:
+        km = _catalog_distance_km(origin, airport)
+    if km is None:
         return None
-    km = distances[airport]
     return (
         TRAIN,
         round(FALLBACK_BASE_PRICE + km * FALLBACK_PRICE_PER_KM, 2),

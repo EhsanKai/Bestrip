@@ -22,7 +22,7 @@ from typing import Sequence
 from ..config import PlannerConfig
 from ..models.attractiveness import DestinationAttractivenessProfile
 from ..models.destination import Destination
-from ..models.itinerary import Itinerary
+from ..models.itinerary import Itinerary, PlanResult
 from ..models.trip import TripRequest
 from ..persistence.db import Database
 from ..providers.cache import ExpiringProviderCache
@@ -45,6 +45,14 @@ class LiveSearchResult:
     search_trace: object | None = None
     """The persisted :class:`SearchIntelligenceTrace` when a recorder was
     supplied (V9 Phase 1), else ``None``."""
+    plan_result: PlanResult | None = None
+    """The underlying :class:`~detoura.models.itinerary.PlanResult` this
+    search actually produced (V9 Post-Phase-6 Search Integration) - carries
+    the same algorithm metadata (beam rounds, Pareto frontier size, etc.) a
+    synthetic search's result does, so a consumer-facing API response can be
+    assembled identically either way (``api.assembler.build_response``
+    expects exactly this shape). ``None`` only if this dataclass is
+    constructed by hand outside :func:`live_search` itself."""
 
 
 def _novelty_from_knowledge(knowledge: str) -> float:
@@ -102,6 +110,7 @@ def live_search(
     recorder=None,
     portfolio_db: Database | None = None,
     portfolio_cfg: SearchIntelConfig | None = None,
+    origin_resolver=None,
 ) -> LiveSearchResult:
     """Run a real Duffel-backed search and record each recommendation's offers.
 
@@ -125,6 +134,17 @@ def live_search(
     multi-city itinerary's own ranking is never second-guessed. Still makes
     zero provider network calls (§A1) — everything it reads is already in
     ``result.recommendations`` or the database.
+
+    ``origin_resolver`` (V9 Post-Phase-6 Search Integration): the resolver
+    the internal planner uses to validate ``request.origin`` and label its
+    response. Omitting it (the default, preserving every existing caller's
+    behaviour unchanged) falls back to ``TravelPlanner``'s own default
+    (:class:`~detoura.services.origin_resolver.StaticOriginResolver`, the
+    closed 5-airport table) - a caller resolving origins against the wider
+    catalog (:class:`~detoura.services.origin_resolver.CatalogOriginResolver`)
+    for the *candidate* ``airports`` above should pass the same resolver
+    here, or this function's own internal validation would reject an origin
+    the caller already accepted.
     """
     supply = acquire_real_supply(
         request, duffel=duffel, destinations=destinations,
@@ -135,6 +155,7 @@ def live_search(
     planner = TravelPlanner(
         config=apply_mode(config or PlannerConfig(), mode),
         transport_provider=served,
+        origin_resolver=origin_resolver,
     )
     result = planner.plan(request)
     portfolio_metrics: dict = {}
@@ -220,4 +241,5 @@ def live_search(
         supply=supply,
         selection_ids=selection_ids,
         search_trace=trace,
+        plan_result=result,
     )

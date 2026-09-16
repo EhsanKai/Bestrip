@@ -63,6 +63,8 @@ from ..services.recheck import recheck_trip
 from ..services.reoptimizer import EditConflict, reoptimize
 from ..services.revalidation import RevalidationLimitExceeded, revalidate_selection
 from ..services.selection_store import selection_store
+from ..data.destinations import acquisition_catalog
+from ..services.live_search import live_search
 from .assembler import build_response, recommendation_dto
 from .contracts import (
     BookingIntentResponse,
@@ -102,11 +104,33 @@ from .contracts import (
     TripRecheckResponse,
     TripSearchRequest,
     TripSearchResponse,
+    MAX_ORIGIN_QUERY_LENGTH,
+    NearbyAirportDTO,
+    NearbyAirportsResponse,
+    OriginSuggestionDTO,
+    OriginSuggestionsResponse,
 )
+from ..services.origin_intelligence import (
+    DEFAULT_NEARBY_POLICY,
+    InvalidOriginQuery,
+    NearbyAirportPolicy,
+    nearby_airports,
+    suggest_origins,
+)
+from ..services.origin_resolver import CatalogOriginResolver
 
 router = APIRouter(prefix="/api/v1", tags=["detoura"])
 
-_planner = TravelPlanner()
+#: V9 Post-Phase-6 Search Integration: the consumer planner resolves origins
+#: against the full ~203-city catalog (see ``services.origin_resolver``)
+#: instead of the old closed 5-airport table - this is the concrete fix for
+#: "origin behavior is effectively Cologne-centric". The synthetic transport
+#: network itself (``data/synthetic_transport.py``) is unchanged - a
+#: deliberately hand-curated benchmark fixture, not a live provider - so a
+#: resolved origin outside its 5 original nodes correctly yields no synthetic
+#: recommendations (an honest "no results", not a crash) unless live search
+#: is enabled (see ``search()`` below).
+_planner = TravelPlanner(origin_resolver=CatalogOriginResolver())
 
 
 def get_planner() -> TravelPlanner:
@@ -204,9 +228,72 @@ def search(
             transport_provider=planner.transport.inner,
             destination_provider=planner.destinations,
             config=settings,
+            origin_resolver=planner.origin_resolver,
             accommodation_provider=planner.accommodation.inner,
             ground_transfer_provider=planner.ground_transfer.inner,
         )
+
+    # Validated once, up front, regardless of which path answers the search:
+    # an unknown origin is a 422 either way, and the candidate airport codes
+    # are exactly what a live search (below) needs to know where to look.
+    try:
+        origin_candidates = active.origin_resolver.resolve(request.origin, active.config)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    supply_source = "SYNTHETIC"
+    live_result = None
+    if _search_live_enabled():
+        live_result = _try_live_search(
+            request, mode=mode,
+            airports=[c.code for c in origin_candidates],
+            origin_resolver=active.origin_resolver,
+            failures=failures,
+        )
+
+    if live_result is not None and live_result.plan_result is not None:
+        result = live_result.plan_result
+        supply_source = "LIVE"
+        # A live-supply gap (a route the provider could not answer, a
+        # truncated response, ...) is recorded on the snapshot, not on
+        # ``failures`` - translate it across so it actually reaches the
+        # response's ``issues``/degraded-guidance branch, exactly like a
+        # synthetic-path provider fault already does. Without this, a
+        # total live-provider outage could otherwise render as a calm "no
+        # trip fits your budget" with no indication anything went wrong.
+        for issue in live_result.supply.snapshot.issues:
+            failures.record(
+                issue.kind, "duffel_live_search",
+                detail=issue.detail, context="live_search",
+            )
+        try:
+            # No synthetic-path "closest price" probe here (V9 Post-Phase-6
+            # fix, found by this slice's own testing): `_closest_price`
+            # re-plans against ``active``, the *synthetic* planner - calling
+            # it from the LIVE branch would attach a synthetic demo price to
+            # a response labelled LIVE, which is exactly the "do not
+            # fabricate live availability" failure mode this slice exists to
+            # avoid. A live "closest price" would need its own live
+            # re-search at a larger budget, which this slice does not add.
+            closest = None
+            response = build_response(
+                result, request, body, mode=mode, failures=failures,
+                closest_price=closest,
+            )
+            return response.model_copy(
+                update={
+                    "diagnostics": response.diagnostics.model_copy(
+                        update={"supply_source": supply_source}
+                    )
+                }
+            )
+        except Exception as error:  # noqa: BLE001 - assembling the live result failed;
+            # fall through to the synthetic path below rather than 503 a
+            # search that the synthetic engine can still answer.
+            failures.record(
+                ProviderFailureKind.UNAVAILABLE, "duffel_live_search",
+                detail=str(error), context="live_search_assembly",
+            )
 
     try:
         # The log travels with the request, not with the planner: the planner
@@ -344,6 +431,83 @@ def recheck(
             for entry in failures.summary()
         ],
     )
+
+
+def _search_live_enabled() -> bool:
+    """Master kill switch for wiring ``/api/v1/search`` to a real Duffel Test
+    Mode search (V9 Post-Phase-6 Search Integration §2/§21).
+
+    Mirrors ``PaymentConfig.live_charging_enabled`` /
+    ``CommunicationConfig.live_sending_enabled`` exactly: ``False`` by
+    default, read fresh from the environment on every call (not cached at
+    import time) so a test can flip it without a process restart. A second,
+    independent gate - a valid ``duffel_test_``-prefixed token - must *also*
+    be present (see :func:`_search_live_duffel_or_none`) before anything
+    actually reaches a provider; setting this flag alone changes nothing.
+    """
+    raw = os.getenv("SEARCH_LIVE_ENABLED", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _search_live_duffel_or_none() -> DuffelTransportProvider | None:
+    """A Duffel provider for the live-search path, or ``None`` - never an
+    exception. Unlike :func:`_revalidation_duffel` (an explicit user action
+    that must fail loudly if unconfigured), a missing/invalid token here
+    just means the search falls back to the always-available synthetic
+    path - search itself must never become unavailable because a live
+    integration is unconfigured."""
+    token = os.getenv("DUFFEL_ACCESS_TOKEN", "")
+    if not is_test_token(token):
+        return None
+    http = RetryingHttpClient(
+        UrllibHttpClient(), max_retries=2, rate_limiter=RateLimiter(0.2)
+    )
+    return DuffelTransportProvider(
+        access_token=token, http_client=http, max_calls=16, timeout=12.0
+    )
+
+
+def _try_live_search(
+    request: TripRequest,
+    *,
+    mode: SearchMode,
+    airports: list[str],
+    origin_resolver,
+    failures: FailureLog,
+):
+    """Attempt a real Duffel-backed search, or ``None`` on any failure.
+
+    Never raises: a provider fault here is recorded on ``failures`` (the
+    same disclosure path a synthetic-path provider fault already uses) and
+    the caller falls back to the synthetic path - a live-search failure
+    must degrade gracefully, never turn an otherwise-answerable search into
+    a 503 (§21: distinguish "architectural wiring verified" from "real
+    provider E2E verified" - this wiring is verified against injected test
+    doubles in this codebase's test suite, not against a real Duffel Test
+    Mode account, since no credentials are available in this environment).
+    """
+    duffel = _search_live_duffel_or_none()
+    if duffel is None:
+        return None
+    try:
+        return live_search(
+            request,
+            duffel=duffel,
+            selection_store=selection_store(),
+            destinations=acquisition_catalog(),
+            airports=airports,
+            days=[request.date_from],
+            mode=mode,
+            origin_resolver=origin_resolver,
+        )
+    except Exception as error:  # noqa: BLE001 - a provider/network fault, not a bug
+        failures.record(
+            ProviderFailureKind.UNAVAILABLE,
+            "duffel_live_search",
+            detail=str(error),
+            context="live_search",
+        )
+        return None
 
 
 def _revalidation_duffel() -> DuffelTransportProvider:
@@ -1168,6 +1332,86 @@ def budget_sensitivity(
     }
 
 
+@router.get("/origins/suggest", response_model=OriginSuggestionsResponse)
+def origins_suggest(
+    q: str = Query(min_length=1, max_length=MAX_ORIGIN_QUERY_LENGTH),
+    limit: int = Query(default=8, ge=1, le=25),
+) -> OriginSuggestionsResponse:
+    """Ranked origin candidates for an autocomplete box (§6, V9 Post-Phase-6
+    Search Integration).
+
+    Registered *before* ``/origins/{query}`` below - Starlette matches path
+    routes in registration order, and a dynamic ``{query}`` segment would
+    otherwise silently swallow the literal path ``/origins/suggest`` as
+    ``query="suggest"``. (Same reasoning applies to ``/origins/nearby``.)
+
+    Deterministic, catalog-only (no outbound HTTP), and bounded by
+    construction - ``q``'s length and ``limit`` are both validated by
+    FastAPI before this function runs at all, matching the same query-length
+    bound the search request itself uses.
+
+    A fuzzy or prefix suggestion here never resolves anything by itself -
+    the traveler (or a caller) still has to submit the chosen
+    ``canonical_name``/``primary_airport`` as the actual search origin.
+    """
+    try:
+        suggestions = suggest_origins(q, limit=limit)
+    except InvalidOriginQuery as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return OriginSuggestionsResponse(
+        query=q,
+        suggestions=[
+            OriginSuggestionDTO(
+                canonical_name=s.place.canonical_name,
+                country=s.place.country,
+                country_code=s.place.country_code,
+                primary_airport=s.place.primary_airport,
+                match_type=s.match_type.value,
+            )
+            for s in suggestions
+        ],
+    )
+
+
+@router.get("/origins/nearby", response_model=NearbyAirportsResponse)
+def origins_nearby(
+    lat: float = Query(ge=-90.0, le=90.0),
+    lon: float = Query(ge=-180.0, le=180.0),
+    max_radius_km: float = Query(default=DEFAULT_NEARBY_POLICY.max_radius_km, gt=0.0, le=1000.0),
+    limit: int = Query(default=DEFAULT_NEARBY_POLICY.max_candidates, ge=1, le=15),
+) -> NearbyAirportsResponse:
+    """Eligible departure airports near a coordinate (§9/§14, V9 Post-Phase-6
+    Search Integration).
+
+    Backend foundation for a future user-triggered "use my location" flow -
+    no browser geolocation happens here, and nothing about this call is
+    persisted: it is a pure function of the coordinates given (§14).
+    ``lat``/``lon`` are range-checked by FastAPI's ``Query`` bounds before
+    this function runs; ``NaN``/``Infinity`` are rejected explicitly inside
+    :func:`~detoura.services.origin_intelligence.nearby_airports` since JSON
+    query parameters can smuggle neither through FastAPI's own float
+    coercion in every case a defensive caller should assume.
+    """
+    policy = NearbyAirportPolicy(max_radius_km=max_radius_km, max_candidates=limit)
+    try:
+        airports = nearby_airports(lat, lon, policy=policy)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return NearbyAirportsResponse(
+        latitude=lat,
+        longitude=lon,
+        airports=[
+            NearbyAirportDTO(
+                code=a.code, name=a.name, city=a.city, country=a.country,
+                distance_km=a.distance_km,
+            )
+            for a in airports
+        ],
+    )
+
+
 @router.get("/origins/{query}")
 def origins(query: str, planner: TravelPlanner = Depends(get_planner)) -> dict:
     """Departure airports for a place, with what it costs to reach each.
@@ -1183,6 +1427,16 @@ def origins(query: str, planner: TravelPlanner = Depends(get_planner)) -> dict:
 
     airports = []
     for candidate in candidates:
+        # data/ground_transfers.py::_fallback self-derives a real distance
+        # (via the origin-intelligence catalog) whenever the legacy 7-city
+        # table misses, so a catalog origin outside it still gets an honest
+        # synthetic transfer estimate instead of `None` - deliberately not
+        # passed in from here (independent-review finding, V9 Post-Phase-6:
+        # an earlier version threaded `candidate.distance_km` through this
+        # call, but that let two call sites feeding the same shared cache
+        # disagree by a rounding cent depending on which reached a given
+        # (origin, airport) pair first; self-derivation removes that
+        # possibility rather than relying on every caller to agree).
         options = planner.ground_transfer.search(query, candidate.code)
         cheapest = min(options, key=lambda o: o.price_per_person, default=None)
         airports.append(

@@ -5,6 +5,7 @@
     GET /api/v1/me/trips/{booking_id}/confirmation
     GET /api/v1/me/trips/{booking_id}/documents
     GET /api/v1/me/trips/{booking_id}/documents/{document_id}
+    GET /api/v1/me/trips/{booking_id}/documents/{document_id}/download
     POST /api/v1/me/trips/{booking_id}/confirmation/resend
 
 Authenticated-owner-only. No final consumer UI here — just the minimum
@@ -15,11 +16,22 @@ lead traveler PII beyond what the booking record itself carries.
 
 Phase 5 additions use duck-typed imports for persistence modules that
 may not exist in this worktree yet (see module docstrings at import sites).
+
+V9 Financial Document Download API slice: the ``/download`` route serves
+the immutable PDF bytes already generated and persisted by
+``services/financial_document_service.py`` (see
+``persistence/financial_documents.py::get_document_pdf_for_user``). It
+never regenerates, recomputes or mutates a document — it is a read of an
+already-issued artifact, gated by the same two-level ownership check
+(booking ownership, then document-belongs-to-booking) as the existing
+metadata route below.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+import re
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from ..persistence import accounts as store
 from ..persistence import bookings as booking_store
@@ -47,6 +59,24 @@ except (ImportError, ModuleNotFoundError):
     communication_service = None  # type: ignore
 
 router = APIRouter(prefix="/api/v1/me", tags=["me"])
+
+#: Financial documents contain customer financial information; never let an
+#: intermediary or the browser cache the response. Mirrors the exact
+#: convention already used for sensitive HTML in ``api/static.py``.
+_NO_STORE = "no-cache, no-store, must-revalidate"
+
+#: Characters allowed in a generated Content-Disposition filename. The
+#: document type and number are both server-generated (see
+#: ``persistence/financial_documents.py::allocate_document_number``), but
+#: this is stripped defensively anyway: a filename ends up in an HTTP header,
+#: and nothing client-observable should ever decide what goes in there
+#: unsanitized.
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_filename_component(value: str) -> str:
+    cleaned = _UNSAFE_FILENAME_CHARS.sub("_", value)
+    return cleaned[:80] or "document"
 
 
 def _trip_summary(rec) -> dict:
@@ -121,14 +151,29 @@ def _document_dto(doc) -> dict:
         document_id, document_type (str), document_number (str), booking_id,
         issued_at, currency, customer_total
     }
+
+    Deliberately excluded: filesystem/storage paths, supplier order/offer
+    ids, provider payloads, and any other internal reconciliation metadata —
+    none of it is on the ``FinancialDocument`` model in the first place (see
+    ``models/financial_document.py``'s own privacy boundary), so there is
+    nothing here to accidentally forward.
     """
+    document_type = getattr(doc.document_type, "value", doc.document_type)
     return {
         "document_id": doc.document_id,
-        "document_type": doc.document_type,
+        "document_type": document_type,
         "document_number": doc.document_number,
         "issued_at": doc.issued_at.isoformat() if hasattr(doc.issued_at, 'isoformat') else doc.issued_at,
         "currency": doc.currency,
         "customer_total": doc.customer_total,
+        # Every document issued through financial_document_service always
+        # has a stored PDF (see its module docstring) — this is surfaced as
+        # data rather than assumed by the frontend, so a future document
+        # type or a corrupt row can honestly report unavailable instead.
+        "download_available": True,
+        "download_url": (
+            f"/api/v1/me/trips/{doc.booking_id}/documents/{doc.document_id}/download"
+        ),
     }
 
 
@@ -202,10 +247,59 @@ def get_document(
     if doc.booking_id != booking_id:
         raise HTTPException(status_code=404, detail={"message": "No such document."})
 
-    # Return document metadata. PDF byte serving can be added here once the
-    # financial_documents module provides get_document_bytes or similar.
-    # Agent 6: wire actual PDF serving once module is merged.
     return _document_dto(doc)
+
+
+@router.get("/trips/{booking_id}/documents/{document_id}/download")
+def download_document(
+    booking_id: str, document_id: str, session: SessionContext = Depends(require_session),
+) -> Response:
+    """Download the immutable PDF bytes of an owned financial document.
+
+    Same two-level ownership check as :func:`get_document` above (booking
+    ownership, then document-belongs-to-booking), applied before the PDF
+    blob is ever read — a cross-booking or cross-user id substitution never
+    reaches ``get_document_pdf_for_user``. Serves the exact bytes stored at
+    issuance; this route computes nothing and never regenerates a document
+    from newer data.
+    """
+    db = get_db()
+    owner = store.get_trip_owner(db, booking_id)
+    if owner is None or owner != session.user_id:
+        raise HTTPException(status_code=404, detail={"message": "No such trip."})
+
+    if document_store is None:
+        raise HTTPException(status_code=404, detail={"message": "No such document."})
+
+    doc = document_store.get_document_for_user(db, document_id, user_id=session.user_id)
+    if doc is None or doc.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail={"message": "No such document."})
+
+    pdf_bytes = document_store.get_document_pdf_for_user(
+        db, document_id, user_id=session.user_id
+    )
+    if pdf_bytes is None:
+        # Metadata exists but no artifact is stored against it. Every
+        # document issued through financial_document_service always has one
+        # (see its own module docstring); reaching this means a corrupt or
+        # incomplete row, not a normal state — fail safely, never a 500 with
+        # a stack trace or a path.
+        raise HTTPException(
+            status_code=404, detail={"message": "No document artifact available."}
+        )
+
+    filename = (
+        f"detoura-{_safe_filename_component(doc.document_type.value.lower())}-"
+        f"{_safe_filename_component(doc.document_number)}.pdf"
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": _NO_STORE,
+        },
+    )
 
 
 @router.post("/trips/{booking_id}/confirmation/resend")

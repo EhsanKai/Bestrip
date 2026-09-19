@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Icon } from "../ui/Icon";
 import "./MobileNav.css";
 
@@ -5,8 +6,19 @@ interface Props {
   screen: string;
   savedCount: number;
   hasResults: boolean;
+  hasJourney: boolean;
   onNavigate: (screen: string) => void;
+  onJourney: () => void;
+  onAccount: () => void;
 }
+
+type MobileNavItem = {
+  id: string;
+  label: string;
+  icon: ReactNode;
+  count?: number;
+  action?: () => void;
+};
 
 /**
  * Bottom navigation (Part 18).
@@ -15,14 +27,15 @@ interface Props {
  * zone, and "Results" only appears once there are results to go back to —
  * a permanent tab that leads nowhere is worse than one less tab.
  */
-export function MobileNav({ screen, savedCount, hasResults, onNavigate }: Props) {
-  const items = [
-    { id: "landing", label: "Home", icon: Icon.map({ size: 20 }) },
+export function MobileNav({ screen, savedCount, hasResults, hasJourney, onNavigate, onJourney, onAccount }: Props) {
+  const items: MobileNavItem[] = [
     { id: "discover", label: "Discover", icon: Icon.search({ size: 20 }) },
     ...(hasResults
       ? [{ id: "results", label: "Trips", icon: Icon.route({ size: 20 }) }]
       : []),
-    { id: "saved", label: "Saved", icon: Icon.heart({ size: 20 }), count: savedCount },
+    { id: "journey", label: "Journey", icon: Icon.route({ size: 20 }), action: onJourney, count: hasJourney ? 1 : 0 },
+    { id: "myTrips", label: "My Trips", icon: Icon.heart({ size: 20 }), count: savedCount },
+    { id: "login", label: "Account", icon: Icon.people({ size: 20 }), action: onAccount },
   ];
 
   return (
@@ -31,7 +44,7 @@ export function MobileNav({ screen, savedCount, hasResults, onNavigate }: Props)
         <button
           key={item.id}
           className={`mobilenav__item ${screen === item.id ? "is-on" : ""}`}
-          onClick={() => onNavigate(item.id)}
+          onClick={() => item.action ? item.action() : onNavigate(item.id)}
           aria-current={screen === item.id ? "page" : undefined}
         >
           <span className="mobilenav__icon">

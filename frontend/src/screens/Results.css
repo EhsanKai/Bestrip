@@ -109,6 +109,7 @@
 .results__profiles { display: inline-flex; gap: 2px; padding: 3px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--bg-sunken) 82%, transparent); border: 1px solid var(--border); }
 .results__profile { padding: 0.46rem 0.85rem; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--text-muted); font-size: 0.72rem; font-weight: var(--weight-semibold); cursor: pointer; min-height: 36px; }
 .results__profile.is-on { background: var(--navy); color: var(--ivory); box-shadow: var(--shadow-sm); }
+.results__provenance { margin: -0.65rem 0 1rem; color: var(--text-muted); font-size: 0.76rem; line-height: 1.45; }
 
 .results__baseline-wrap { margin-bottom: 1.4rem; }
 .results__controls { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); margin: 0 0 0.9rem; padding: 0 0.2rem; }

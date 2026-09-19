@@ -1,3 +1,4 @@
+import { BrandLogo } from "../ui/BrandLogo";
 import type { TravelPass as TravelPassData } from "../../api/types";
 import { money, clockTime, dayMonth } from "../../lib/format";
 import "./TravelPass.css";
@@ -20,7 +21,7 @@ export function TravelPass({ pass }: { pass: TravelPassData }) {
   return (
     <div className={`pass pass--${pass.status}`}>
       <div className="pass__crest">
-        <span className="pass__brand">DETOURA</span>
+        <BrandLogo />
         <span className="pass__kicker">
           {failed
             ? "Journey not prepared"

@@ -22,6 +22,7 @@ interface Props {
   onOpen?: (trip: TripRecommendation) => void;
   onSave?: (trip: TripRecommendation) => void;
   onCompare?: (trip: TripRecommendation) => void;
+  onSelectJourney?: (trip: TripRecommendation) => void;
 }
 
 export function RecommendationCard({
@@ -32,6 +33,7 @@ export function RecommendationCard({
   onOpen,
   onSave,
   onCompare,
+  onSelectJourney,
 }: Props) {
   const modes = trip.legs.map((leg) => leg.mode);
   const cities = [...new Set(trip.cities)];
@@ -51,7 +53,7 @@ export function RecommendationCard({
       selected={selected}
       className="rec"
       onClick={() => onOpen?.(trip)}
-      aria-label={`${joinCities(trip.cities)}, ${money(trip.total_price, trip.currency)}`}
+      aria-label={`${joinCities(trip.cities)}, ${trip.duration_days.toFixed(0)} days, ${money(trip.total_price, trip.currency)} estimated total`}
     >
       <div className={`rec__hero ${activeCity ? "rec__hero--preview" : ""}`}
         onPointerLeave={event => { if (event.pointerType === "mouse") setActiveCity(null); }}
@@ -107,13 +109,13 @@ export function RecommendationCard({
               <span className="rec__city-name">{city}</span>
             </button>)}
           </div>
-          {activeCity && <div className="rec__city-preview" id={previewId}>
+          {activeCity && <div className="rec__city-preview" id={previewId} role="region" aria-label={`${activeCity} destination preview`}>
             <CityImage key={activeCity} city={activeCity} />
             <div className="rec__preview-caption">
               <h4>{activeCity}</h4>
               {activeMatch?.strengths.length ? <p>{activeMatch.strengths.slice(0, 3).map(value => value.replaceAll("_", " ")).join(" · ")}</p> : null}
             </div>
-            <button type="button" className="rec__preview-open" onClick={() => onOpen?.(trip)}>
+            <button type="button" className="rec__preview-open" onClick={() => onOpen?.(trip)} aria-label={`Explore ${joinCities(trip.cities)} trip`}>
               Explore trip {Icon.arrowRight({ size: 16 })}
             </button>
             <button type="button" className="rec__preview-close" onClick={closePreview} aria-label="Back to all cities">
@@ -158,6 +160,14 @@ export function RecommendationCard({
           <Button onClick={() => onOpen?.(trip)} iconAfter={Icon.arrowRight({ size: 16 })}>
             Explore trip
           </Button>
+          <button
+            type="button"
+            className="rec__select-journey"
+            onClick={() => onSelectJourney?.(trip)}
+          >
+            {Icon.route({ size: 15 })}
+            Select journey
+          </button>
           <button
             type="button"
             className={`rec__save ${saved ? "rec__save--on" : ""}`}

@@ -105,6 +105,7 @@ export function Discover({ onSearch, initial }: Props) {
   }
 
   function submit() {
+    if (!valid) return;
     const start = new Date(dateFrom);
     const end = new Date(start);
     // The window is exactly the trip the traveller described. "Flexible" then
@@ -129,7 +130,8 @@ export function Discover({ onSearch, initial }: Props) {
     });
   }
 
-  const valid = origin.trim().length > 0 && budget > 0 && !airportError;
+  const valid = origin.trim().length > 0 && budget > 0 && !airportError
+    && /^\d{4}-\d{2}-\d{2}$/.test(dateFrom) && Number.isFinite(Date.parse(dateFrom));
 
   return (
     <div className="discover">
@@ -182,6 +184,7 @@ export function Discover({ onSearch, initial }: Props) {
               className="discover__input"
               value={dateFrom}
               onChange={(event) => setDateFrom(event.target.value)}
+              onInput={(event) => setDateFrom(event.currentTarget.value)}
               aria-label="Earliest departure date"
             />
             <div className="discover__toggle-row">

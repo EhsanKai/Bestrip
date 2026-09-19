@@ -117,7 +117,13 @@ export function Landing({ onDiscover }: Props) {
             <a className="landing__text-link" href="#how-it-works">How it works {Icon.arrowDown({size:16})}</a>
           </div>
         </motion.div>
-        <motion.figure className={`landing__hero-visual landing__hero-visual--${heroBackground.id}`} initial={reduce ? false : { scale: 1.035 }} animate={{ scale: 1 }} transition={{ duration: 1.2 }}>
+        <motion.figure
+          className={`landing__hero-visual landing__hero-visual--${heroBackground.id}`}
+          initial={reduce ? false : { scale: 1.035 }}
+          animate={{ scale: 1 }}
+          transition={{ duration: 1.2 }}
+          aria-hidden="true"
+        >
           {showVideo ? (
             <video
               className="landing__hero-video"
@@ -127,7 +133,6 @@ export function Landing({ onDiscover }: Props) {
               loop
               playsInline
               preload="metadata"
-              aria-label={heroBackground.alt}
             >
               <source src={heroBackground.videoSrc} type={heroBackground.videoType ?? "video/mp4"} />
             </video>
@@ -136,7 +141,7 @@ export function Landing({ onDiscover }: Props) {
               src={heroBackground.poster}
               srcSet={heroBackground.mobilePoster ? `${heroBackground.mobilePoster} 800w, ${heroBackground.poster} 1536w` : undefined}
               sizes="100vw"
-              alt={heroBackground.alt}
+              alt=""
               width="1536"
               height="1024"
               fetchPriority="high"
@@ -169,9 +174,9 @@ export function Landing({ onDiscover }: Props) {
       <motion.section className="landing__process container" id="how-it-works" {...reveal}>
         <div className="landing__process-photo"><img src="/images/old-town.webp" alt="A sunlit cafe waiting along a quiet European street" width="1024" height="1536" loading="lazy" /></div>
         <div className="landing__process-copy"><h2>Less searching.<br />More possibility.</h2><ol>
-          <li>{Icon.sliders({size:22})}<div><h3>Make it yours</h3><p>Choose your dates, budget, and the things you love.</p></div></li>
-          <li>{Icon.route({size:22})}<div><h3>Take the unexpected route</h3><p>We explore destinations, connections, and stays as one complete trip.</p></div></li>
-          <li>{Icon.heart({size:22})}<div><h3>Find your favourite</h3><p>Compare the possibilities. Save the ones that stay with you.</p></div></li>
+          <li><span aria-hidden="true">{Icon.sliders({size:22})}</span><div><h3>Make it yours</h3><p>Choose your dates, budget, and the things you love.</p></div></li>
+          <li><span aria-hidden="true">{Icon.route({size:22})}</span><div><h3>Take the unexpected route</h3><p>We explore destinations, connections, and stays as one complete trip.</p></div></li>
+          <li><span aria-hidden="true">{Icon.heart({size:22})}</span><div><h3>Find your favourite</h3><p>Compare the possibilities. Save the ones that stay with you.</p></div></li>
         </ol></div>
       </motion.section>
       <motion.section className="landing__closing container" {...reveal}><h2>Somewhere wonderful<br />starts with you.</h2><Button size="lg" onClick={onDiscover} iconAfter={Icon.arrowRight({size:20})}>Discover</Button></motion.section>

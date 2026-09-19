@@ -12,7 +12,7 @@
   position: absolute;
   inset: 0 0 auto 0;
   height: 5px;
-  background: linear-gradient(90deg, var(--coral), #d49b39);
+  background: var(--gold);
 }
 .pass--recovery_required::before { background: #d49b39; }
 .pass--failed::before { background: #b0413e; }

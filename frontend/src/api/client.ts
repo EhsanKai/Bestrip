@@ -13,6 +13,7 @@
 import {
   DetouraApiError,
   type BookingIntent,
+  type AccountProfile,
   type BudgetSensitivityResponse,
   type CreateBookingIntentRequest,
   type ReoptimizeRequest,
@@ -39,17 +40,29 @@ import {
  * instead of `/api/v1/search`. That failure is invisible to a health check: the
  * server is up, the page renders, and only the searches 405. */
 const BASE = import.meta.env.VITE_API_BASE || "/api/v1";
+const CSRF_COOKIE = "detoura_csrf";
 
 interface ApiErrorBody {
   detail?: string | { message?: string; issue?: unknown };
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  new Headers(init?.headers).forEach((value, key) => {
+    headers[key] = value;
+  });
+  const method = init?.method?.toUpperCase() ?? "GET";
+  if (method !== "GET" && path.startsWith("/auth/")) {
+    const csrf = readCookie(CSRF_COOKIE);
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+  }
+
   let response: Response;
   try {
     response = await fetch(`${BASE}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      credentials: "include",
+      headers,
     });
   } catch (cause) {
     // The browser could not reach us at all. This is emphatically not
@@ -85,10 +98,43 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new DetouraApiError(message, response.status, issue);
   }
 
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
+function readCookie(name: string): string | null {
+  const prefix = `${encodeURIComponent(name)}=`;
+  const cookie = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
+  if (!cookie) return null;
+  return decodeURIComponent(cookie.slice(prefix.length));
+}
+
 export const api = {
+  me(signal?: AbortSignal) {
+    return request<AccountProfile | null>("/auth/me", { signal });
+  },
+
+  login(body: { email: string; password: string }) {
+    return request<{ user_id: string }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  register(body: { email: string; password: string }) {
+    return request<{ user_id: string }>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  logout() {
+    return request<{ ok: true }>("/auth/logout", { method: "POST" });
+  },
+
   search(body: TripSearchRequest, signal?: AbortSignal) {
     return request<TripSearchResponse>("/search", {
       method: "POST",

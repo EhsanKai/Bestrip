@@ -1,5 +1,5 @@
 .app {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -11,3 +11,7 @@
 .app__state {
   padding-block: var(--space-7);
 }
+
+.screen-skeleton { height:160px; margin-block:24px; background:var(--bg-sunken); border-radius:var(--radius-lg); }
+.screen-skeleton--short { height:64px; max-width:60%; }
+@media(prefers-reduced-motion:no-preference) { .screen-skeleton { animation:pulse 1.5s ease-in-out infinite; } }

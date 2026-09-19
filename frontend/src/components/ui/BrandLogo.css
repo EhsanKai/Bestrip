@@ -1,0 +1,10 @@
+.brand-logo { display:inline-block; width:150px; height:auto; vertical-align:middle; flex-shrink:0; }
+.brand-logo img { display:block; width:100%; height:auto; }
+.brand-logo .brand-logo__dark { display:none; }
+[data-theme="dark"] .brand-logo__light { display:none; }
+[data-theme="dark"] .brand-logo .brand-logo__dark { display:block; }
+@media (prefers-color-scheme:dark) {
+  :root:not([data-theme="light"]) .brand-logo__light { display:none; }
+  :root:not([data-theme="light"]) .brand-logo .brand-logo__dark { display:block; }
+}
+@media(max-width:480px) { .header .brand-logo { width:124px; } }

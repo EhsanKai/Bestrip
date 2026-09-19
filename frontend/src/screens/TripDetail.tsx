@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { TripRecommendation, TripSearchRequest } from "../api/types";
+import { CityGallery } from "../components/trip/CityGallery";
 import { JourneyEditor } from "./JourneyEditor";
 import { RouteMap } from "../components/trip/RouteMap";
 import { Timeline } from "../components/trip/Timeline";
@@ -107,6 +108,8 @@ export function TripDetail({
           <AvailabilityBadge status={trip.availability} />
           <PriceFreshnessBadge status={trip.price_freshness} />
         </div>
+
+        <CityGallery cities={trip.cities} />
 
         {canEdit && !editing && (
           <div className="detail__edit-cta">

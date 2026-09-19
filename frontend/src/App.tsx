@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import type {
   ProfileName,
   SearchMode,
@@ -9,18 +9,32 @@ import { SearchProgress } from "./components/search/SearchProgress";
 import { SlowSearchNotice } from "./components/search/SlowSearchNotice";
 import { ErrorState } from "./components/search/ErrorState";
 import { Header } from "./components/shell/Header";
+import {
+  JourneyDrawer,
+  type JourneyDrawerStatus,
+} from "./components/journey/JourneyDrawer";
 import { MobileNav } from "./components/shell/MobileNav";
 import { track } from "./lib/analytics";
 import { funnel } from "./lib/funnel";
-import { Compare } from "./screens/Compare";
-import { Discover } from "./screens/Discover";
+const Compare = lazy(() => import("./screens/Compare").then(module => ({ default: module.Compare })));
+const Discover = lazy(() => import("./screens/Discover").then(module => ({ default: module.Discover })));
 import { Landing } from "./screens/Landing";
-import { Results } from "./screens/Results";
-import { SavedTrips } from "./screens/SavedTrips";
-import { TripDetail } from "./screens/TripDetail";
-import { BookingExperience } from "./screens/BookingExperience";
+const Results = lazy(() => import("./screens/Results").then(module => ({ default: module.Results })));
+const SavedTrips = lazy(() => import("./screens/SavedTrips").then(module => ({ default: module.SavedTrips })));
+const TripDetail = lazy(() => import("./screens/TripDetail").then(module => ({ default: module.TripDetail })));
+const BookingExperience = lazy(() => import("./screens/BookingExperience").then(module => ({ default: module.BookingExperience })));
+const Login = lazy(() => import("./screens/Login").then(module => ({ default: module.Login })));
+const MyTrips = lazy(() => import("./screens/MyTrips").then(module => ({ default: module.MyTrips })));
 import { useSearch } from "./state/useSearch";
 import { useSaved } from "./state/useSaved";
+import { useAccount } from "./state/useAccount";
+import {
+  loadJourneyDraft,
+  makeJourneyDraft,
+  saveJourneyDraft,
+  toDrawerModel,
+  type JourneyDraft,
+} from "./state/journeyDraft";
 import "./App.css";
 
 type Screen =
@@ -31,7 +45,9 @@ type Screen =
   | "detail"
   | "compare"
   | "saved"
-  | "booking";
+  | "booking"
+  | "login"
+  | "myTrips";
 
 /**
  * The shell.
@@ -45,9 +61,14 @@ type Screen =
 export default function App() {
   const search = useSearch();
   const saved = useSaved();
+  const account = useAccount();
   const [screen, setScreen] = useState<Screen>("landing");
   const [selected, setSelected] = useState<TripRecommendation | null>(null);
   const [comparing, setComparing] = useState<string[]>([]);
+  const [journeyDrawerOpen, setJourneyDrawerOpen] = useState(false);
+  const [journeyDraft, setJourneyDraft] = useState<JourneyDraft | null>(() => loadJourneyDraft());
+  const journeyModel = journeyDraft ? toDrawerModel(journeyDraft) : null;
+  const journeyTrip = journeyDraft?.trip ?? null;
 
   // Keep the shell in step with the search: entering "searching" is a state
   // transition the hook owns, and this maps it onto a screen.
@@ -121,6 +142,47 @@ export default function App() {
     funnel("TRIP_OPEN", { props: { rank: trip.rank } });
   }, []);
 
+  const selectJourney = useCallback((trip: TripRecommendation) => {
+    const draft = makeJourneyDraft(trip, search.request);
+    setSelected(trip);
+    setJourneyDraft(draft);
+    saveJourneyDraft(draft);
+    setJourneyDrawerOpen(true);
+    track("journey_selected", { trip_id: trip.id, rank: trip.rank });
+    funnel("JOURNEY_SELECT", { props: { rank: trip.rank } });
+  }, [search.request]);
+
+  const setJourneyStatus = useCallback((status: JourneyDrawerStatus) => {
+    if (status === "empty") {
+      setJourneyDraft(null);
+      saveJourneyDraft(null);
+    }
+  }, []);
+
+  const continueCheckout = useCallback(() => {
+    setJourneyDrawerOpen(false);
+    if (journeyTrip) {
+      setSelected(journeyTrip);
+      setScreen("detail");
+    }
+  }, [journeyTrip]);
+
+  const viewJourney = useCallback(() => {
+    setJourneyDrawerOpen(false);
+    if (journeyTrip) {
+      setSelected(journeyTrip);
+      setScreen("detail");
+    }
+  }, [journeyTrip]);
+
+  const reviewJourneyChanges = useCallback(() => {
+    setJourneyDrawerOpen(false);
+    if (journeyTrip) {
+      setSelected(journeyTrip);
+      setScreen("detail");
+    }
+  }, [journeyTrip]);
+
   // Accepting a re-optimized journey replaces the selection. The old journey
   // is still in `search.response.recommendations` (Keep original just returns
   // there); the new one becomes the thing that gets booked, and because its id
@@ -141,13 +203,19 @@ export default function App() {
       <Header
         onHome={() => setScreen("landing")}
         onDiscover={() => setScreen("discover")}
-        onSaved={() => setScreen("saved")}
+        onSaved={() => setScreen("myTrips")}
+        onJourney={() => setJourneyDrawerOpen(true)}
+        onAccount={() => setScreen("login")}
         savedCount={saved.trips.length}
         showSearchNav={Boolean(search.response)}
         onResults={() => setScreen("results")}
+        journeyExists={Boolean(journeyDraft)}
+        journeySummary={journeyModel ? `Your Journey · ${journeyModel.estimatedTripTotal}` : null}
+        accountLabel={account.status === "authenticated" ? "Account ✓" : "Account"}
       />
 
       <main className="app__main">
+        <Suspense fallback={<div className="container app__state" role="status" aria-label="Loading your journey"><div className="screen-skeleton" /><div className="screen-skeleton screen-skeleton--short" /></div>}>
         {screen === "landing" && <Landing onDiscover={() => setScreen("discover")} />}
 
         {screen === "discover" && (
@@ -194,6 +262,7 @@ export default function App() {
             onOpen={openTrip}
             onSave={toggleSaved}
             onCompare={toggleCompare}
+            onSelectJourney={selectJourney}
             onOpenCompare={() => setScreen("compare")}
             onSearchDeeper={() => void search.searchDeeper().catch(() => undefined)}
             onProfileChange={changeProfile}
@@ -237,6 +306,19 @@ export default function App() {
           />
         )}
 
+        {screen === "login" && (
+          <Login
+            profile={account.profile}
+            sessionStatus={account.status}
+            sessionError={account.error}
+            onLogin={({ email, password }) => account.login(email, password)}
+            onSignup={({ email, password }) => account.register(email, password)}
+            onLogout={account.logout}
+          />
+        )}
+
+        {screen === "myTrips" && <MyTrips onDiscover={() => setScreen("discover")} />}
+
         {screen === "saved" && (
           <SavedTrips
             trips={saved.trips}
@@ -247,13 +329,31 @@ export default function App() {
             onDiscover={() => setScreen("discover")}
           />
         )}
+        </Suspense>
       </main>
 
       <MobileNav
         screen={screen}
         savedCount={saved.trips.length}
         hasResults={Boolean(search.response)}
+        hasJourney={Boolean(journeyDraft)}
         onNavigate={(next) => setScreen(next as Screen)}
+        onJourney={() => setJourneyDrawerOpen(true)}
+        onAccount={() => setScreen("login")}
+      />
+
+      <JourneyDrawer
+        open={journeyDrawerOpen}
+        journey={journeyModel}
+        onClose={() => setJourneyDrawerOpen(false)}
+        onContinueCheckout={continueCheckout}
+        onReviewChanges={reviewJourneyChanges}
+        onExploreJourneys={() => {
+          setJourneyDrawerOpen(false);
+          setScreen("discover");
+        }}
+        onViewJourney={viewJourney}
+        onStatusChange={setJourneyStatus}
       />
     </div>
   );

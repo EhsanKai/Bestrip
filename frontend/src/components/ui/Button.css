@@ -50,7 +50,7 @@
 /* --- variants ---------------------------------------------------------- */
 .btn--primary {
   background: var(--accent);
-  color: var(--text-on-coral);
+  color: var(--on-accent);
   box-shadow: var(--shadow-sm);
 }
 .btn--primary:not(:disabled):hover {

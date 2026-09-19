@@ -66,6 +66,7 @@ export interface CostBreakdown {
   accommodation: number;
   ground_transfer: number;
   total: number;
+  baggage?: number;
 }
 
 export interface StaySummary {
@@ -98,6 +99,29 @@ export interface LegSummary {
   operator: string;
   price_per_person: number;
   seats_available: number | null;
+  baggage?: BaggageAllowance[];
+}
+
+export type BaggageKind = "CABIN" | "CHECKED";
+export type BaggageStatus = "INCLUDED" | "AVAILABLE_FOR_FEE" | "NOT_AVAILABLE" | "UNKNOWN";
+export type BaggageRequirement = "NONE" | "CABIN" | "CHECKED" | "CABIN_AND_CHECKED";
+
+export interface BaggageAllowance {
+  kind: BaggageKind;
+  status: BaggageStatus;
+  price_per_person: number | null;
+}
+
+export interface BaggageSummary {
+  requirement: BaggageRequirement;
+  known_total: number;
+  currency: string;
+  total_for_display: number | null;
+  completeness: "COMPLETE" | "PARTIAL" | "UNKNOWN" | string;
+  unknown_legs: number;
+  unavailable_legs: number;
+  satisfiable: boolean;
+  note: string;
 }
 
 export interface DestinationMatch {
@@ -151,6 +175,7 @@ export interface TripRecommendation {
   nights: number[];
 
   total_price: number;
+  total_with_known_baggage?: number | null;
   over_budget_by?: number;
   within_preferred_budget?: boolean;
   price_per_person: number;
@@ -172,6 +197,7 @@ export interface TripRecommendation {
   confidence: RecommendationConfidence;
   price_freshness: PriceFreshness;
   availability: AvailabilityStatus;
+  baggage?: BaggageSummary | null;
 
   baseline_comparison: BaselineComparisonDTO | null;
   highlights: string[];
@@ -193,6 +219,7 @@ export interface SearchDiagnostics {
   deeper_search_available: boolean;
   /** Set when the engine could not search as fully as it wanted to. */
   notes: string[];
+  supply_source?: "LIVE" | "SYNTHETIC" | string;
 }
 
 export interface ProviderIssue {
@@ -284,6 +311,14 @@ export class DetouraApiError extends Error {
     this.status = status;
     this.issue = issue;
   }
+}
+
+export interface AccountProfile {
+  user_id: string;
+  email_normalized: string;
+  status: string;
+  created_at: string;
+  last_login_at: string | null;
 }
 
 /* ------------------------------------------------------------------ */

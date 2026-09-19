@@ -1,6 +1,9 @@
 /* Detoura base layer: reset, typography, and the primitives every screen uses. */
 
-@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Manrope:wght@400;500;600;700;800&display=swap");
+@import "@fontsource/manrope/latin-400.css";
+@import "@fontsource/manrope/latin-500.css";
+@import "@fontsource/manrope/latin-600.css";
+@import "@fontsource/manrope/latin-700.css";
 
 *,
 *::before,
@@ -71,8 +74,8 @@ ol {
 }
 
 ::selection {
-  background: var(--accent);
-  color: var(--text-on-coral);
+  background: var(--gold);
+  color: var(--navy);
 }
 
 /* --- shared utility classes ------------------------------------------- */
@@ -212,3 +215,6 @@ ol {
 .fade-up {
   animation: fade-up var(--duration-slow) var(--ease) both;
 }
+
+input::placeholder, textarea::placeholder { color: var(--text-subtle); opacity: 1; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

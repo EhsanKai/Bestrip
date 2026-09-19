@@ -1,0 +1,98 @@
+/* Consumer surfaces: native CSS, shared semantic tokens, no external design system. */
+.app .header { background:var(--bg); backdrop-filter:none; }
+.app .header__word { font-size:25px; font-weight:600; letter-spacing:-.06em; }
+.app .header__mark { background:var(--accent); color:var(--text-on-coral); border-radius:8px; }
+.app .header__count { color:var(--on-accent); }
+.app .header__icon-btn { display:grid; place-items:center; width:44px; height:44px; }
+.app .header__actions { gap:16px; }
+.app .header__actions .btn { min-height:42px; padding-inline:23px; }
+.app .btn { font-weight:600; letter-spacing:0; }
+.app .btn__spinner { border-radius:2px; border:0; background:currentColor; width:18px; height:5px; animation:pulse 1s var(--ease) infinite; }
+.app .card { box-shadow:none; }
+.app .h1 { font-weight:500; letter-spacing:-.05em; }
+.app :is(.discover,.results,.detail,.saved,.compare) { padding-top:48px; }
+.app .discover>.container { max-width:1080px; }
+.app .discover__header { max-width:none; padding:0 0 36px; margin:0; }
+.app .discover__header h1 { font-size:clamp(32px,4vw,48px); }
+.app .discover__grid { gap:20px; }
+.app .discover__card { padding:28px; gap:18px; }
+.app .discover__label { font-size:14px; }
+.app .discover__input { background:var(--bg); min-height:50px; }
+.app .discover__profiles { gap:14px; }
+.app .discover__profile { padding:22px; }
+.app .discover__submit { z-index:20; border:1px solid var(--border); padding:16px; background:var(--bg-raised); backdrop-filter:none; box-shadow:var(--shadow-lg); }
+.app .discover__advanced { border-style:solid; padding:24px 28px; }
+.app .rec { border-radius:var(--radius-lg); box-shadow:var(--shadow-sm); }
+.app .rec__copy { padding:30px; }
+.app .rec__title { line-height:1.15; font-weight:500; font-size:clamp(25px,3vw,38px); }
+.app .rec__total { line-height:1.15; font-size:34px; }
+.app .rec__visual { background:var(--bg-sunken); }
+.app .rec__visual::before,.app .rec__editorial-mark,.app .rec__city-index,.app .rec__trustline .badge::before,.app .rec__highlights li::before { display:none; }
+.app .rec__reason p { font-size:14px; }
+.app .rec__metric { padding:18px 24px; }
+.app .rec__metric span,.app .rec__costs,.app .rec__pp { font-size:12px; }
+.app .rec__footer { padding:20px 24px; }
+.app .rec__actions .btn--primary { border-radius:var(--radius-pill); background:var(--accent); color:var(--on-accent); box-shadow:none; }
+.app .rec__compare { font-size:12px; }
+.app .detail__header { padding-block:20px 28px; }
+.app .detail__price { font-weight:500; }
+.app .detail__sticky { box-shadow:var(--shadow-lg); background:var(--bg-raised); }
+.app .saved__card { padding:28px; }
+.app .saved__empty { max-width:640px; padding-block:110px; gap:24px; }
+.app .saved__empty-icon { display:grid; place-items:center; background:var(--accent-soft); border-radius:50%; width:88px; height:88px; }
+.app .saved__empty .lead { max-width:38ch; }
+.app .booking__head h1 { font-size:clamp(32px,5vw,58px); line-height:1.1; letter-spacing:-.045em; }
+.app .booking__panel { padding:32px; border-radius:var(--radius-lg); box-shadow:none; }
+.app .booking__grid input { min-height:48px; border-radius:var(--radius); }
+.app .booking__tier-badge,.app .booking__guided-item.is-active .booking__guided-head i { color:var(--text-on-coral); }
+.app .booking__spin { border:0; border-radius:2px; height:5px; background:var(--accent); animation:pulse 1s var(--ease) infinite; }
+.app .booking__tier-feats li.no::before { content:"-"; }
+.app .progress { max-width:680px; padding-block:90px; }
+.app .compare__head { padding:24px; }
+.app .compare__name { line-height:1.3; }
+@media (prefers-reduced-motion:no-preference) {
+  .app__main>div:not(.landing) { animation:fade-up .45s var(--ease); }
+  .app button:not(:disabled):active { transform:scale(.98); }
+}
+@media (prefers-reduced-transparency:reduce) {
+  .app :is(.header,.discover__submit,.detail__sticky,.mobilenav) { background:var(--bg-raised); backdrop-filter:none; }
+}
+@media (max-width:767px) {
+  .app .header__inner { gap:12px; }
+  .app .header__actions { margin-left:auto; gap:10px; }
+  .app .header__word { font-size:23px; }
+  .app :is(.discover,.results,.detail,.saved,.compare) { padding-top:28px; }
+  .app .discover__card,.app .saved__card { padding:20px; }
+  .app .discover__grid { grid-template-columns:1fr; }
+  .app .booking__head { grid-template-columns:1fr; gap:24px; }
+  .app .booking__panel { padding:20px; }
+  .app .rec__copy { padding:22px; }
+}
+@media (max-width:640px) {
+  .app .discover__submit { bottom:calc(68px + env(safe-area-inset-bottom,0px)); }
+  .app .header__actions .btn { padding-inline:18px; }
+}
+:root[data-theme="dark"] { color-scheme:dark; }
+:root[data-theme="light"] { color-scheme:light; }
+.app .booking__progress .active i,.app .routemap__price--hi { color:var(--text-on-coral); }
+:root[data-theme="dark"] .app .rec__actions .btn--primary { background:var(--accent); color:var(--on-accent); }
+:root[data-theme="dark"] .app .rec__visual { background:var(--bg-sunken); }
+.app .rec__visual { display:flex; flex-direction:column; }
+.app .rec__price-block { position:static; padding:24px 28px 0; }
+.app .rec .journey-poster { min-height:160px; border:0; border-radius:0; padding:24px 28px; flex:1; }
+.app .rec .journey-poster__label,.app .rec .journey-poster__brand { display:none; }
+.app .rec .journey-poster__cities { font-size:24px; margin-top:auto; }
+.app .results { background:var(--bg); }
+.app .results__shell { max-width:var(--content-max); }
+.app .results__title { line-height:1.15; }
+.app .results__list { gap:24px; }
+@media(max-width:767px) { .app .rec__visual { min-height:0; } .app .rec .journey-poster { min-height:100px; } }
+.app .booking__wrap { padding-inline:24px; }
+@media(max-width:767px) { .app .booking__wrap { padding-inline:16px; } }
+
+/* Gold remains a detail; primary controls are navy/ivory for contrast. */
+.app .chip--on { color:var(--on-accent); }
+.app .discover__profile.is-on,.app .discover__flex-btn.is-on { border-color:var(--gold); }
+.app .landing__mood-tabs button[aria-selected="true"] { border-color:var(--gold); }
+.app .card--selected { border-color:var(--gold); box-shadow:0 0 0 1px var(--gold); }
+.app .rec__rank { color:var(--gold-text); }

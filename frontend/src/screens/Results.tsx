@@ -24,6 +24,7 @@ interface Props {
   onOpen: (trip: TripRecommendation) => void;
   onSave: (trip: TripRecommendation) => void;
   onCompare: (trip: TripRecommendation) => void;
+  onSelectJourney: (trip: TripRecommendation) => void;
   onOpenCompare: () => void;
   onSearchDeeper: () => void;
   onProfileChange: (profile: ProfileName) => void;
@@ -49,6 +50,7 @@ export function Results({
   onOpen,
   onSave,
   onCompare,
+  onSelectJourney,
   onOpenCompare,
   onSearchDeeper,
   onProfileChange,
@@ -142,6 +144,11 @@ export function Results({
           </header>
 
           {response.issues.length > 0 && <ProviderIssues issues={response.issues} />}
+          <div className="results__provenance" role="note">
+            {response.diagnostics.supply_source === "LIVE"
+              ? "Live provider search result. Prices still need checkout revalidation."
+              : "Synthetic planning result. Use as recommendation truth, not as a live bookable fare."}
+          </div>
 
           {response.no_results ? (
             <NoResults guidance={response.no_results} onRelax={onRelax} />
@@ -191,6 +198,7 @@ export function Results({
                       onOpen={onOpen}
                       onSave={onSave}
                       onCompare={onCompare}
+                      onSelectJourney={onSelectJourney}
                     />
                   </li>
                 ))}

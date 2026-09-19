@@ -14,6 +14,8 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from .conftest import authorize_payment_for_booking
+
 LEGS = [
     {"origin": "CGN", "destination": "BER", "departure": "2026-10-01T09:00:00Z",
      "arrival": "2026-10-01T10:10:00Z", "carrier": "LH", "flight_number": "1",
@@ -55,6 +57,7 @@ def _make_booking(client, *, confirm=True, wait=0.0):
         "given_name": "Grace", "family_name": "Hopper", "born_on": "1975-06-01",
         "email": "grace@example.com", "phone": "+15551234567"}]})
     if confirm:
+        authorize_payment_for_booking(client, bid)
         client.post(f"/api/v1/booking-intents/{bid}/confirm", json={})
         if wait:
             time.sleep(wait)

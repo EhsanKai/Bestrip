@@ -96,7 +96,14 @@ class SandboxPaymentProvider:
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             supports_manual_capture=True,
-            supports_partial_capture=False,
+            # V9 Payment <-> Booking Coupling: this was False while nothing
+            # actually exercised it - a latent inconsistency, since
+            # capture() below always honors an explicit partial `amount`
+            # regardless of this flag (flagged in the Beta Contract audit,
+            # Part 21). The price-decrease capture fix now genuinely
+            # depends on partial capture working against this provider, so
+            # the declared capability must be honest.
+            supports_partial_capture=True,
             supports_partial_refund=True,
             supports_customer_action=True,
             supports_webhooks=True,

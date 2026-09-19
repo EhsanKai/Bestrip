@@ -18,6 +18,8 @@ from fastapi.testclient import TestClient
 
 from detoura.api.app import create_app
 
+from .conftest import authorize_payment_for_booking
+
 DEP = "2026-11-01T09:00:00Z"
 ARR = "2026-11-01T10:10:00Z"
 
@@ -138,6 +140,7 @@ def test_7_required_document_missing_blocks_issuance(client, monkeypatch):
     bid = j["booking_id"]
     client.post(f"/api/v1/booking-intents/{bid}/travelers",
                 json={"travelers": [_person(0)]})  # no passport
+    authorize_payment_for_booking(client, bid)
     r = client.post(f"/api/v1/booking-intents/{bid}/confirm", json={})
     assert r.status_code == 409
     assert "travel document is required" in r.json()["detail"]["message"]
@@ -230,6 +233,7 @@ def test_13_displayed_total_equals_server_authoritative_total(client):
     # and after travellers + confirm it is unchanged (no promo lapse here)
     client.post(f"/api/v1/booking-intents/{bid}/travelers",
                 json={"travelers": [_person(0), _person(1)]})
+    authorize_payment_for_booking(client, bid)
     conf = client.post(f"/api/v1/booking-intents/{bid}/confirm", json={}).json()
     assert conf["commercial"]["breakdown"]["customer_total"] == first
 

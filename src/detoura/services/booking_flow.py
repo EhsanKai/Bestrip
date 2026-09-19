@@ -12,6 +12,7 @@ the real per-leg state rather than a fabricated one.
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import threading
@@ -42,6 +43,8 @@ from .selection_store import Selection
 
 DEFAULT_BOOKING_TTL_SECONDS = 60 * 60
 DEFAULT_MAX_BOOKINGS = 2_000
+
+logger = logging.getLogger(__name__)
 
 #: Cities Detoura knows, keyed by airport, for the pass's big visual. Kept here
 #: rather than imported from the catalog so a booking never depends on catalog
@@ -278,8 +281,24 @@ def _duffel_for_booking() -> DuffelTransportProvider | None:
     )
 
 
-def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -> None:
+def start_confirmation(
+    run: BookingRun, *, duffel_factory=_duffel_for_booking, payment=None, provider=None,
+) -> None:
     """One user confirmation for the whole journey. Spawns the run thread.
+
+    ``payment``/``provider`` (V9 Payment <-> Booking Coupling slice): for
+    every ALL_IN_ONE run, ``api/v1.py``'s ``confirm_booking`` resolves an
+    ``AUTHORIZED`` payment bound to this exact ``run`` (
+    ``payment_booking_orchestrator.resolve_eligible_payment_for_booking``)
+    and passes it here BEFORE this function's claim below - so a run with no
+    valid authorization never reaches the claim, let alone a supplier. When
+    both are given, the worker thread runs the booking through
+    ``payment_booking_orchestrator.execute_paid_booking`` instead of calling
+    ``run_booking`` on its own, so the same claimed execution also decides
+    capture/release/reconciliation against ``payment`` once it settles.
+    ``None`` (the default) preserves the exact previous behaviour - Basic's
+    own guided flow never calls this function at all, and no other caller
+    passes either argument yet.
 
     A SANDBOX_BOOKED run with no configured sandbox token degrades to
     DEMO_ONLY rather than failing - and the resulting pass says so.
@@ -345,10 +364,68 @@ def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -
 
     def _worker() -> None:
         try:
-            run_booking(run, duffel=duffel, already_claimed=True)
+            if payment is not None:
+                from ..persistence import get_db as _get_db
+                from .payment_booking_orchestrator import execute_paid_booking
+
+                outcome = execute_paid_booking(
+                    _get_db(), run=run, payment=payment, provider=provider, duffel=duffel,
+                )
+                if outcome.requires_ops_recovery:
+                    # Independent review finding (V9 Payment <-> Booking
+                    # Coupling): this outcome used to be silently discarded
+                    # here - a booking can reach COMPLETE (real tickets
+                    # issued) while its capture is FAILED/UNKNOWN, and
+                    # nothing said so. `get_travel_pass`/`build_travel_pass`
+                    # independently re-checks real persisted payment status
+                    # before ever reporting READY (never trusts this log
+                    # line alone) - this is the observability signal for
+                    # Ops, not the safety mechanism.
+                    logger.warning(
+                        "%s: booking settled (phase=%s) but payment %s needs Ops "
+                        "recovery: %s",
+                        run.booking_id, run.phase.value, outcome.payment.payment_id,
+                        outcome.summary,
+                    )
+            else:
+                run_booking(run, duffel=duffel, already_claimed=True)
         except Exception:  # defensive: a run thread must not die silently
             with run._lock:
-                run.phase = BookingPhase.FAILED
+                # Independent review finding: `run_booking` may have ALREADY
+                # settled `run` into a truthful terminal phase (COMPLETE/
+                # PARTIAL_FAILURE) before an exception from the PAYMENT side
+                # (e.g. a StaleVersion racing an Ops cancel, a price_run
+                # bug) propagated here - unconditionally overwriting it with
+                # FAILED would erase the fact that real tickets were issued.
+                # Only claim FAILED for a run that never reached any of its
+                # own terminal/reconfirm phases at all.
+                if run.phase not in (
+                    BookingPhase.COMPLETE, BookingPhase.PARTIAL_FAILURE,
+                    BookingPhase.FAILED, BookingPhase.RECONFIRM_REQUIRED,
+                ):
+                    run.phase = BookingPhase.FAILED
+            if payment is not None:
+                # The claimed execution died before payment settled cleanly
+                # (whether or not the booking side settled) - the
+                # authorization/capture is still open money-at-risk. Flag it
+                # for Ops rather than leave it silently unresolved with
+                # nothing recorded (§K: never guess, never leave unresolved
+                # money invisible). Re-fetch the CURRENT row rather than
+                # reusing the stale pre-execution `payment` object - reusing
+                # it would retry the exact same (already-failed)
+                # compare-and-swap version a second time and lose silently
+                # again (independent review finding).
+                try:
+                    from ..persistence import get_db as _get_db
+                    from . import payment_service as _ps
+
+                    current = _ps.store.get_payment(_get_db(), payment.payment_id) or payment
+                    _ps.mark_reconciliation_required(
+                        _get_db(), payment=current,
+                        detail="booking execution raised before settling cleanly; payment status unresolved",
+                    )
+                except Exception:
+                    pass
         finally:
             # Persist the final state + write the economics ledger even if the
             # customer has stopped polling.
@@ -382,12 +459,29 @@ def start_confirmation(run: BookingRun, *, duffel_factory=_duffel_for_booking) -
 # ---------------------------------------------------------------------------
 # The pass
 # ---------------------------------------------------------------------------
-def build_travel_pass(run: BookingRun) -> DetouraTravelPass:
-    """The server-owned artifact. Only READY when every required leg confirmed."""
+def build_travel_pass(run: BookingRun, *, payment_captured: bool = True) -> DetouraTravelPass:
+    """The server-owned artifact. Only READY when every required leg
+    confirmed AND (for a payment-coupled run) money was actually captured.
+
+    ``payment_captured`` (V9 Payment <-> Booking Coupling, independent
+    review finding): booking truth (``run``'s own item states) and payment
+    truth are reasoned about independently everywhere else in this system
+    (``payment_booking_orchestrator.py``'s own module docstring) - this
+    function is no exception, so it does not read payment state itself.
+    Its caller (``api/v1.py``'s ``get_travel_pass``) re-checks the REAL,
+    current persisted payment status for every non-BASIC run and passes the
+    answer in here; the default ``True`` preserves this function's exact
+    previous behaviour for BASIC (never payment-coupled) and for every
+    caller that predates payment coupling (this module's own unit tests
+    included). Without this, a booking whose capture came back
+    FAILED/UNKNOWN after every leg genuinely confirmed (a real, ordinary
+    provider decline, not a bug) still reported ``READY`` with real ticket
+    data - the exact "confirmed-looking with no money collected" defect
+    this slice exists to close, reachable through a different door."""
     intent = run.journey_intent()
     outcome = intent.outcome
     if outcome is BookingState.CONFIRMED:
-        status = PassStatus.READY
+        status = PassStatus.READY if payment_captured else PassStatus.RECOVERY_REQUIRED
     elif outcome is BookingState.PARTIAL_FAILURE:
         status = PassStatus.RECOVERY_REQUIRED
     else:

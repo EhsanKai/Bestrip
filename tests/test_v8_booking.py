@@ -292,6 +292,17 @@ def test_the_endpoints_generate_a_data_driven_demo_pass():
     }]})
     assert r.status_code == 200 and r.json()["phase"] == "awaiting_confirmation"
 
+    # V9 Payment <-> Booking Coupling: an ALL_IN_ONE confirm now requires an
+    # AUTHORIZED payment bound to this exact booking_id - create + authorize
+    # one first, exactly as the real consumer checkout does.
+    pay = c.post("/api/v1/payments", json={
+        "booking_id": bid, "idempotency_key": "idem_v8_demo_pass_1",
+    })
+    assert pay.status_code == 200
+    payment_id = pay.json()["payment_id"]
+    conf = c.post(f"/api/v1/payments/{payment_id}/confirm")
+    assert conf.status_code == 200 and conf.json()["status"] == "AUTHORIZED"
+
     c.post(f"/api/v1/booking-intents/{bid}/confirm", json={})
     for _ in range(60):
         time.sleep(0.3)

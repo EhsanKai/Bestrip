@@ -18,6 +18,8 @@ from fastapi.testclient import TestClient
 
 from detoura.api.app import create_app
 
+from .conftest import authorize_payment_for_booking
+
 SEARCH = {
     "origin": "Köln",
     "date_from": "2026-09-14",
@@ -278,6 +280,7 @@ def test_reoptimized_journey_needs_a_fresh_revalidation_before_booking(client, b
     client.post(f"/api/v1/booking-intents/{bid}/travelers", json={"travelers": [{
         "given_name": "Ed", "family_name": "I", "born_on": "1990-01-01",
         "email": "ed@example.com", "phone": "+15551234567"}]})
+    authorize_payment_for_booking(client, bid)
     r = client.post(f"/api/v1/booking-intents/{bid}/confirm", json={})
     assert r.status_code == 200
 

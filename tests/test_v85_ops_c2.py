@@ -13,6 +13,8 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from .conftest import authorize_payment_for_booking
+
 LEGS = [
     {"origin": "CGN", "destination": "BER", "departure": "2026-10-01T09:00:00Z",
      "arrival": "2026-10-01T10:10:00Z", "carrier": "LH", "flight_number": "1",
@@ -48,6 +50,8 @@ def _managed_booking(client, tier="ALL_IN_ONE", wait=6.0):
     client.post(f"/api/v1/booking-intents/{bid}/travelers", json={"travelers": [{
         "given_name": "Ida", "family_name": "N", "born_on": "1980-01-01",
         "email": "ida@example.com", "phone": "+15551234567"}]})
+    if tier == "ALL_IN_ONE":
+        authorize_payment_for_booking(client, bid)
     client.post(f"/api/v1/booking-intents/{bid}/confirm", json={})
     if wait:
         time.sleep(wait)
@@ -158,6 +162,7 @@ def test_promo_crud_and_stats(client, H):
     client.post(f"/api/v1/booking-intents/{bid}/travelers", json={"travelers": [{
         "given_name": "Ann", "family_name": "R", "born_on": "1990-01-01",
         "email": "ann@example.com", "phone": "+15550000000"}]})
+    authorize_payment_for_booking(client, bid)
     client.post(f"/api/v1/booking-intents/{bid}/confirm", json={})
     time.sleep(6)
     client.get(f"/api/v1/booking-intents/{bid}")

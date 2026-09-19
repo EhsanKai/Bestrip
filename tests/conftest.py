@@ -289,6 +289,38 @@ def ground_transfer() -> SyntheticGroundTransferProvider:
     return SyntheticGroundTransferProvider()
 
 
+# ---------------------------------------------------------------------------
+# V9 Payment <-> Booking Coupling: shared test helper
+# ---------------------------------------------------------------------------
+def authorize_payment_for_booking(client, booking_id: str, *, idempotency_key: str | None = None) -> dict:
+    """Create + authorize a payment bound to ``booking_id`` through the real
+    consumer payment API (``POST /api/v1/payments`` then
+    ``.../confirm``) - exactly what an ALL_IN_ONE checkout must do before
+    ``POST /api/v1/booking-intents/{id}/confirm`` is allowed to proceed
+    (``payment_booking_orchestrator.resolve_eligible_payment_for_booking``).
+    Any test that confirms a non-BASIC booking through the HTTP API needs
+    this first. Returns the authorized payment DTO."""
+    import uuid
+
+    idem = idempotency_key or f"idem_{uuid.uuid4().hex[:24]}"
+    created = client.post("/api/v1/payments", json={
+        "booking_id": booking_id, "idempotency_key": idem,
+    })
+    assert created.status_code == 200, created.text
+    payment_id = created.json()["payment_id"]
+    # An authenticated session (a signed-in caller) requires the CSRF header
+    # payments.py's confirm_payment enforces; an anonymous one has no
+    # session/CSRF cookie at all, so this header is simply absent for it -
+    # one helper covers both regressions (V9 Payment <-> Booking Coupling
+    # tests 24/25/26).
+    csrf = client.cookies.get("detoura_csrf")
+    headers = {"X-CSRF-Token": csrf} if csrf else {}
+    confirmed = client.post(f"/api/v1/payments/{payment_id}/confirm", headers=headers)
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["status"] == "AUTHORIZED", confirmed.json()
+    return confirmed.json()
+
+
 @pytest.fixture
 def planner(transport, destinations, config, accommodation, ground_transfer) -> TravelPlanner:
     return TravelPlanner(

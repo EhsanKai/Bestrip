@@ -21,6 +21,8 @@ from detoura.persistence import bootstrap, economics
 from detoura.persistence.db import Database
 from detoura.services.commercial import CommercialPricingService
 
+from .conftest import authorize_payment_for_booking
+
 DEP = datetime(2026, 11, 1, 9, 0)
 LEGS = [
     {"origin": "CGN", "destination": "PRG", "departure": DEP.isoformat(),
@@ -131,6 +133,7 @@ def test_basic_three_ticket_journey_takes_traveller_details_once(client):
 def test_all_in_one_uses_the_same_party_for_every_leg(client):
     bid = _start(client, "ALL_IN_ONE")
     _add_traveller(client, bid)
+    authorize_payment_for_booking(client, bid)
     r = client.post(f"/api/v1/booking-intents/{bid}/confirm", json={})
     assert r.status_code == 200
     for _ in range(40):
@@ -146,6 +149,7 @@ def test_all_in_one_uses_the_same_party_for_every_leg(client):
 def test_all_in_one_needs_only_one_confirmation(client):
     bid = _start(client, "ALL_IN_ONE")
     _add_traveller(client, bid)
+    authorize_payment_for_booking(client, bid)
     assert client.post(f"/api/v1/booking-intents/{bid}/confirm", json={}).status_code == 200
     # a second confirm is refused - the run is already in flight
     assert client.post(f"/api/v1/booking-intents/{bid}/confirm", json={}).status_code == 409

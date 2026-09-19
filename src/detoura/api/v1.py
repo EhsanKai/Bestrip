@@ -51,6 +51,11 @@ from ..services.booking_flow import (
 )
 from ..services.booking_commercial import finalize_economics, price_run
 from ..services.booking_persistence import persist_run
+from ..services.payment_booking_orchestrator import (
+    PaymentEligibilityError,
+    resolve_eligible_payment_for_booking,
+)
+from ..payment_config import payment_config, resolve_provider
 from ..services.booking_orchestrator import BookingPhase
 from .auth import get_optional_session
 from ..models.commercial import ServiceTier
@@ -1153,7 +1158,27 @@ def confirm_booking(booking_id: str, body: ConfirmBookingRequest) -> BookingInte
 
             prepare_journey(run)
         else:
-            start_confirmation(run)
+            # V9 Payment <-> Booking Coupling (V9 Beta Contract Part 21):
+            # the ALL_IN_ONE payment gate. An AUTHORIZED payment bound to
+            # this exact booking_id must exist BEFORE any claim is taken,
+            # let alone a supplier touched - resolved fresh, from persisted
+            # state, on every confirm attempt (never cached from an earlier
+            # request), and never picked ambiguously when more than one
+            # exists (Part 21's payment lookup rule). BASIC/guided above
+            # never reaches this: it books nothing on Detoura's behalf, so
+            # it stays payment-coupling-free exactly as before. 409, not
+            # a generic error, exactly as Part 21 specifies - the payment
+            # gate is one more precondition on this same confirm attempt,
+            # not a payments-domain error.
+            try:
+                payment = resolve_eligible_payment_for_booking(get_db(), run=run)
+            except PaymentEligibilityError as error:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"message": str(error), "code": error.code},
+                ) from error
+            provider = resolve_provider(payment_config())
+            start_confirmation(run, payment=payment, provider=provider)
     except ValueError as error:
         raise HTTPException(status_code=409, detail={"message": str(error)}) from error
     return _intent_dto(run)
@@ -1247,7 +1272,20 @@ def get_travel_pass(booking_id: str) -> TravelPassResponse:
             "phase": run.phase.value,
         })
     _finalize_if_terminal(run)
-    tp = build_travel_pass(run)
+    # V9 Payment <-> Booking Coupling (independent review finding): never
+    # report READY from booking state alone for a payment-coupled run - a
+    # booking can genuinely reach COMPLETE (every leg confirmed) while its
+    # capture came back FAILED/UNKNOWN (an ordinary provider decline at
+    # capture time, not a bug). Re-check REAL, current persisted payment
+    # status here rather than trusting anything decided earlier in the
+    # worker thread.
+    payment_captured = True
+    if run.service_tier is not ServiceTier.BASIC:
+        from ..persistence import payments as payment_store
+
+        payments = payment_store.list_payments_for_booking(get_db(), booking_id)
+        payment_captured = any(p.status.value == "CAPTURED" for p in payments)
+    tp = build_travel_pass(run, payment_captured=payment_captured)
     return TravelPassResponse(
         journey_reference=tp.journey_reference,
         booking_id=tp.booking_id,

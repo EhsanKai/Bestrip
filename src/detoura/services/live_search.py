@@ -40,8 +40,13 @@ from .selection_store import SelectedOffer, SelectionStore
 class LiveSearchResult:
     recommendations: list[Itinerary]
     supply: RealSupplyResult
-    selection_ids: dict[str, str]
-    """recommendation id -> selection id, for the ones that could be recorded."""
+    selection_ids: dict[int, str]
+    """Index into ``recommendations`` -> selection id, for the ones that
+    could be recorded. Keyed by position rather than any recomputed string
+    id, so it survives unchanged regardless of how a caller later builds a
+    client-facing recommendation id from the itinerary (see
+    ``api.assembler.build_response``, which iterates this same list in this
+    same order)."""
     search_trace: object | None = None
     """The persisted :class:`SearchIntelligenceTrace` when a recorder was
     supplied (V9 Phase 1), else ``None``."""
@@ -222,13 +227,13 @@ def live_search(
             portfolio=portfolio_decisions, portfolio_metrics=portfolio_metrics,
         )
 
-    selection_ids: dict[str, str] = {}
+    selection_ids: dict[int, str] = {}
     for rank, trip in enumerate(result.recommendations):
         rec_id = f"{supply.snapshot.generated_at.timestamp():.0f}-{rank}"
         offers = _selected_offers_for(trip, request.travelers)
         if not offers:
             continue
-        selection_ids[rec_id] = selection_store.record(
+        selection_ids[rank] = selection_store.record(
             recommendation_id=rec_id,
             trip_label=trip.route_label() if hasattr(trip, "route_label") else "",
             currency="EUR",

@@ -554,6 +554,18 @@ class TripRecommendation(BaseModel):
     legs: list[LegDTO] = Field(default_factory=list)
     destination_matches: list[DestinationMatchDTO] = Field(default_factory=list)
 
+    selection_id: str | None = None
+    """The opaque, server-issued id (V9 Search→Booking contract) this exact
+    recommendation was recorded under, to pass unchanged as
+    ``CreateBookingIntentRequest.selection_id``.
+
+    ``null`` whenever this recommendation cannot honestly enter the real
+    booking flow: every non-LIVE (synthetic/demo) recommendation, and any
+    LIVE recommendation with a leg missing a bookable Duffel offer
+    reference. The frontend must never manufacture a value for this field -
+    a ``null`` here means there is nothing to book, not merely nothing
+    filled in."""
+
 
 class SearchDiagnostics(BaseModel):
     """How the search went, in terms a product can show.

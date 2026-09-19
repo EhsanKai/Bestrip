@@ -242,6 +242,7 @@ def recommendation_dto(
     travelers: int,
     now: datetime,
     preferred_budget: float | None = None,
+    selection_id: str | None = None,
 ) -> TripRecommendation:
     """One itinerary, translated."""
     value = itinerary.value_breakdown
@@ -406,6 +407,7 @@ def recommendation_dto(
             )
             for insight in itinerary.destination_insights
         ],
+        selection_id=selection_id,
     )
 
 
@@ -481,12 +483,20 @@ def build_response(
     failures: FailureLog | None = None,
     closest_price: float | None = None,
     now: datetime | None = None,
+    selection_ids: dict[int, str] | None = None,
 ) -> TripSearchResponse:
     """Assemble the whole product response.
 
     The important branch is at the bottom: an empty recommendation list means
     one of two completely different things, and this is the only place that
     knows which.
+
+    ``selection_ids`` (V9 Search→Booking contract): the LIVE path's
+    recommendation-index -> server-issued ``SelectionStore`` id map
+    (``LiveSearchResult.selection_ids``), keyed by position in
+    ``result.recommendations`` - the same order this function iterates
+    below. Omitted (the default) for the synthetic path, which never
+    records a selection.
     """
     moment = now or datetime.now()
     log = failures or FailureLog()
@@ -513,8 +523,9 @@ def build_response(
         recommendation_dto(
             itinerary, result, quality, travelers=request.travelers,
             now=moment, preferred_budget=preferred_budget,
+            selection_id=(selection_ids or {}).get(index),
         )
-        for itinerary in result.recommendations
+        for index, itinerary in enumerate(result.recommendations)
     ]
 
     diagnostics = SearchDiagnostics(

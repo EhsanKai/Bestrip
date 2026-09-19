@@ -287,6 +287,7 @@ def search(
             response = build_response(
                 result, request, body, mode=mode, failures=failures,
                 closest_price=closest,
+                selection_ids=live_result.selection_ids,
             )
             return response.model_copy(
                 update={

@@ -1,357 +1,498 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api } from "../api/client";
+import { DetouraApiError } from "../api/types";
+import type {
+  FinancialDocument,
+  MyTripSummary,
+  TripConfirmation,
+} from "../api/types";
+import type { AccountStatus } from "../state/useAccount";
+import { dayMonth, money } from "../lib/format";
 import "./MyTrips.css";
 
-type TripStatus = "confirmed" | "recoveryRequired" | "demo" | "sandboxBooked";
-
-type TripAction = "viewJourney" | "travelPass" | "documents" | "resolveAction";
-
-interface PresentationTrip {
-  id: string;
-  journeyReference: string;
-  destinations: string[];
-  dates: string;
-  duration: string;
-  travelerCount: number;
-  status: TripStatus;
-  environment: "production" | "demo" | "sandbox";
-  image?: {
-    src: string;
-    alt: string;
-  };
-  travelPassAvailable: boolean;
-  documentsAvailable: boolean;
+type ConsumerTone = "good" | "attention" | "pending" | "neutral" | "failed";
+interface ConsumerState {
+  key:
+    | "READY_TO_PAY"
+    | "PAYMENT_PROCESSING"
+    | "PAYMENT_UNKNOWN"
+    | "READY_TO_CONFIRM"
+    | "BOOKING_IN_PROGRESS"
+    | "PRICE_CHANGED"
+    | "CONFIRMED"
+    | "RECOVERY_REQUIRED"
+    | "FAILED";
+  label: string;
+  detail: string;
+  tone: ConsumerTone;
   actionRequired: boolean;
-  nextAction: TripAction;
-  summary: string;
 }
-
 interface MyTripsProps {
-  trips?: PresentationTrip[];
-  onViewTrip?: (id: string) => void;
-  onViewTravelPass?: (id: string) => void;
-  onViewDocuments?: (id: string) => void;
-  onResolveAction?: (id: string) => void;
+  accountStatus: AccountStatus;
   onDiscover?: () => void;
+  onLogin?: () => void;
 }
+type DetailState =
+  | { status: "idle" | "loading"; error: null; trip: MyTripSummary | null; confirmation: TripConfirmation | null; documents: FinancialDocument[] }
+  | { status: "ready"; error: null; trip: MyTripSummary; confirmation: TripConfirmation | null; documents: FinancialDocument[] }
+  | { status: "error"; error: string; trip: MyTripSummary | null; confirmation: TripConfirmation | null; documents: FinancialDocument[] };
 
-const presentationTrips: PresentationTrip[] = [
-  {
-    id: "trip-prague-vienna-budapest",
-    journeyReference: "DTR-V9-7K4P2M",
-    destinations: ["Prague", "Vienna", "Budapest"],
-    dates: "12-19 Oct 2026",
-    duration: "8 days",
-    travelerCount: 2,
-    status: "confirmed",
-    environment: "production",
-    travelPassAvailable: true,
-    documentsAvailable: true,
-    actionRequired: false,
-    nextAction: "viewJourney",
-    summary: "Tickets, stay notes, and city timing are ready to review.",
-  },
-  {
-    id: "trip-lisbon-porto",
-    journeyReference: "DTR-V9-2Q8H6L",
-    destinations: ["Lisbon", "Porto"],
-    dates: "4-8 Dec 2026",
-    duration: "5 days",
-    travelerCount: 2,
-    status: "recoveryRequired",
-    environment: "production",
-    travelPassAvailable: false,
-    documentsAvailable: false,
-    actionRequired: true,
-    nextAction: "resolveAction",
-    summary: "Part of this journey needs review before it can be treated as booked.",
-  },
-  {
-    id: "trip-copenhagen",
-    journeyReference: "DTR-V9-DEMO",
-    destinations: ["Copenhagen"],
-    dates: "14-17 Feb 2027",
-    duration: "4 days",
-    travelerCount: 1,
-    status: "demo",
-    environment: "demo",
-    travelPassAvailable: false,
-    documentsAvailable: false,
-    actionRequired: false,
-    nextAction: "viewJourney",
-    summary: "A local prototype journey for checking layout and status language.",
-  },
-  {
-    id: "trip-sandbox-alps",
-    journeyReference: "DTR-V9-SANDBOX",
-    destinations: ["Zurich", "Lucerne", "Interlaken"],
-    dates: "2-9 Apr 2027",
-    duration: "8 days",
-    travelerCount: 2,
-    status: "sandboxBooked",
-    environment: "sandbox",
-    travelPassAvailable: true,
-    documentsAvailable: false,
-    actionRequired: false,
-    nextAction: "travelPass",
-    summary: "Sandbox booking data, useful for previews but not a live booking.",
-  },
-  {
-    id: "trip-venice-verona",
-    journeyReference: "DTR-V8-4M2V9A",
-    destinations: ["Venice", "Verona"],
-    dates: "May 2026",
-    duration: "6 days",
-    travelerCount: 2,
-    status: "confirmed",
-    environment: "production",
-    travelPassAvailable: false,
-    documentsAvailable: true,
-    actionRequired: false,
-    nextAction: "viewJourney",
-    summary: "Past journey details remain available for reference.",
-  },
-];
+export function MyTrips({ accountStatus, onDiscover, onLogin }: MyTripsProps) {
+  const [trips, setTrips] = useState<MyTripSummary[]>([]);
+  const [listStatus, setListStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [listError, setListError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<DetailState>({
+    status: "idle",
+    error: null,
+    trip: null,
+    confirmation: null,
+    documents: [],
+  });
+  const loadTrips = useCallback(async (signal?: AbortSignal) => {
+    setListStatus("loading");
+    setListError(null);
+    try {
+      const response = await api.listMyTrips(signal);
+      setTrips(response.trips);
+      setListStatus("ready");
+      if (selectedId && !response.trips.some((trip) => trip.booking_id === selectedId)) {
+        setSelectedId(null);
+      }
+    } catch (error) {
+      if (signal?.aborted) return;
+      setTrips([]);
+      setListStatus("error");
+      setListError(messageFor(error, "We could not load your trips."));
+    }
+  }, [selectedId]);
 
-const statusCopy: Record<TripStatus, { label: string; detail: string; tone: string }> = {
-  confirmed: {
-    label: "Confirmed",
-    detail: "Your journey is booked.",
-    tone: "good",
-  },
-  recoveryRequired: {
-    label: "Recovery required",
-    detail: "We're resolving an issue with part of this journey.",
-    tone: "attention",
-  },
-  demo: {
-    label: "Demo journey",
-    detail: "Local prototype data. This is not a live booking.",
-    tone: "demo",
-  },
-  sandboxBooked: {
-    label: "Sandbox booking",
-    detail: "Sandbox booking data. This is not a production journey.",
-    tone: "sandbox",
-  },
-};
+  useEffect(() => {
+    if (accountStatus !== "authenticated") {
+      // oxlint-disable-next-line react/set-state-in-effect
+      setTrips([]);
+      setSelectedId(null);
+      setListStatus(accountStatus === "loading" ? "loading" : "idle");
+      return;
+    }
+    const controller = new AbortController();
+    void loadTrips(controller.signal);
+    return () => controller.abort();
+  }, [accountStatus, loadTrips]);
 
-const actionLabels: Record<TripAction, string> = {
-  viewJourney: "View journey",
-  travelPass: "View Travel Pass",
-  documents: "View documents",
-  resolveAction: "Review booking status",
-};
-
-export function MyTrips({
-  trips = presentationTrips,
-  onViewTrip,
-  onViewTravelPass,
-  onViewDocuments,
-  onResolveAction,
-  onDiscover,
-}: MyTripsProps) {
-  const upcomingTrips = trips.filter(trip => trip.dates !== "May 2026");
-  const pastTrips = trips.filter(trip => trip.dates === "May 2026");
-  const featuredTrip = upcomingTrips[0];
-  const otherUpcoming = upcomingTrips.slice(1);
-
-  if (trips.length === 0) {
-    return <EmptyTrips onDiscover={onDiscover} />;
+  useEffect(() => {
+    if (!selectedId || accountStatus !== "authenticated") {
+      // oxlint-disable-next-line react/set-state-in-effect
+      setDetail({ status: "idle", error: null, trip: null, confirmation: null, documents: [] });
+      return;
+    }
+    const controller = new AbortController();
+    setDetail((current) => ({
+      status: "loading",
+      error: null,
+      trip: current.trip?.booking_id === selectedId ? current.trip : null,
+      confirmation: null,
+      documents: [],
+    }));
+    void (async () => {
+      try {
+        const trip = await api.getMyTrip(selectedId, controller.signal);
+        const [confirmationResult, documentsResult] = await Promise.allSettled([
+          api.getTripConfirmation(selectedId, controller.signal),
+          api.listTripDocuments(selectedId, controller.signal),
+        ]);
+        if (controller.signal.aborted) return;
+        setDetail({
+          status: "ready",
+          error: null,
+          trip,
+          confirmation:
+            confirmationResult.status === "fulfilled" ? confirmationResult.value : null,
+          documents:
+            documentsResult.status === "fulfilled" ? documentsResult.value.documents : [],
+        });
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setDetail({
+          status: "error",
+          error: messageFor(error, "We could not load this trip."),
+          trip: null,
+          confirmation: null,
+          documents: [],
+        });
+      }
+    })();
+    return () => controller.abort();
+  }, [accountStatus, selectedId]);
+  const sortedTrips = useMemo(
+    () =>
+      [...trips].sort(
+        (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at),
+      ),
+    [trips],
+  );
+  if (accountStatus === "loading") {
+    return <StateShell title="Checking your account" body="We are restoring your Detoura session." />;
   }
 
+  if (accountStatus !== "authenticated") {
+    return (
+      <StateShell
+        title="Sign in to see your trips."
+        body="My Trips is an account-owned view. Anonymous journeys are not shown here by the current backend contract."
+        actionLabel="Sign in"
+        onAction={onLogin}
+        secondaryLabel="Discover a journey"
+        onSecondary={onDiscover}
+      />
+    );
+  }
+  if (selectedId) {
+    return (
+      <TripDetailView
+        detail={detail}
+        onBack={() => setSelectedId(null)}
+        onRetry={() => setSelectedId((id) => id)}
+      />
+    );
+  }
+  if (listStatus === "loading") {
+    return <StateShell title="Loading your trips" body="We are asking Detoura for your account-owned bookings." />;
+  }
+
+  if (listStatus === "error") {
+    return (
+      <StateShell
+        title="We could not load My Trips."
+        body={listError ?? "The trip list is unavailable right now."}
+        actionLabel="Try again"
+        onAction={() => void loadTrips()}
+      />
+    );
+  }
+  if (sortedTrips.length === 0) {
+    return <EmptyTrips onDiscover={onDiscover} />;
+  }
+  const featured = sortedTrips[0];
+  const rest = sortedTrips.slice(1);
   return (
     <main className="my-trips" aria-labelledby="my-trips-title">
       <header className="my-trips__header">
         <div>
           <p className="my-trips__eyebrow">Your journeys with Detoura</p>
           <h1 id="my-trips-title">My Trips</h1>
-          <p>Your journeys, tickets and travel details in one place.</p>
+          <p>Only bookings owned by your signed-in account appear here.</p>
         </div>
         <button className="my-trips__discover" type="button" onClick={onDiscover}>
           Discover a journey
         </button>
       </header>
-
-      {featuredTrip && (
-        <section className="my-trips__section" aria-labelledby="next-journey-title">
+      <section className="my-trips__section" aria-labelledby="next-journey-title">
+        <div className="my-trips__section-head">
+          <h2 id="next-journey-title">Latest trip</h2>
+        </div>
+        <TripCard trip={featured} featured onOpen={() => setSelectedId(featured.booking_id)} />
+      </section>
+      {rest.length > 0 && (
+        <section className="my-trips__section" aria-labelledby="all-trips-title">
           <div className="my-trips__section-head">
-            <h2 id="next-journey-title">Next journey</h2>
+            <h2 id="all-trips-title">All trips</h2>
+            <span>{rest.length} more</span>
           </div>
-          <FeaturedTrip trip={featuredTrip} handlers={{ onViewTrip, onViewTravelPass, onViewDocuments, onResolveAction }} />
+          <div className="my-trips__grid">
+            {rest.map((trip) => (
+              <TripCard key={trip.booking_id} trip={trip} onOpen={() => setSelectedId(trip.booking_id)} />
+            ))}
+          </div>
         </section>
       )}
+    </main>
+  );
+}
 
-      <section className="my-trips__section" aria-labelledby="upcoming-title">
-        <div className="my-trips__section-head">
-          <h2 id="upcoming-title">Upcoming trips</h2>
-          <span>{otherUpcoming.length} journeys</span>
+function TripCard({
+  trip,
+  featured = false,
+  onOpen,
+}: {
+  trip: MyTripSummary;
+  featured?: boolean;
+  onOpen: () => void;
+}) {
+  const state = stateFromTrip(trip, null);
+  const title = routeText(trip);
+  return (
+    <article
+      className={featured ? "my-trips-feature" : "my-trip-card"}
+      aria-labelledby={`${trip.booking_id}-title`}
+    >
+      <TripImage trip={trip} featured={featured} />
+      <div className={featured ? "my-trips-feature__body" : "my-trip-card__body"}>
+        <StatusBlock state={state} compact={!featured} />
+        <p className="my-trips__reference">{trip.journey_reference}</p>
+        <h3 id={`${trip.booking_id}-title`}>{title}</h3>
+        <p>{state.detail}</p>
+        <TripMeta trip={trip} />
+        <div className={featured ? "my-trips-actions" : "my-trips-actions my-trips-actions--compact"}>
+          <button className="my-trips-actions__primary" type="button" onClick={onOpen}>
+            View trip
+          </button>
         </div>
-        <div className="my-trips__grid">
-          {otherUpcoming.map(trip => (
-            <TripCard key={trip.id} trip={trip} handlers={{ onViewTrip, onViewTravelPass, onViewDocuments, onResolveAction }} />
-          ))}
-        </div>
-      </section>
+      </div>
+    </article>
+  );
+}
 
-      <section className="my-trips__section" aria-labelledby="past-title">
-        <div className="my-trips__section-head">
-          <h2 id="past-title">Past trips</h2>
-          <span>{pastTrips.length} journey</span>
+function TripDetailView({
+  detail,
+  onBack,
+  onRetry,
+}: {
+  detail: DetailState;
+  onBack: () => void;
+  onRetry: () => void;
+}) {
+  if (detail.status === "loading") {
+    return (
+      <main className="my-trips" aria-labelledby="trip-loading-title">
+        <button className="my-trips__back" type="button" onClick={onBack}>Back to My Trips</button>
+        <StateShell title="Loading trip" body="We are checking the latest booking, confirmation, and document state." compact />
+      </main>
+    );
+  }
+
+  if (detail.status === "error") {
+    return (
+      <main className="my-trips" aria-labelledby="trip-error-title">
+        <button className="my-trips__back" type="button" onClick={onBack}>Back to My Trips</button>
+        <StateShell title="We could not open this trip." body={detail.error} actionLabel="Try again" onAction={onRetry} compact />
+      </main>
+    );
+  }
+
+  if (detail.status !== "ready") return null;
+
+  const trip = detail.trip;
+  const state = stateFromTrip(trip, detail.confirmation);
+  const documents = [...detail.documents].sort(
+    (a, b) => Date.parse(b.issued_at) - Date.parse(a.issued_at),
+  );
+
+  return (
+    <main className="my-trips my-trips--detail" aria-labelledby="trip-detail-title">
+      <button className="my-trips__back" type="button" onClick={onBack}>Back to My Trips</button>
+      <header className="my-trips__header my-trips__header--detail">
+        <div>
+          <p className="my-trips__eyebrow">{trip.journey_reference}</p>
+          <h1 id="trip-detail-title">{routeText(trip)}</h1>
+          <p>{trip.trip_label || "Detoura journey"}</p>
         </div>
-        <div className="my-trips__past-list">
-          {pastTrips.map(trip => (
-            <PastTrip key={trip.id} trip={trip} handlers={{ onViewTrip, onViewDocuments }} />
-          ))}
+      </header>
+
+      <section className="my-trips-detail">
+        <div className="my-trips-detail__main">
+          <StatusBlock state={state} />
+          <section className="my-trips-panel" aria-labelledby="trip-summary-title">
+            <h2 id="trip-summary-title">Journey summary</h2>
+            <TripMeta trip={trip} />
+          </section>
+
+          <section className="my-trips-panel" aria-labelledby="trip-truth-title">
+            <h2 id="trip-truth-title">Current booking truth</h2>
+            <dl className="my-trips-facts">
+              <div><dt>Booking phase</dt><dd>{humanize(trip.phase)}</dd></div>
+              <div><dt>Confirmation</dt><dd>{detail.confirmation ? humanize(detail.confirmation.status) : "Not issued yet"}</dd></div>
+              <div><dt>Service tier</dt><dd>{detail.confirmation ? humanize(detail.confirmation.service_tier) : "Not exposed"}</dd></div>
+              <div><dt>Finalized</dt><dd>{detail.confirmation?.finalized_at ? dayMonth(detail.confirmation.finalized_at) : "Not finalized"}</dd></div>
+            </dl>
+            {state.key === "PAYMENT_UNKNOWN" && (
+              <p className="my-trips-callout">
+                Detoura is still verifying the outcome. Do not retry payment or
+                booking from this screen.
+              </p>
+            )}
+            {state.key === "RECOVERY_REQUIRED" && (
+              <p className="my-trips-callout">
+                This is not a normal confirmed trip. Detoura needs to resolve
+                the booking or payment state before it can be treated as settled.
+              </p>
+            )}
+          </section>
         </div>
+
+        <aside className="my-trips-detail__side">
+          <section className="my-trips-panel" aria-labelledby="documents-title">
+            <h2 id="documents-title">Financial documents</h2>
+            {documents.length === 0 ? (
+              <p className="muted">No financial documents have been issued for this trip.</p>
+            ) : (
+              <ul className="my-trips-documents">
+                {documents.map((document) => (
+                  <li key={document.document_id}>
+                    <div>
+                      <strong>{documentLabel(document)}</strong>
+                      <span>{dayMonth(document.issued_at)} · {money(document.customer_total, document.currency)}</span>
+                    </div>
+                    {document.download_available ? (
+                      <a href={document.download_url} download>
+                        Download PDF
+                      </a>
+                    ) : (
+                      <span className="my-trips-documents__unavailable">Unavailable</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </aside>
       </section>
     </main>
   );
 }
 
-function FeaturedTrip({ trip, handlers }: { trip: PresentationTrip; handlers: TripHandlers }) {
-  const status = statusCopy[trip.status];
-
+function StatusBlock({ state, compact = false }: { state: ConsumerState; compact?: boolean }) {
   return (
-    <article className="my-trips-feature" aria-labelledby={`${trip.id}-title`}>
-      <TripImage trip={trip} featured />
-      <div className="my-trips-feature__body">
-        <StatusBlock status={status} actionRequired={trip.actionRequired} />
-        <p className="my-trips__reference">{trip.journeyReference}</p>
-        <h3 id={`${trip.id}-title`}>{routeText(trip.destinations)}</h3>
-        <TripActions trip={trip} handlers={handlers} />
-        <p>{trip.summary}</p>
-        <TripMeta trip={trip} />
-      </div>
-    </article>
-  );
-}
-
-function TripCard({ trip, handlers }: { trip: PresentationTrip; handlers: TripHandlers }) {
-  const status = statusCopy[trip.status];
-
-  return (
-    <article className="my-trip-card" aria-labelledby={`${trip.id}-title`}>
-      <TripImage trip={trip} />
-      <div className="my-trip-card__body">
-        <StatusBlock status={status} actionRequired={trip.actionRequired} compact />
-        <p className="my-trips__reference">{trip.journeyReference}</p>
-        <h3 id={`${trip.id}-title`}>{routeText(trip.destinations)}</h3>
-        <p>{trip.summary}</p>
-        <TripMeta trip={trip} />
-        <TripActions trip={trip} handlers={handlers} compact />
-      </div>
-    </article>
-  );
-}
-
-function PastTrip({ trip, handlers }: { trip: PresentationTrip; handlers: Pick<TripHandlers, "onViewTrip" | "onViewDocuments"> }) {
-  return (
-    <article className="my-trips-past" aria-labelledby={`${trip.id}-title`}>
-      <div>
-        <p className="my-trips__reference">{trip.journeyReference}</p>
-        <h3 id={`${trip.id}-title`}>{routeText(trip.destinations)}</h3>
-        <p>{trip.dates} · {trip.duration}</p>
-      </div>
-      <div className="my-trips-past__actions">
-        <button type="button" onClick={() => handlers.onViewTrip?.(trip.id)}>
-          View journey
-        </button>
-        {trip.documentsAvailable && (
-          <button type="button" onClick={() => handlers.onViewDocuments?.(trip.id)}>
-            Documents
-          </button>
-        )}
-      </div>
-    </article>
-  );
-}
-
-interface TripHandlers {
-  onViewTrip?: (id: string) => void;
-  onViewTravelPass?: (id: string) => void;
-  onViewDocuments?: (id: string) => void;
-  onResolveAction?: (id: string) => void;
-}
-
-function TripActions({ trip, handlers, compact = false }: { trip: PresentationTrip; handlers: TripHandlers; compact?: boolean }) {
-  return (
-    <div className={compact ? "my-trips-actions my-trips-actions--compact" : "my-trips-actions"}>
-      <button className="my-trips-actions__primary" type="button" onClick={() => runAction(trip, handlers)}>
-        {actionLabels[trip.nextAction]}
-      </button>
-      {trip.travelPassAvailable && trip.nextAction !== "travelPass" && (
-        <button type="button" onClick={() => handlers.onViewTravelPass?.(trip.id)}>
-          Travel Pass
-        </button>
-      )}
-      {trip.documentsAvailable && trip.nextAction !== "documents" && (
-        <button type="button" onClick={() => handlers.onViewDocuments?.(trip.id)}>
-          Documents
-        </button>
-      )}
+    <div className={compact ? "my-trips-status my-trips-status--compact" : "my-trips-status"} data-tone={state.tone}>
+      <span>{state.label}</span>
+      <p>{state.detail}</p>
+      {state.actionRequired && <strong>Needs attention</strong>}
     </div>
   );
 }
 
-function runAction(trip: PresentationTrip, handlers: TripHandlers) {
-  if (trip.nextAction === "travelPass") handlers.onViewTravelPass?.(trip.id);
-  else if (trip.nextAction === "documents") handlers.onViewDocuments?.(trip.id);
-  else if (trip.nextAction === "resolveAction") handlers.onResolveAction?.(trip.id);
-  else handlers.onViewTrip?.(trip.id);
-}
-
-function TripImage({ trip, featured = false }: { trip: PresentationTrip; featured?: boolean }) {
-  if (!trip.image) {
-    return (
-      <div className={featured ? "my-trips-image my-trips-image--feature is-fallback" : "my-trips-image is-fallback"} aria-hidden="true">
-        <span>{trip.destinations[0]}</span>
-      </div>
-    );
-  }
-
+function TripImage({ trip, featured = false }: { trip: MyTripSummary; featured?: boolean }) {
+  const title = routeText(trip);
   return (
-    <figure className={featured ? "my-trips-image my-trips-image--feature" : "my-trips-image"}>
-      <img src={trip.image.src} alt={trip.image.alt} />
-    </figure>
-  );
-}
-
-function StatusBlock({ status, actionRequired, compact = false }: { status: { label: string; detail: string; tone: string }; actionRequired: boolean; compact?: boolean }) {
-  return (
-    <div className={compact ? "my-trips-status my-trips-status--compact" : "my-trips-status"} data-tone={status.tone}>
-      <span>{status.label}</span>
-      <p>{status.detail}</p>
-      {actionRequired && <strong>Action needed</strong>}
+    <div className={featured ? "my-trips-image my-trips-image--feature is-fallback" : "my-trips-image is-fallback"} aria-hidden="true">
+      <span>{title}</span>
     </div>
   );
 }
 
-function TripMeta({ trip }: { trip: PresentationTrip }) {
+function TripMeta({ trip }: { trip: MyTripSummary }) {
   return (
     <dl className="my-trips-meta">
-      <div><dt>Dates</dt><dd>{trip.dates}</dd></div>
-      <div><dt>Duration</dt><dd>{trip.duration}</dd></div>
-      <div><dt>Travelers</dt><dd>{trip.travelerCount}</dd></div>
+      <div><dt>Created</dt><dd>{dayMonth(trip.created_at)}</dd></div>
+      <div><dt>Travelers</dt><dd>{trip.party_size}</dd></div>
+      <div><dt>Payable total</dt><dd>{money(trip.customer_total, trip.currency)}</dd></div>
     </dl>
   );
 }
 
 function EmptyTrips({ onDiscover }: { onDiscover?: () => void }) {
   return (
-    <main className="my-trips my-trips--empty" aria-labelledby="my-trips-empty-title">
+    <StateShell
+      title="You do not have any account trips yet."
+      body="When a signed-in booking belongs to your account, its status and documents will appear here."
+      actionLabel="Discover a journey"
+      onAction={onDiscover}
+    />
+  );
+}
+
+function StateShell({
+  title,
+  body,
+  actionLabel,
+  onAction,
+  secondaryLabel,
+  onSecondary,
+  compact = false,
+}: {
+  title: string;
+  body: string | null;
+  actionLabel?: string;
+  onAction?: () => void;
+  secondaryLabel?: string;
+  onSecondary?: () => void;
+  compact?: boolean;
+}) {
+  return (
+    <main className={compact ? "my-trips my-trips--state my-trips--state-compact" : "my-trips my-trips--state"} aria-labelledby="my-trips-state-title">
       <section className="my-trips-empty">
         <div className="my-trips-empty__mark" aria-hidden="true" />
         <p className="my-trips__eyebrow">Your journeys with Detoura</p>
-        <h1 id="my-trips-empty-title">You haven't created a journey yet.</h1>
-        <p>
-          When you save or book a Detoura journey, its tickets, Travel Pass
-          and documents will live here.
-        </p>
-        <button type="button" onClick={onDiscover}>Discover a journey</button>
+        <h1 id="my-trips-state-title">{title}</h1>
+        {body && <p>{body}</p>}
+        <div className="my-trips-actions">
+          {actionLabel && onAction && <button type="button" onClick={onAction}>{actionLabel}</button>}
+          {secondaryLabel && onSecondary && <button type="button" onClick={onSecondary}>{secondaryLabel}</button>}
+        </div>
       </section>
     </main>
   );
 }
 
-function routeText(destinations: string[]) {
-  return destinations.join(" -> ");
+function stateFromTrip(trip: MyTripSummary, confirmation: TripConfirmation | null): ConsumerState {
+  const confirmationStatus = confirmation?.status;
+  if (confirmationStatus === "CONFIRMED") {
+    return consumerState("CONFIRMED", "Confirmed", "Detoura has confirmed this journey from booking and payment truth.", "good");
+  }
+  if (confirmationStatus === "PARTIAL_RECOVERY") return recoveryState("Some of this journey or its payment state needs Detoura review.");
+  if (confirmationStatus === "PENDING_VERIFICATION") {
+    return consumerState("PAYMENT_UNKNOWN", "Verification in progress", "The final outcome is not proven yet. This is not paid, failed, or confirmed.", "pending");
+  }
+  if (confirmationStatus === "CANCELLED" || confirmationStatus === "SUPERSEDED") {
+    return consumerState("FAILED", humanize(confirmationStatus), "This confirmation is no longer active.", "failed");
+  }
+
+  switch (trip.phase) {
+    case "awaiting_travelers":
+      return consumerState("READY_TO_PAY", "Traveler details needed", "The backend has not received the traveler party for this booking.", "neutral", true);
+    case "awaiting_confirmation":
+      return consumerState("READY_TO_CONFIRM", "Awaiting confirmation", "The trip is priced, but backend truth does not say it is booked.", "neutral", true);
+    case "revalidating":
+    case "issuing":
+      return consumerState("BOOKING_IN_PROGRESS", "Booking in progress", "Detoura is still working. Worker start is not shown as confirmed.", "pending");
+    case "reconfirm_required":
+    case "price_inconsistent":
+      return consumerState("PRICE_CHANGED", "Price needs review", "The journey cannot continue on stale pricing.", "attention", true);
+    case "partial_failure":
+      return recoveryState("Part of the journey failed or needs human recovery.");
+    case "guided_booking":
+      return consumerState("BOOKING_IN_PROGRESS", "Self-service booking", "Detoura is guiding the journey, but it has not proven provider confirmation.", "pending");
+    case "complete":
+      return consumerState("PAYMENT_PROCESSING", "Awaiting final proof", "The booking phase is complete, but no consumer confirmation is exposed yet.", "pending");
+    case "failed":
+      return consumerState("FAILED", "Not booked", "The backend says this booking failed.", "failed");
+    default:
+      return consumerState("PAYMENT_UNKNOWN", "Status being checked", "This state is not confirmed until backend confirmation says so.", "pending");
+  }
+}
+
+function recoveryState(detail: string): ConsumerState {
+  return consumerState("RECOVERY_REQUIRED", "Recovery required", detail, "attention", true);
+}
+
+function consumerState(
+  key: ConsumerState["key"],
+  label: string,
+  detail: string,
+  tone: ConsumerTone,
+  actionRequired = false,
+): ConsumerState {
+  return { key, label, detail, tone, actionRequired };
+}
+
+function routeText(trip: MyTripSummary): string {
+  return trip.route_cities.length ? trip.route_cities.join(" -> ") : trip.trip_label || "Detoura trip";
+}
+
+function documentLabel(document: FinancialDocument): string {
+  return `${humanize(document.document_type)} ${document.document_number}`;
+}
+
+function humanize(value: string): string {
+  return value
+    .toLowerCase()
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function messageFor(error: unknown, fallback: string): string {
+  if (error instanceof DetouraApiError) return error.message;
+  return fallback;
 }

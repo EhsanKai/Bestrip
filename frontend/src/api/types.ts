@@ -421,7 +421,9 @@ export type BookingPhase =
   | "issuing"
   | "complete"
   | "partial_failure"
-  | "failed";
+  | "failed"
+  | "guided_booking"
+  | "price_inconsistent";
 
 export type BookingItemState =
   | "DRAFT"
@@ -755,6 +757,53 @@ export interface Payment {
   requires_customer_action: boolean;
   created?: boolean;
   checkout_snapshot_id?: string;
+}
+
+export type ConfirmationStatus =
+  | "PENDING_VERIFICATION"
+  | "CONFIRMED"
+  | "PARTIAL_RECOVERY"
+  | "CANCELLED"
+  | "SUPERSEDED";
+
+export interface MyTripSummary {
+  booking_id: string;
+  journey_reference: string;
+  trip_label: string;
+  route_cities: string[];
+  phase: BookingPhase | string;
+  created_at: string;
+  party_size: number;
+  currency: string;
+  customer_total: number;
+}
+
+export interface MyTripsResponse {
+  trips: MyTripSummary[];
+}
+
+export interface TripConfirmation {
+  confirmation_id: string;
+  status: ConfirmationStatus | string;
+  service_tier: ServiceTier | string;
+  created_at: string;
+  finalized_at: string | null;
+}
+
+export interface FinancialDocument {
+  document_id: string;
+  document_type: string;
+  document_number: string;
+  issued_at: string;
+  currency: string;
+  customer_total: number;
+  download_available: boolean;
+  download_url: string;
+}
+
+export interface FinancialDocumentsResponse {
+  booking_id: string;
+  documents: FinancialDocument[];
 }
 
 export interface TravelPassTicket {

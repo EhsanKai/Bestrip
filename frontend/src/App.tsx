@@ -206,7 +206,7 @@ export default function App() {
         onSaved={() => setScreen("myTrips")}
         onJourney={() => setJourneyDrawerOpen(true)}
         onAccount={() => setScreen("login")}
-        savedCount={saved.trips.length}
+        savedCount={0}
         showSearchNav={Boolean(search.response)}
         onResults={() => setScreen("results")}
         journeyExists={Boolean(journeyDraft)}
@@ -317,7 +317,13 @@ export default function App() {
           />
         )}
 
-        {screen === "myTrips" && <MyTrips onDiscover={() => setScreen("discover")} />}
+        {screen === "myTrips" && (
+          <MyTrips
+            accountStatus={account.status}
+            onDiscover={() => setScreen("discover")}
+            onLogin={() => setScreen("login")}
+          />
+        )}
 
         {screen === "saved" && (
           <SavedTrips
@@ -334,7 +340,7 @@ export default function App() {
 
       <MobileNav
         screen={screen}
-        savedCount={saved.trips.length}
+        savedCount={0}
         hasResults={Boolean(search.response)}
         hasJourney={Boolean(journeyDraft)}
         onNavigate={(next) => setScreen(next as Screen)}

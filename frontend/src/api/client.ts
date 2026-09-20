@@ -22,10 +22,15 @@ import {
   type OriginResponse,
   type CommercialPreviewResponse,
   type GuidedMarkRequest,
+  type FinancialDocument,
+  type FinancialDocumentsResponse,
+  type MyTripSummary,
+  type MyTripsResponse,
   type Payment,
   type ProfileName,
   type SelfServiceItinerary,
   type SetCommercialOptionsRequest,
+  type TripConfirmation,
   type TravelerInput,
   type TravelPass,
   type TripRecheckRequest,
@@ -285,5 +290,37 @@ export const api = {
 
   getPayment(paymentId: string) {
     return request<Payment>(`/payments/${encodeURIComponent(paymentId)}`);
+  },
+
+  listMyTrips(signal?: AbortSignal) {
+    return request<MyTripsResponse>("/me/trips", { signal });
+  },
+
+  getMyTrip(bookingId: string, signal?: AbortSignal) {
+    return request<MyTripSummary>(
+      `/me/trips/${encodeURIComponent(bookingId)}`,
+      { signal },
+    );
+  },
+
+  getTripConfirmation(bookingId: string, signal?: AbortSignal) {
+    return request<TripConfirmation>(
+      `/me/trips/${encodeURIComponent(bookingId)}/confirmation`,
+      { signal },
+    );
+  },
+
+  listTripDocuments(bookingId: string, signal?: AbortSignal) {
+    return request<FinancialDocumentsResponse>(
+      `/me/trips/${encodeURIComponent(bookingId)}/documents`,
+      { signal },
+    );
+  },
+
+  getTripDocument(bookingId: string, documentId: string, signal?: AbortSignal) {
+    return request<FinancialDocument>(
+      `/me/trips/${encodeURIComponent(bookingId)}/documents/${encodeURIComponent(documentId)}`,
+      { signal },
+    );
   },
 };

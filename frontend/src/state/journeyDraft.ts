@@ -95,7 +95,10 @@ export function loadJourneyDraft(): JourneyDraft | null {
       localStorage.removeItem(STORAGE_KEY);
       return null;
     }
-    return parsed;
+    return {
+      ...parsed,
+      trip: { ...parsed.trip, selection_id: parsed.trip.selection_id ?? null },
+    };
   } catch {
     try {
       localStorage.removeItem(STORAGE_KEY);

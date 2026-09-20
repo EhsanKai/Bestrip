@@ -22,6 +22,7 @@ import {
   type OriginResponse,
   type CommercialPreviewResponse,
   type GuidedMarkRequest,
+  type Payment,
   type ProfileName,
   type SelfServiceItinerary,
   type SetCommercialOptionsRequest,
@@ -52,7 +53,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers[key] = value;
   });
   const method = init?.method?.toUpperCase() ?? "GET";
-  if (method !== "GET" && path.startsWith("/auth/")) {
+  if (method !== "GET") {
     const csrf = readCookie(CSRF_COOKIE);
     if (csrf) headers["X-CSRF-Token"] = csrf;
   }
@@ -267,5 +268,22 @@ export const api = {
     return request<TravelPass>(
       `/booking-intents/${encodeURIComponent(bookingId)}/travel-pass`,
     );
+  },
+
+  createPayment(body: { booking_id: string; idempotency_key: string }) {
+    return request<Payment>("/payments", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  confirmPayment(paymentId: string) {
+    return request<Payment>(`/payments/${encodeURIComponent(paymentId)}/confirm`, {
+      method: "POST",
+    });
+  },
+
+  getPayment(paymentId: string) {
+    return request<Payment>(`/payments/${encodeURIComponent(paymentId)}`);
   },
 };

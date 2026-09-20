@@ -4,6 +4,7 @@ import { DetouraApiError } from "../api/types";
 import type {
   BookingIntent,
   CommercialSummary,
+  Payment,
   SelfServiceItinerary,
   SelfServiceTicket,
   ServiceTier,
@@ -101,6 +102,14 @@ const EMPTY: TravelerDraft = {
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const PHONE_RE = /^\+?[0-9 .\-()]{6,20}$/;
 
+function idempotencyKey(prefix: string): string {
+  const random =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${random}`;
+}
+
 function draftErrors(d: TravelerDraft): Partial<Record<keyof TravelerDraft, string>> {
   const e: Partial<Record<keyof TravelerDraft, string>> = {};
   if (d.given_name.trim().length < 1) e.given_name = "Required";
@@ -131,7 +140,7 @@ function money2(amount: number, currency: string): string {
 function stepLabels(flow: Flow): string[] {
   return flow === "self_service"
     ? ["Service", "Traveller", "Review", "Book tickets"]
-    : ["Service", "Traveller", "Review", "Ticketing", "Pass"];
+    : ["Service", "Traveller", "Checkout", "Ticketing", "Pass"];
 }
 
 function stepIndex(phase: Phase, flow: Flow): number {
@@ -163,6 +172,7 @@ export function BookingExperience({
   const [showErrors, setShowErrors] = useState(false);
   const [bookingId, setBookingId] = useState<string | null>(null);
   const [intent, setIntent] = useState<BookingIntent | null>(null);
+  const [payment, setPayment] = useState<Payment | null>(null);
   const [pass, setPass] = useState<TravelPassData | null>(null);
   const [itinerary, setItinerary] = useState<SelfServiceItinerary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -171,37 +181,43 @@ export function BookingExperience({
   const [tier, setTier] = useState<ServiceTier>("BASIC");
   const [promoInput, setPromoInput] = useState("");
   const pollRef = useRef<number | null>(null);
+  const paymentIdempotencyRef = useRef<string | null>(null);
 
   const legs = trip.legs;
+  const providerBookable = Boolean(trip.selection_id);
   const flow: Flow = tier === "BASIC" ? "self_service" : "managed";
 
   const ensureIntent = useCallback(
     async (chosenTier: ServiceTier): Promise<string> => {
       if (bookingId) return bookingId;
       const created = await api.createBookingIntent({
-        demo_trip_label: trip.route,
-        demo_currency: trip.currency,
-        demo_travelers: partySize,
-        // The whole-trip estimate — for display only. The server prices the
-        // supplier transport from the legs, never from this.
-        demo_trip_estimate: {
-          total: trip.total_price,
-          transport: trip.costs.transport,
-          accommodation: trip.costs.accommodation,
-          transfer: trip.costs.ground_transfer,
-        },
-        demo_legs: legs.map((l) => {
-          const [carrier, ...rest] = (l.operator || "").split(" ");
-          return {
-            origin: l.from,
-            destination: l.to,
-            departure: l.departure,
-            arrival: l.arrival,
-            carrier: carrier || "",
-            flight_number: rest.join(" "),
-            price_per_person: l.price_per_person,
-          };
-        }),
+        ...(trip.selection_id
+          ? { selection_id: trip.selection_id }
+          : {
+              demo_trip_label: trip.route,
+              demo_currency: trip.currency,
+              demo_travelers: partySize,
+              // The whole-trip estimate — for display only. The server prices the
+              // supplier transport from the legs, never from this.
+              demo_trip_estimate: {
+                total: trip.total_price,
+                transport: trip.costs.transport,
+                accommodation: trip.costs.accommodation,
+                transfer: trip.costs.ground_transfer,
+              },
+              demo_legs: legs.map((l) => {
+                const [carrier, ...rest] = (l.operator || "").split(" ");
+                return {
+                  origin: l.from,
+                  destination: l.to,
+                  departure: l.departure,
+                  arrival: l.arrival,
+                  carrier: carrier || "",
+                  flight_number: rest.join(" "),
+                  price_per_person: l.price_per_person,
+                };
+              }),
+            }),
         service_tier: chosenTier,
       });
       setBookingId(created.booking_id);
@@ -228,6 +244,8 @@ export function BookingExperience({
       try {
         const next = await api.setCommercialOptions(bookingId, body);
         setIntent(next);
+        setPayment(null);
+        paymentIdempotencyRef.current = null;
         if (next.commercial) setTier(next.commercial.service_tier);
         if (body.promo_code && next.commercial?.promo_accepted) {
           funnel("PROMO_APPLIED", {
@@ -249,6 +267,8 @@ export function BookingExperience({
   const chooseTier = async (next: ServiceTier) => {
     if (next !== tier) funnel("TIER_SWITCHED", { tier: next });
     setTier(next);
+    setPayment(null);
+    paymentIdempotencyRef.current = null;
     if (bookingId) await changeCommercial({ service_tier: next });
   };
 
@@ -262,6 +282,8 @@ export function BookingExperience({
         if (cancelled) return;
         setIntent(next);
         if (next.phase === "reconfirm_required") {
+          setPayment(null);
+          paymentIdempotencyRef.current = null;
           setPhase("reconfirm");
           return;
         }
@@ -322,6 +344,10 @@ export function BookingExperience({
 
   const confirm = async (toleranceAbsolute = 25) => {
     if (!bookingId) return;
+    if (tier !== "BASIC" && payment?.status !== "AUTHORIZED") {
+      setError("Authorize payment before confirming ticket purchase.");
+      return;
+    }
     setBusy(true);
     setError(null);
     funnel("CONFIRM", { tier });
@@ -339,6 +365,38 @@ export function BookingExperience({
     } catch (e) {
       funnel("FAILED", { tier });
       setError(e instanceof DetouraApiError ? e.message : "Could not confirm the journey.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const authorizePayment = async () => {
+    if (!bookingId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (payment?.status === "FAILED" || payment?.status === "CANCELLED") {
+        paymentIdempotencyRef.current = null;
+      }
+      paymentIdempotencyRef.current ??= idempotencyKey(`checkout-${bookingId}`);
+      const created = await api.createPayment({
+        booking_id: bookingId,
+        idempotency_key: paymentIdempotencyRef.current,
+      });
+      setPayment(created);
+      const authorized = await api.confirmPayment(created.payment_id);
+      setPayment(authorized);
+      if (authorized.status === "AUTHORIZED") {
+        funnel("PAYMENT_AUTHORIZED", { tier, props: { provider: authorized.provider } });
+        return;
+      }
+      if (authorized.status === "UNKNOWN" || authorized.status === "RECONCILIATION_REQUIRED") {
+        setError("Payment is being verified. Do not retry while Detoura reconciles it.");
+        return;
+      }
+      setError(`Payment is ${authorized.status.toLowerCase().replaceAll("_", " ")}.`);
+    } catch (e) {
+      setError(e instanceof DetouraApiError ? e.message : "Could not authorize payment.");
     } finally {
       setBusy(false);
     }
@@ -374,8 +432,8 @@ export function BookingExperience({
             <h1>We’ll help you book it.</h1>
             <p>
               Enter your details once for the whole journey. Choose whether
-              Detoura books the tickets for you or guides you through it — this
-              test version never asks for payment.
+              Detoura books the tickets for you or guides you through it. For
+              All-in-One, payment must be authorized before ticketing starts.
             </p>
           </div>
           <div className="booking__poster">
@@ -401,6 +459,7 @@ export function BookingExperience({
               selected={tier}
               currency={trip.currency}
               busy={busy}
+              providerBookable={providerBookable}
               onSelect={chooseTier}
               onContinue={() => {
                 funnel("TIER_SELECTED", { tier });
@@ -429,9 +488,11 @@ export function BookingExperience({
               flow={flow}
               promoInput={promoInput}
               setPromoInput={setPromoInput}
+              payment={payment}
               onCommercialChange={changeCommercial}
               onChangeService={() => setPhase("tier")}
               onBack={() => setPhase("traveler")}
+              onAuthorizePayment={authorizePayment}
               onConfirm={() => confirm(25)}
             />
           )}
@@ -442,7 +503,7 @@ export function BookingExperience({
             <ReconfirmStep
               intent={intent}
               busy={busy}
-              onReconfirm={() => confirm(1_000_000)}
+              onReturnToCheckout={() => setPhase("review")}
               onAbandon={onBack}
             />
           )}
@@ -487,6 +548,7 @@ function TierStep({
   selected,
   currency,
   busy,
+  providerBookable,
   onSelect,
   onContinue,
 }: {
@@ -494,6 +556,7 @@ function TierStep({
   selected: ServiceTier;
   currency: string;
   busy: boolean;
+  providerBookable: boolean;
   onSelect: (t: ServiceTier) => void;
   onContinue: () => void;
 }) {
@@ -516,7 +579,7 @@ function TierStep({
             key={opt.tier}
             className={`booking__tier${opt.tier === selected ? " is-on" : ""}`}
             aria-pressed={opt.tier === selected}
-            disabled={busy}
+            disabled={busy || (opt.tier === "ALL_IN_ONE" && !providerBookable)}
             onClick={() => onSelect(opt.tier)}
           >
             <span className="booking__tier-top">
@@ -548,6 +611,11 @@ function TierStep({
                 </li>
               ))}
             </ul>
+            {opt.tier === "ALL_IN_ONE" && !providerBookable && (
+              <span className="booking__tier-unavailable">
+                Real ticketing is available only for live provider results.
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -707,7 +775,8 @@ function TravelerStep({
       })}
 
       <div className="booking__test">
-        Payment is not required in this test version.
+        Traveller details are sent only to the booking intent. They are not saved
+        in this browser.
       </div>
 
       <div className="booking__actions">
@@ -729,9 +798,11 @@ function ReviewStep({
   flow,
   promoInput,
   setPromoInput,
+  payment,
   onCommercialChange,
   onChangeService,
   onBack,
+  onAuthorizePayment,
   onConfirm,
 }: {
   intent: BookingIntent;
@@ -740,13 +811,19 @@ function ReviewStep({
   flow: Flow;
   promoInput: string;
   setPromoInput: (v: string) => void;
+  payment: Payment | null;
   onCommercialChange: (body: SetCommercialOptionsRequest) => Promise<void>;
   onChangeService: () => void;
   onBack: () => void;
+  onAuthorizePayment: () => void;
   onConfirm: () => void;
 }) {
   const c = intent.commercial;
   const unknowns = intent.items.filter((i) => i.checked_baggage === "unknown");
+  const paymentAuthorized = payment?.status === "AUTHORIZED";
+  const paymentVerifying =
+    payment?.status === "UNKNOWN" || payment?.status === "RECONCILIATION_REQUIRED";
+  const managed = flow === "managed";
   const dates = intent.items
     .map((i) => dayMonth(i.departure))
     .filter((v, idx, a) => a.indexOf(v) === idx);
@@ -862,27 +939,65 @@ function ReviewStep({
 
       <div className="booking__pay">
         <b>Payment</b>
-        <span>Payment is not required in this test version.</span>
+        {managed ? (
+          <span>
+            {payment
+              ? paymentStatusCopy(payment)
+              : "Authorize the server-priced checkout total before confirming ticket purchase."}
+          </span>
+        ) : (
+          <span>Basic is self-service. Detoura does not take payment or issue tickets for this option.</span>
+        )}
       </div>
 
       <div className="booking__actions">
         <Button variant="secondary" onClick={onBack} disabled={busy}>
           Back
         </Button>
-        <Button
-          size="lg"
-          onClick={onConfirm}
-          disabled={busy || !intent.price_reconciled}
-        >
-          {busy
-            ? "Working…"
-            : flow === "self_service"
-              ? "Prepare my journey"
-              : "Confirm journey"}
-        </Button>
+        {managed && !paymentAuthorized ? (
+          <Button
+            size="lg"
+            onClick={onAuthorizePayment}
+            disabled={busy || !intent.price_reconciled || paymentVerifying}
+          >
+            {busy ? "Authorizing…" : `Authorize ${payNowLabel(c, intent.currency)}`}
+          </Button>
+        ) : (
+          <Button
+            size="lg"
+            onClick={onConfirm}
+            disabled={busy || !intent.price_reconciled}
+          >
+            {busy
+              ? "Working…"
+              : flow === "self_service"
+                ? "Prepare my journey"
+                : "Confirm ticket purchase"}
+          </Button>
+        )}
       </div>
     </>
   );
+}
+
+function payNowLabel(commercial: CommercialSummary | null, currency: string): string {
+  if (!commercial) return "payment";
+  return money2(commercial.breakdown.customer_total, currency);
+}
+
+function paymentStatusCopy(payment: Payment): string {
+  if (payment.status === "AUTHORIZED") {
+    return `${money2(payment.authorized_amount, payment.currency)} authorized. You can now confirm ticket purchase.`;
+  }
+  if (payment.status === "REQUIRES_CUSTOMER_ACTION") {
+    return "Payment needs customer action from the provider.";
+  }
+  if (payment.status === "UNKNOWN" || payment.status === "RECONCILIATION_REQUIRED") {
+    return "Payment outcome is being verified. Do not retry or confirm until it is resolved.";
+  }
+  if (payment.status === "FAILED") return "Payment failed. Start a new checkout attempt.";
+  if (payment.status === "CANCELLED") return "Payment authorization was released.";
+  return `Payment status: ${payment.status.toLowerCase().replaceAll("_", " ")}.`;
 }
 
 function PriceSummary({
@@ -1003,7 +1118,7 @@ function PriceSummary({
         “Tickets” is the current bookable fare for the flights, exactly as
         quoted. Detoura’s fee is separate. Accommodation is an estimate only —
         Detoura is not booking it.
-        {commercial.test_mode ? " Sandbox / test mode — no payment is taken." : ""}
+        {commercial.test_mode ? " Sandbox / test mode — no live card charge is taken." : ""}
       </p>
     </div>
   );
@@ -1077,12 +1192,12 @@ function WorkingStep({ intent }: { intent: BookingIntent }) {
 function ReconfirmStep({
   intent,
   busy,
-  onReconfirm,
+  onReturnToCheckout,
   onAbandon,
 }: {
   intent: BookingIntent;
   busy: boolean;
-  onReconfirm: () => void;
+  onReturnToCheckout: () => void;
   onAbandon: () => void;
 }) {
   const before = intent.discovered_total;
@@ -1110,16 +1225,16 @@ function ReconfirmStep({
       </div>
 
       <p className="muted">
-        Nothing has been booked. Confirm again to proceed at the current price,
-        or go back.
+        Nothing has been booked. Return to checkout to authorize a fresh server
+        snapshot before confirming at the current price.
       </p>
 
       <div className="booking__actions">
         <Button variant="secondary" onClick={onAbandon} disabled={busy}>
           Don’t book
         </Button>
-        <Button size="lg" onClick={onReconfirm} disabled={busy}>
-          {busy ? "Confirming…" : `Confirm at ${money(after, intent.currency)}`}
+        <Button size="lg" onClick={onReturnToCheckout} disabled={busy}>
+          {`Return to checkout at ${money(after, intent.currency)}`}
         </Button>
       </div>
     </>

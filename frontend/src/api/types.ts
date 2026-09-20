@@ -163,6 +163,8 @@ export interface RecommendationConfidence {
 
 export interface TripRecommendation {
   id: string;
+  /** Server-issued live-offer handle. Null means this recommendation is not provider-bookable. */
+  selection_id: string | null;
   rank: number;
   route: string;
   route_nodes: string[];
@@ -720,6 +722,39 @@ export interface BookingIntent {
   pass_available: boolean;
   itinerary_available: boolean;
   commercial: CommercialSummary | null;
+}
+
+export type PaymentStatus =
+  | "CREATED"
+  | "REQUIRES_CUSTOMER_ACTION"
+  | "AUTHORIZED"
+  | "CAPTURE_PENDING"
+  | "CAPTURED"
+  | "FAILED"
+  | "CANCEL_PENDING"
+  | "CANCELLED"
+  | "REFUND_PENDING"
+  | "PARTIALLY_REFUNDED"
+  | "REFUNDED"
+  | "UNKNOWN"
+  | "RECONCILIATION_REQUIRED";
+
+export interface Payment {
+  payment_id: string;
+  booking_id: string;
+  journey_reference: string;
+  currency: string;
+  customer_total: number;
+  status: PaymentStatus;
+  provider: string;
+  authorized_amount: number;
+  captured_amount: number;
+  refunded_amount: number;
+  created_at: string;
+  updated_at: string;
+  requires_customer_action: boolean;
+  created?: boolean;
+  checkout_snapshot_id?: string;
 }
 
 export interface TravelPassTicket {

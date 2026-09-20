@@ -92,6 +92,24 @@ def observe_booking_outcome(*, phase: str) -> None:
         incr("booking_recovery_required_total")
 
 
+def observe_communication_transition(*, provider: str, communication_type: str, outcome: str) -> None:
+    """One communication send/resend/reconcile outcome (V9 Production
+    Transactional Email §21). Labels are all bounded, small-cardinality
+    concepts - ``provider`` ("sandbox"/"resend"), ``communication_type``
+    ("BOOKING_CONFIRMATION", ...), ``outcome`` ("sent"/"failed"/"unknown") -
+    never a communication_id, booking_id, recipient email, or
+    provider_message_id, each of which is a per-entity identifier that would
+    turn this into an unbounded time series (see the module docstring)."""
+    incr(
+        "communication_send_attempts_total",
+        provider=provider, communication_type=communication_type, outcome=outcome,
+    )
+    if outcome == "unknown":
+        incr("communication_unknown_total", provider=provider, communication_type=communication_type)
+    if outcome == "failed":
+        incr("communication_failed_total", provider=provider, communication_type=communication_type)
+
+
 def _format_metric(name: str, labels: _LabelKey) -> str:
     if not labels:
         return name

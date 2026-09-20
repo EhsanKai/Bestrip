@@ -30,6 +30,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from ..communication_config import resolve_communication_provider
 from ..observability import configure_logging, log_event, render_prometheus_text
 from ..observability.logging import current_request_id
 from ..observability.middleware import CorrelationMiddleware
@@ -197,14 +198,31 @@ def create_app() -> FastAPI:
     def readyz() -> JSONResponse:
         """Readiness (V9 Limited Beta observability contract §15): checks
         only what this process needs to accept traffic at all - a live
-        connection to its own database. Deliberately does NOT call Duffel or
-        Stripe: a temporary provider outage should not pull the whole app
-        out of a load balancer's rotation when it can still serve search,
-        auth, and read-only routes just fine."""
+        connection to its own database. Deliberately does NOT call Duffel,
+        Stripe, or Resend: a temporary provider outage should not pull the
+        whole app out of a load balancer's rotation when it can still serve
+        search, auth, and read-only routes just fine.
+
+        It DOES validate that the *configured* communication provider can be
+        resolved at all (V9 Production Transactional Email §22) - this is a
+        pure configuration check (env vars present, key shape looks right),
+        never a network call to Resend, so a real provider outage never
+        affects readiness, but a deployment that turns on
+        ``COMMUNICATION_LIVE_SENDING_ENABLED=true`` with
+        ``COMMUNICATION_PROVIDER=resend`` and a missing/malformed
+        ``RESEND_API_KEY``/``RESEND_FROM_EMAIL`` fails loudly here instead of
+        silently sending nothing on the first real booking."""
         try:
             get_db().query_one("SELECT 1")
         except Exception:
             return JSONResponse(status_code=503, content={"status": "not_ready"})
+        try:
+            resolve_communication_provider()
+        except Exception:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "not_ready", "reason": "communication_provider_misconfigured"},
+            )
         return JSONResponse(status_code=200, content={"status": "ready"})
 
     if os.getenv("DETOURA_METRICS_ENABLED", "").strip().lower() in ("1", "true", "yes"):

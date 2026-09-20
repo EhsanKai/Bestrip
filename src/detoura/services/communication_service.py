@@ -26,10 +26,17 @@ from ..models.communication import (
     CommunicationType,
     CustomerCommunication,
 )
+from ..observability import metrics as _metrics
 from ..persistence import communications as store
 from ..persistence.db import Database
 from ..providers.communication_provider import CommunicationProvider, CommunicationSendResult
 from ..communication_config import resolve_communication_provider
+
+_OUTCOME_BY_STATUS = {
+    CommunicationStatus.SENT: "sent",
+    CommunicationStatus.FAILED: "failed",
+    CommunicationStatus.UNKNOWN: "unknown",
+}
 
 
 class NoSuchCommunication(Exception):
@@ -244,6 +251,10 @@ def _apply_send_result(
         db, attempt_id=attempt.attempt_id, completed_at=now, status=target.value,
         provider_message_id=result.provider_message_id,
     )
+    _metrics.observe_communication_transition(
+        provider=attempt.provider_name, communication_type=communication.communication_type.value,
+        outcome=_OUTCOME_BY_STATUS.get(target, "unknown"),
+    )
     stored = communication
     if communication.status != target and target in _reachable(communication.status) | {communication.status}:
         try:
@@ -301,6 +312,10 @@ def reconcile_communication(
     )
     store.update_attempt_completion(
         db, attempt_id=latest.attempt_id, completed_at=now, status=target.value,
+    )
+    _metrics.observe_communication_transition(
+        provider=latest.provider_name, communication_type=communication.communication_type.value,
+        outcome=_OUTCOME_BY_STATUS.get(target, "unknown"),
     )
     store.record_event(db, CommunicationEvent(
         event_id=_event_id(), communication_id=communication.communication_id,

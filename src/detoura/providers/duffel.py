@@ -1111,6 +1111,28 @@ def _parse_dt(value: Any) -> datetime | None:
         return None
 
 
+#: A title implies a gender when the traveller didn't separately choose one
+#: (both fields are optional and collected independently - see
+#: ``TravelerInput``). ``"dr"``/no title stays unresolved, same as before.
+_TITLE_IMPLIED_GENDER = {"mr": "m", "ms": "f", "mrs": "f", "miss": "f"}
+
+
+def _duffel_gender(traveler) -> str:
+    """Found live, real provider E2E: an unconditional ``"m"`` default here,
+    independent of ``title``'s own independent default (``"mr"``), produced
+    a genuinely inconsistent passenger (e.g. ``title="ms"``, ``gender="m"``)
+    whenever a traveller supplied a title implying a different gender but no
+    explicit gender - which real Duffel Order creation validates and
+    rejects (``422 validation_format``) even though nothing in this
+    codebase's own contract required gender and title to agree. Never
+    triggered before this session: every prior E2E ran against the sandbox
+    provider, which performs no such cross-field validation."""
+    if traveler.gender:
+        return traveler.gender.value
+    title = traveler.title.value if traveler.title else None
+    return _TITLE_IMPLIED_GENDER.get(title, "m")
+
+
 def duffel_passengers_from(offer: dict, travelers) -> list[dict]:
     """Map Detoura travellers onto the offer's own passenger slots.
 
@@ -1129,7 +1151,7 @@ def duffel_passengers_from(offer: dict, travelers) -> list[dict]:
             "born_on": traveler.born_on.isoformat(),
             "email": traveler.email,
             "phone_number": _e164(traveler.phone),
-            "gender": (traveler.gender.value if traveler.gender else "m"),
+            "gender": _duffel_gender(traveler),
             "title": (traveler.title.value if traveler.title else "mr"),
         }
         if traveler.nationality:

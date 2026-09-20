@@ -120,10 +120,16 @@ def get_payment(payment_id: str, request: Request) -> dict:
 
 
 @router.post("/{payment_id}/confirm")
-def confirm_payment(payment_id: str, request: Request) -> dict:
+def confirm_payment(payment_id: str, request: Request, body: dict | None = None) -> dict:
     """Authorize the payment against its frozen checkout snapshot (§D/§N).
     Idempotent - a duplicate/concurrent confirm returns the same resulting
-    transaction, never a second authorization (§J, §X.7)."""
+    transaction, never a second authorization (§J, §X.7).
+
+    Body (optional): ``{"payment_method": "..."}`` - an opaque payment-method
+    token the client already tokenized (e.g. via Stripe.js/Elements) - never
+    raw card data, never an amount. Ignored by providers with no concept of
+    it (e.g. the sandbox adapter).
+    """
     session = get_optional_session(request)
     user_id = session.user_id if session else None
     db = get_db()
@@ -133,6 +139,8 @@ def confirm_payment(payment_id: str, request: Request) -> dict:
     if session is not None:
         require_csrf(request, session)
 
+    payment_method = str((body or {}).get("payment_method", "") or "").strip() or None
+
     snapshot = store.get_snapshot(db, payment.checkout_snapshot_id)
     if snapshot is not None and snapshot.is_expired():
         raise PaymentNotAllowed(
@@ -141,7 +149,10 @@ def confirm_payment(payment_id: str, request: Request) -> dict:
         )
     provider = resolve_provider()
     try:
-        updated = ps.authorize_payment(db, payment=payment, provider=provider, snapshot=snapshot)
+        updated = ps.authorize_payment(
+            db, payment=payment, provider=provider, snapshot=snapshot,
+            payment_method=payment_method,
+        )
     except store.StaleVersion:
         # A genuinely concurrent write already moved this payment on -
         # never surface as an unhandled 500; the caller re-fetches and

@@ -128,6 +128,7 @@ class SandboxPaymentProvider:
     # ------------------------------------------------------------------
     def authorize(
         self, *, idempotency_key: str, amount: float, currency: str, reference: str,
+        payment_method: str | None = None,
     ) -> ProviderResult:
         def compute() -> ProviderResult:
             outcome = _scripted_outcome(reference, "authorize")

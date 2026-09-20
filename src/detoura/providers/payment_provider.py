@@ -88,11 +88,16 @@ class PaymentProvider(Protocol):
 
     def authorize(
         self, *, idempotency_key: str, amount: float, currency: str, reference: str,
+        payment_method: str | None = None,
     ) -> ProviderResult:
         """Create + authorize (or, for a provider with no manual capture,
         create + capture in one step) a payment. ``reference`` is Detoura's
         own payment_id, threaded through for provider-side traceability -
-        never the other way around."""
+        never the other way around. ``payment_method`` is an opaque
+        provider-issued token identifying an already-tokenized payment
+        instrument (e.g. a Stripe ``PaymentMethod`` id produced client-side
+        by Stripe.js/Elements) - never raw card data. A provider that has no
+        concept of it (the sandbox) simply ignores it."""
 
     def capture(
         self, *, idempotency_key: str, provider_reference: str, amount: float | None = None,

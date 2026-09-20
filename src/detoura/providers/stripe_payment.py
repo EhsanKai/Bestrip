@@ -226,18 +226,29 @@ class StripePaymentProvider:
     # ------------------------------------------------------------------
     def authorize(
         self, *, idempotency_key: str, amount: float, currency: str, reference: str,
+        payment_method: str | None = None,
     ) -> ProviderResult:
+        data = {
+            "amount": str(_to_stripe_minor(amount)),
+            "currency": currency.lower(),
+            "capture_method": "manual",
+            "confirm": "true",
+            "metadata[detoura_reference]": reference,
+            "automatic_payment_methods[enabled]": "true",
+            "automatic_payment_methods[allow_redirects]": "never",
+        }
+        if payment_method:
+            # Stripe requires an already-tokenized payment method to confirm
+            # a PaymentIntent server-side; without one, ``confirm=true``
+            # always fails with "missing a payment method" (found live,
+            # against real Stripe Test Mode - no existing caller ever
+            # supplied one). The real production source of this value is a
+            # client-side Stripe.js/Elements tokenization step (still to be
+            # built in the frontend) - this adapter only ever forwards the
+            # opaque token, never sees or handles raw card data.
+            data["payment_method"] = payment_method
         resp = self._post(
-            "/payment_intents", idempotency_key=idempotency_key,
-            data={
-                "amount": str(_to_stripe_minor(amount)),
-                "currency": currency.lower(),
-                "capture_method": "manual",
-                "confirm": "true",
-                "metadata[detoura_reference]": reference,
-                "automatic_payment_methods[enabled]": "true",
-                "automatic_payment_methods[allow_redirects]": "never",
-            },
+            "/payment_intents", idempotency_key=idempotency_key, data=data,
         )
         if resp is None:
             return ProviderResult(ok=False, unknown=True, provider_reference=None, status="unknown",

@@ -396,7 +396,42 @@ def build_plan(
     # The latter is worse than useless: it buys outbound flights the traveller
     # can never continue from, and the search reports no trips because the data
     # stops, not because the trips do.
-    edges.sort(key=lambda e: (e.origin, e.destination, e.day))
+    #
+    # OUTBOUND/RETURN edges (touching a real origin airport) sort ahead of
+    # INTER_CITY edges (found live, real provider E2E, V9 Post-Phase-6): a
+    # plain alphabetical sort by ``origin`` has no notion of edge kind, so
+    # whenever the traveller's own airport code sorts late among the
+    # candidate cities' codes, the transport's own hard per-search call
+    # ceiling (``DuffelTransportProvider(max_calls=...)``) could be entirely
+    # consumed by exploratory inter-city edges between OTHER candidate
+    # destinations before a single edge touching the traveller's real origin
+    # was ever fetched - a live search that succeeds at every provider call
+    # and still returns zero bookable recommendations, every time, for any
+    # origin whose code doesn't happen to sort early. Inter-city coverage
+    # remains fully in scope, just never ahead of the edges that actually
+    # answer "can this traveller get there at all".
+    #
+    # Within that airport-touching group, sorted by *candidate city* rather
+    # than raw ``origin`` (found live, real provider E2E, same session): an
+    # OUTBOUND edge's origin is the airport and a RETURN edge's origin is the
+    # city, so sorting by ``origin`` alone splits one destination's outbound
+    # and return edges apart by (up to) the whole alphabet, and the by-day
+    # interleave below then took every RETURN edge across every candidate
+    # city before a single OUTBOUND edge - a live search with a real,
+    # complete round-trip in the acquired snapshot that still built zero
+    # recommendations, because outbound and return never both survived the
+    # same budget cut. Grouping by city first means the first candidate
+    # city (alphabetically) gets its outbound AND return edges, for every
+    # airport/day combination, before the second candidate city gets any.
+    airport_set = set(used_airports)
+
+    def _candidate_city(e: AcquisitionEdge) -> str:
+        return e.destination if e.origin in airport_set else e.origin
+
+    edges.sort(key=lambda e: (
+        0 if (e.origin in airport_set or e.destination in airport_set) else 1,
+        _candidate_city(e), e.day, e.origin, e.destination,
+    ))
     by_day: dict[date, list[AcquisitionEdge]] = {}
     for edge in edges:
         by_day.setdefault(edge.day, []).append(edge)

@@ -74,7 +74,7 @@ from ..services.revalidation import RevalidationLimitExceeded, revalidate_select
 from ..services.selection_store import selection_store
 from ..data.destinations import acquisition_catalog
 from ..services.live_search import live_search
-from ..services.acquisition import ProviderCallBudget
+from ..services.acquisition import ProviderCallBudget, days_for_request
 from ..services.search_intel_recorder import SearchIntelRecorder
 from ..search_intel_config import search_intel_config
 from .assembler import build_response, recommendation_dto
@@ -552,19 +552,35 @@ def _try_live_search(
     if duffel is None:
         return None
     try:
-        budget = ProviderCallBudget()
+        # Found live, real provider E2E (V9 Post-Phase-6 Search Integration):
+        # acquiring only ``request.date_from`` gives the beam an outbound leg
+        # and nothing to return on - every live search then acquires real
+        # offers successfully and still produces zero recommendations, for
+        # any origin/destination/budget, because a round trip needs a RETURN
+        # leg priced on a *different* day and none was ever fetched
+        # (``SnapshotTransportProvider.search`` keys strictly on
+        # ``departure_date``, so that lookup always misses). ``days_for_
+        # request`` already existed for exactly this reason (see its own
+        # docstring) but was never wired into this call site. Raising
+        # ``max_date_variants`` only changes which dates the still-16-call-
+        # capped ``DuffelTransportProvider`` may spend its budget on, not how
+        # many real calls happen.
+        budget = ProviderCallBudget(max_date_variants=max(request.duration_days, 1))
         db = get_db()
         recorder = SearchIntelRecorder(
             db, request, mode=mode.value, provider="duffel",
             provider_call_budget=budget.max_offer_requests, cfg=search_intel_config(),
         )
+        days = days_for_request(
+            request, [request.date_from], max_days=budget.max_date_variants,
+        ) or [request.date_from]
         return live_search(
             request,
             duffel=duffel,
             selection_store=selection_store(),
             destinations=acquisition_catalog(),
             airports=airports,
-            days=[request.date_from],
+            days=days,
             mode=mode,
             budget=budget,
             origin_resolver=origin_resolver,

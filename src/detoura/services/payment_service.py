@@ -230,6 +230,7 @@ def _provider_idempotency_key(payment_id: str, operation: str, version: int) -> 
 def authorize_payment(
     db: Database, *, payment: PaymentTransaction, provider: PaymentProvider,
     snapshot: CheckoutSnapshot | None = None, now: datetime | None = None,
+    payment_method: str | None = None,
 ) -> PaymentTransaction:
     """Idempotent: if ``payment`` is already past CREATED/REQUIRES_CUSTOMER_ACTION,
     returns it unchanged rather than calling the provider again."""
@@ -248,7 +249,7 @@ def authorize_payment(
     idem = _provider_idempotency_key(payment.payment_id, "authorize", payment.version)
     result = provider.authorize(
         idempotency_key=idem, amount=payment.customer_total, currency=payment.currency,
-        reference=payment.payment_id,
+        reference=payment.payment_id, payment_method=payment_method,
     )
     return _apply_authorize_result(db, payment=payment, result=result, now=now)
 

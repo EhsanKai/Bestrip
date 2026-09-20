@@ -303,18 +303,18 @@ def authorize_payment_for_booking(client, booking_id: str, *, idempotency_key: s
     import uuid
 
     idem = idempotency_key or f"idem_{uuid.uuid4().hex[:24]}"
-    created = client.post("/api/v1/payments", json={
-        "booking_id": booking_id, "idempotency_key": idem,
-    })
-    assert created.status_code == 200, created.text
-    payment_id = created.json()["payment_id"]
     # An authenticated session (a signed-in caller) requires the CSRF header
-    # payments.py's confirm_payment enforces; an anonymous one has no
-    # session/CSRF cookie at all, so this header is simply absent for it -
+    # payments.py enforces on both create and confirm; an anonymous one has
+    # no session/CSRF cookie at all, so this header is simply absent for it -
     # one helper covers both regressions (V9 Payment <-> Booking Coupling
     # tests 24/25/26).
     csrf = client.cookies.get("detoura_csrf")
     headers = {"X-CSRF-Token": csrf} if csrf else {}
+    created = client.post("/api/v1/payments", json={
+        "booking_id": booking_id, "idempotency_key": idem,
+    }, headers=headers)
+    assert created.status_code == 200, created.text
+    payment_id = created.json()["payment_id"]
     confirmed = client.post(f"/api/v1/payments/{payment_id}/confirm", headers=headers)
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json()["status"] == "AUTHORIZED", confirmed.json()

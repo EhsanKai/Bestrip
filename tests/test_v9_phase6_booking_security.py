@@ -374,7 +374,8 @@ def test_booking_id_capability_authorizes_execution_by_design_ownership_is_unaff
     r = owner_client.post("/api/v1/auth/login", json={"email": "owner@example.com", "password": "correct horse battery"})
     owner_id = r.json()["user_id"]
 
-    r = owner_client.post("/api/v1/booking-intents", json={
+    owner_csrf = owner_client.cookies.get("detoura_csrf")
+    r = owner_client.post("/api/v1/booking-intents", headers={"X-CSRF-Token": owner_csrf}, json={
         "demo_trip_label": "T", "demo_currency": "EUR", "demo_travelers": 1,
         "demo_legs": [{
             "origin": "CGN", "destination": "PRG", "departure": "2026-11-01T08:00:00",

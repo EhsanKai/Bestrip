@@ -54,6 +54,14 @@ def _register_and_login(client, email, password="correct horse battery"):
     return r.json()["user_id"]
 
 
+def _csrf_headers(client) -> dict:
+    """V9 CSRF hardening: create_booking_intent now enforces CSRF for a
+    signed-in caller, same as payments.py - every authenticated creation
+    call in this file needs the header the session's csrf cookie carries."""
+    csrf = client.cookies.get("detoura_csrf")
+    return {"X-CSRF-Token": csrf} if csrf else {}
+
+
 def _demo_booking_body(label="T", *, traveler_email="rider@example.com"):
     dep = (datetime.now() + timedelta(days=20)).replace(microsecond=0)
     return {
@@ -78,7 +86,7 @@ def test_a_signed_in_users_booking_intent_is_claimed_as_theirs(tmp_path, monkeyp
     client = _client(tmp_path, monkeypatch)
     user_id = _register_and_login(client, "traveler@example.com")
 
-    r = client.post("/api/v1/booking-intents", json=_demo_booking_body())
+    r = client.post("/api/v1/booking-intents", json=_demo_booking_body(), headers=_csrf_headers(client))
     assert r.status_code == 201
     booking_id = r.json()["booking_id"]
 
@@ -91,7 +99,7 @@ def test_owned_trip_appears_in_my_trips_for_that_user_only(tmp_path, monkeypatch
     client = _client(tmp_path, monkeypatch)
     _register_and_login(client, "owner@example.com")
 
-    r = client.post("/api/v1/booking-intents", json=_demo_booking_body())
+    r = client.post("/api/v1/booking-intents", json=_demo_booking_body(), headers=_csrf_headers(client))
     booking_id = r.json()["booking_id"]
 
     r = client.get("/api/v1/me/trips")
@@ -110,9 +118,11 @@ def test_another_users_my_trips_does_not_show_it_and_owner_only_fetch_is_idor_sa
     booking rather than a stub."""
     client = _client(tmp_path, monkeypatch)
     _register_and_login(client, "alice@example.com")
-    r = client.post("/api/v1/booking-intents", json=_demo_booking_body("Alice's trip"))
+    r = client.post(
+        "/api/v1/booking-intents", json=_demo_booking_body("Alice's trip"), headers=_csrf_headers(client),
+    )
     booking_id = r.json()["booking_id"]
-    client.post("/api/v1/auth/logout")
+    client.post("/api/v1/auth/logout", headers=_csrf_headers(client))
 
     _register_and_login(client, "bob@example.com")
     r = client.get("/api/v1/me/trips")
@@ -134,7 +144,7 @@ def test_ownership_does_not_come_from_traveler_email(tmp_path, monkeypatch):
 
     client = _client(tmp_path, monkeypatch)
     user_id = _register_and_login(client, "bob@example.com")
-    r = client.post("/api/v1/booking-intents", json=_demo_booking_body())
+    r = client.post("/api/v1/booking-intents", json=_demo_booking_body(), headers=_csrf_headers(client))
     booking_id = r.json()["booking_id"]
 
     client.post(f"/api/v1/booking-intents/{booking_id}/travelers", json={"travelers": [{
@@ -339,7 +349,7 @@ def test_booking_retry_after_ownership_exists_does_not_duplicate(tmp_path, monke
 
     client = _client(tmp_path, monkeypatch)
     user_id = _register_and_login(client, "retry@example.com")
-    r = client.post("/api/v1/booking-intents", json=_demo_booking_body())
+    r = client.post("/api/v1/booking-intents", json=_demo_booking_body(), headers=_csrf_headers(client))
     booking_id = r.json()["booking_id"]
 
     # Poll the intent a few more times - each GET/POST on it re-persists.
@@ -363,7 +373,7 @@ def test_recovery_required_journey_is_still_owned_and_visible(tmp_path, monkeypa
 
     client = _client(tmp_path, monkeypatch)
     user_id = _register_and_login(client, "recovery@example.com")
-    r = client.post("/api/v1/booking-intents", json=_demo_booking_body())
+    r = client.post("/api/v1/booking-intents", json=_demo_booking_body(), headers=_csrf_headers(client))
     booking_id = r.json()["booking_id"]
 
     # Force the in-memory run into a non-terminal-success phase and

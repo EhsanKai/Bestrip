@@ -503,7 +503,12 @@ _LEGS = [{
 
 
 def _create_all_in_one_intent(client, *, tier="ALL_IN_ONE"):
-    r = client.post("/api/v1/booking-intents", json={
+    # V9 CSRF hardening: create_booking_intent now enforces CSRF for a
+    # signed-in caller - a no-op header for the (far more common) anonymous
+    # callers of this helper, since they carry no detoura_csrf cookie at all.
+    csrf = client.cookies.get("detoura_csrf")
+    headers = {"X-CSRF-Token": csrf} if csrf else {}
+    r = client.post("/api/v1/booking-intents", headers=headers, json={
         "demo_trip_label": "T", "demo_currency": "EUR",
         "demo_legs": _LEGS, "service_tier": tier,
     })

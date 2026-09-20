@@ -61,7 +61,7 @@ from ..services.payment_booking_orchestrator import (
 )
 from ..payment_config import payment_config, resolve_provider
 from ..services.booking_orchestrator import BookingPhase
-from .auth import get_optional_session
+from .auth import get_optional_session, require_csrf
 from ..models.commercial import ServiceTier
 from ..persistence import analytics as analytics_store
 from ..persistence import get_db
@@ -1028,6 +1028,16 @@ def create_booking_intent(body: CreateBookingIntentRequest, request: Request) ->
     never from anything in `body`.
     """
     session = get_optional_session(request)
+    if session is not None:
+        # V9 CSRF hardening: this is the one booking-intent route whose
+        # outcome the ambient session cookie actually changes (who ends up
+        # owning the resulting trip, via owner_user_id below) - so, exactly
+        # like payments.py's create_payment, a signed-in caller must prove
+        # the request came from Detoura's own front end before that
+        # attribution happens. Every other booking-intent endpoint
+        # (travelers/confirm/tickets/...) is intentionally unauthenticated
+        # capability-by-booking_id and stays that way - unaffected here.
+        require_csrf(request, session)
     owner_user_id = session.user_id if session is not None else None
 
     if body.selection_id:

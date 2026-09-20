@@ -90,6 +90,12 @@ def create_payment(body: dict, request: Request) -> dict:
         raise PaymentNotAllowed("This booking has not been priced yet.")
 
     session = get_optional_session(request)
+    if session is not None:
+        # V9 CSRF hardening: creating a payment is exactly as dangerous as
+        # confirming or refunding one (below) and was the one mutation in
+        # this file that never actually checked it, despite an owning
+        # session being able to attach the result to that user's account.
+        require_csrf(request, session)
     user_id = session.user_id if session else None
     # A booking already tied to a signed-in user cannot be paid for by a
     # different one (§S) - checked the same anti-enumeration way as reads.

@@ -60,8 +60,15 @@ def _demo_booking_body(label="T"):
     }
 
 
+def _csrf_headers(client) -> dict:
+    csrf = client.cookies.get("detoura_csrf")
+    return {"X-CSRF-Token": csrf} if csrf else {}
+
+
 def _new_booking(client, label="T") -> str:
-    r = client.post("/api/v1/booking-intents", json=_demo_booking_body(label))
+    r = client.post(
+        "/api/v1/booking-intents", json=_demo_booking_body(label), headers=_csrf_headers(client),
+    )
     assert r.status_code == 201, r.text
     return r.json()["booking_id"]
 

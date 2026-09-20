@@ -117,7 +117,10 @@ def test_anonymous_cannot_pay_for_a_signed_in_users_booking(client):
 def test_cross_user_cannot_read_or_confirm_or_refund_someone_elses_payment(client):
     uid_a = _register_and_login(client, "a@example.com")
     _seed_booking(booking_id="bk_cross1", user_key=uid_a)
-    create = client.post("/api/v1/payments", json={"booking_id": "bk_cross1", "idempotency_key": "idem_cross1_a"})
+    create = client.post(
+        "/api/v1/payments", json={"booking_id": "bk_cross1", "idempotency_key": "idem_cross1_a"},
+        headers=_csrf_headers(client),
+    )
     assert create.status_code == 200
     payment_id = create.json()["payment_id"]
 
@@ -138,7 +141,10 @@ def test_cross_user_cannot_read_or_confirm_or_refund_someone_elses_payment(clien
 def test_owner_can_read_and_confirm_their_own_payment(client):
     uid = _register_and_login(client, "owner2@example.com")
     _seed_booking(booking_id="bk_owner2", user_key=uid)
-    create = client.post("/api/v1/payments", json={"booking_id": "bk_owner2", "idempotency_key": "idem_owner2_1"})
+    create = client.post(
+        "/api/v1/payments", json={"booking_id": "bk_owner2", "idempotency_key": "idem_owner2_1"},
+        headers=_csrf_headers(client),
+    )
     payment_id = create.json()["payment_id"]
     r_get = client.get(f"/api/v1/payments/{payment_id}")
     assert r_get.status_code == 200
@@ -167,7 +173,10 @@ def test_anonymous_payment_flow_remains_fully_functional(client):
 def test_confirm_by_signed_in_user_without_csrf_header_rejected(client):
     uid = _register_and_login(client, "csrf1@example.com")
     _seed_booking(booking_id="bk_csrf1", user_key=uid)
-    create = client.post("/api/v1/payments", json={"booking_id": "bk_csrf1", "idempotency_key": "idem_csrf1_1"})
+    create = client.post(
+        "/api/v1/payments", json={"booking_id": "bk_csrf1", "idempotency_key": "idem_csrf1_1"},
+        headers=_csrf_headers(client),
+    )
     payment_id = create.json()["payment_id"]
     r = client.post(f"/api/v1/payments/{payment_id}/confirm")  # no X-CSRF-Token
     assert r.status_code == 403
@@ -176,7 +185,10 @@ def test_confirm_by_signed_in_user_without_csrf_header_rejected(client):
 def test_refund_requires_sign_in_and_csrf(client):
     uid = _register_and_login(client, "csrf2@example.com")
     _seed_booking(booking_id="bk_csrf2", user_key=uid)
-    create = client.post("/api/v1/payments", json={"booking_id": "bk_csrf2", "idempotency_key": "idem_csrf2_1"})
+    create = client.post(
+        "/api/v1/payments", json={"booking_id": "bk_csrf2", "idempotency_key": "idem_csrf2_1"},
+        headers=_csrf_headers(client),
+    )
     payment_id = create.json()["payment_id"]
     client.post(f"/api/v1/payments/{payment_id}/confirm", headers=_csrf_headers(client))
 
@@ -191,7 +203,10 @@ def test_refund_requires_sign_in_and_csrf(client):
 def test_consumer_refund_is_full_remaining_only_client_amount_ignored(client):
     uid = _register_and_login(client, "refamt@example.com")
     _seed_booking(booking_id="bk_refamt1", user_key=uid, total=80.0)
-    create = client.post("/api/v1/payments", json={"booking_id": "bk_refamt1", "idempotency_key": "idem_refamt1_1"})
+    create = client.post(
+        "/api/v1/payments", json={"booking_id": "bk_refamt1", "idempotency_key": "idem_refamt1_1"},
+        headers=_csrf_headers(client),
+    )
     payment_id = create.json()["payment_id"]
     client.post(f"/api/v1/payments/{payment_id}/confirm", headers=_csrf_headers(client))
     # Manually capture via the domain layer to get to a refundable state
@@ -324,9 +339,11 @@ def test_concurrent_refund_race_is_a_clean_409_never_an_unhandled_500(client):
     the loser of the race never executed, not that anything broke."""
     uid = _register_and_login(client, "race1@example.com")
     _seed_booking(booking_id="bk_race1", user_key=uid, total=50.0)
-    create = client.post("/api/v1/payments", json={"booking_id": "bk_race1", "idempotency_key": "idem_race1_1"})
-    payment_id = create.json()["payment_id"]
     csrf = _csrf_headers(client)
+    create = client.post(
+        "/api/v1/payments", json={"booking_id": "bk_race1", "idempotency_key": "idem_race1_1"}, headers=csrf,
+    )
+    payment_id = create.json()["payment_id"]
     client.post(f"/api/v1/payments/{payment_id}/confirm", headers=csrf)
 
     from detoura.persistence import payments as pstore

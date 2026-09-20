@@ -86,7 +86,7 @@ export function JourneyDrawer({
   open,
   journey,
   onClose,
-  onContinueCheckout: _onContinueCheckout,
+  onContinueCheckout,
   onReviewChanges,
   onExploreJourneys,
   onViewJourney,
@@ -158,6 +158,10 @@ export function JourneyDrawer({
     }
     if (effectiveStatus === "priceReview") {
       onReviewChanges();
+      return;
+    }
+    if (effectiveStatus === "selected" || effectiveStatus === "checkout") {
+      onContinueCheckout();
       return;
     }
     onViewJourney();

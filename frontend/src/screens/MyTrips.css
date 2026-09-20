@@ -476,10 +476,31 @@
   font-size: 0.88rem;
 }
 
-.my-trips-documents a,
+.my-trips-documents__download,
 .my-trips-documents__unavailable {
   white-space: nowrap;
   font-weight: var(--weight-bold);
+}
+
+.my-trips-documents__download {
+  min-height: 40px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  padding: 0 14px;
+}
+
+.my-trips-documents__download:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.my-trips-callout--error {
+  border-color: var(--danger, #b0413e);
+  background: color-mix(in srgb, var(--danger, #b0413e) 10%, transparent);
 }
 
 .my-trips button:focus-visible {

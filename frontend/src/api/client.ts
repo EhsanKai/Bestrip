@@ -108,6 +108,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
+  const response = await fetch(`${BASE}${path}`, {
+    ...init,
+    credentials: "include",
+  });
+  if (!response.ok) {
+    let message = `Request failed (${response.status})`;
+    try {
+      const body = (await response.json()) as ApiErrorBody;
+      const detail = body.detail;
+      message =
+        typeof detail === "string" ? detail : (detail?.message ?? message);
+    } catch {
+      /* Binary endpoints may not return JSON errors. */
+    }
+    throw new DetouraApiError(message, response.status);
+  }
+  return response.blob();
+}
+
 function readCookie(name: string): string | null {
   const prefix = `${encodeURIComponent(name)}=`;
   const cookie = document.cookie
@@ -320,6 +340,13 @@ export const api = {
   getTripDocument(bookingId: string, documentId: string, signal?: AbortSignal) {
     return request<FinancialDocument>(
       `/me/trips/${encodeURIComponent(bookingId)}/documents/${encodeURIComponent(documentId)}`,
+      { signal },
+    );
+  },
+
+  downloadTripDocument(bookingId: string, documentId: string, signal?: AbortSignal) {
+    return requestBlob(
+      `/me/trips/${encodeURIComponent(bookingId)}/documents/${encodeURIComponent(documentId)}/download`,
       { signal },
     );
   },

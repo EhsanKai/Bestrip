@@ -163,7 +163,7 @@ export default function App() {
     setJourneyDrawerOpen(false);
     if (journeyTrip) {
       setSelected(journeyTrip);
-      setScreen("detail");
+      setScreen(journeyTrip.selection_id ? "booking" : "detail");
     }
   }, [journeyTrip]);
 

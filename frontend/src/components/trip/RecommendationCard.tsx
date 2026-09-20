@@ -41,6 +41,7 @@ export function RecommendationCard({
   const previewId = useId();
   const cityButtons = useRef<Record<string, HTMLButtonElement | null>>({});
   const activeMatch = trip.destination_matches?.find(match => match.city === activeCity);
+  const providerBookable = Boolean(trip.selection_id);
   const closePreview = () => {
     if (activeCity) cityButtons.current[activeCity]?.focus();
     setActiveCity(null);
@@ -162,8 +163,9 @@ export function RecommendationCard({
           </Button>
           <button
             type="button"
-            className="rec__select-journey"
+            className={`rec__select-journey${providerBookable ? "" : " rec__select-journey--limited"}`}
             onClick={() => onSelectJourney?.(trip)}
+            aria-describedby={providerBookable ? undefined : `${trip.id}-bookability`}
           >
             {Icon.route({ size: 15 })}
             Select journey
@@ -178,6 +180,11 @@ export function RecommendationCard({
             {saved ? Icon.heartFilled({ size: 18 }) : Icon.heart({ size: 18 })}
           </button>
         </div>
+        {!providerBookable && (
+          <p className="rec__bookability" id={`${trip.id}-bookability`}>
+            Planning recommendation only. Checkout opens when live provider inventory is available.
+          </p>
+        )}
       </div>
     </Card>
   );

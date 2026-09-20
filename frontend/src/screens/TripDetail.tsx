@@ -59,6 +59,7 @@ export function TripDetail({
   // still be "replace this city", a multi-city one can keep/remove/replace.
   const canEdit =
     Boolean(searchRequest) && Boolean(onReoptimized) && trip.cities.length >= 1;
+  const providerBookable = Boolean(trip.selection_id);
   return (
     <div className="detail">
       <div className="container">
@@ -263,13 +264,20 @@ export function TripDetail({
           </div>
           <Button
             size="lg"
+            disabled={!providerBookable}
             onClick={() => {
+              if (!providerBookable) return;
               track("booking_clicked", { trip_id: trip.id });
               onBook();
             }}
           >
-            Choose this journey
+            {providerBookable ? "Choose this journey" : "Checkout unavailable"}
           </Button>
+          {!providerBookable && (
+            <span className="detail__sticky-note">
+              This recommendation is not live provider inventory, so it cannot enter checkout.
+            </span>
+          )}
           <Button
             variant={saved ? "secondary" : "primary"}
             size="lg"

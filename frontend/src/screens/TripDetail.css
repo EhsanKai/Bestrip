@@ -260,6 +260,13 @@
   box-shadow: var(--shadow-lg);
 }
 
+.detail__sticky-note {
+  max-width: 260px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .detail__sticky-price {
   display: flex;
   flex-direction: column;

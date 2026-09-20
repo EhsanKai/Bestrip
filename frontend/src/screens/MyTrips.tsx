@@ -49,6 +49,10 @@ export function MyTrips({ accountStatus, onDiscover, onLogin }: MyTripsProps) {
     confirmation: null,
     documents: [],
   });
+  const [downloadState, setDownloadState] = useState<{
+    id: string | null;
+    error: string | null;
+  }>({ id: null, error: null });
   const loadTrips = useCallback(async (signal?: AbortSignal) => {
     setListStatus("loading");
     setListError(null);
@@ -84,6 +88,7 @@ export function MyTrips({ accountStatus, onDiscover, onLogin }: MyTripsProps) {
     if (!selectedId || accountStatus !== "authenticated") {
       // oxlint-disable-next-line react/set-state-in-effect
       setDetail({ status: "idle", error: null, trip: null, confirmation: null, documents: [] });
+      setDownloadState({ id: null, error: null });
       return;
     }
     const controller = new AbortController();
@@ -151,8 +156,31 @@ export function MyTrips({ accountStatus, onDiscover, onLogin }: MyTripsProps) {
     return (
       <TripDetailView
         detail={detail}
+        downloadState={downloadState}
         onBack={() => setSelectedId(null)}
         onRetry={() => setSelectedId((id) => id)}
+        onDownload={async (document) => {
+          if (!selectedId || !document.download_available) return;
+          setDownloadState({ id: document.document_id, error: null });
+          try {
+            const blob = await api.downloadTripDocument(selectedId, document.document_id);
+            const url = URL.createObjectURL(blob);
+            const link = window.document.createElement("a");
+            link.href = url;
+            link.download = `${document.document_number || document.document_id}.pdf`;
+            link.rel = "noreferrer";
+            window.document.body.append(link);
+            link.click();
+            link.remove();
+            window.setTimeout(() => URL.revokeObjectURL(url), 0);
+            setDownloadState({ id: null, error: null });
+          } catch (error) {
+            setDownloadState({
+              id: null,
+              error: messageFor(error, "We could not download this document."),
+            });
+          }
+        }}
       />
     );
   }
@@ -245,12 +273,16 @@ function TripCard({
 
 function TripDetailView({
   detail,
+  downloadState,
   onBack,
   onRetry,
+  onDownload,
 }: {
   detail: DetailState;
+  downloadState: { id: string | null; error: string | null };
   onBack: () => void;
   onRetry: () => void;
+  onDownload: (document: FinancialDocument) => Promise<void>;
 }) {
   if (detail.status === "loading") {
     return (
@@ -323,6 +355,11 @@ function TripDetailView({
         <aside className="my-trips-detail__side">
           <section className="my-trips-panel" aria-labelledby="documents-title">
             <h2 id="documents-title">Financial documents</h2>
+            {downloadState.error && (
+              <p className="my-trips-callout my-trips-callout--error" role="alert">
+                {downloadState.error}
+              </p>
+            )}
             {documents.length === 0 ? (
               <p className="muted">No financial documents have been issued for this trip.</p>
             ) : (
@@ -334,9 +371,14 @@ function TripDetailView({
                       <span>{dayMonth(document.issued_at)} · {money(document.customer_total, document.currency)}</span>
                     </div>
                     {document.download_available ? (
-                      <a href={document.download_url} download>
-                        Download PDF
-                      </a>
+                      <button
+                        type="button"
+                        className="my-trips-documents__download"
+                        disabled={downloadState.id === document.document_id}
+                        onClick={() => void onDownload(document)}
+                      >
+                        {downloadState.id === document.document_id ? "Downloading..." : "Download PDF"}
+                      </button>
                     ) : (
                       <span className="my-trips-documents__unavailable">Unavailable</span>
                     )}

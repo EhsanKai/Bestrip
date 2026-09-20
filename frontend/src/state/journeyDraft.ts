@@ -38,9 +38,10 @@ export function toDrawerModel(draft: JourneyDraft): JourneyDrawerModel {
   const { trip, searchContext } = draft;
   const estimatedTotal = trip.total_with_known_baggage ?? trip.total_price;
   const baggageLine = baggageDisplay(trip);
+  const providerBookable = Boolean(trip.selection_id);
   return {
     id: trip.id,
-    status: "selected",
+    status: providerBookable ? "checkout" : "selected",
     stops: trip.stays.length
       ? trip.stays.map((stay) => ({
           city: stay.city,

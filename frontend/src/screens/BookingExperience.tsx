@@ -190,41 +190,21 @@ export function BookingExperience({
   const ensureIntent = useCallback(
     async (chosenTier: ServiceTier): Promise<string> => {
       if (bookingId) return bookingId;
+      if (!trip.selection_id) {
+        throw new DetouraApiError(
+          "This recommendation is not connected to live provider inventory. Go back to Discover and choose a live result.",
+          422,
+        );
+      }
       const created = await api.createBookingIntent({
-        ...(trip.selection_id
-          ? { selection_id: trip.selection_id }
-          : {
-              demo_trip_label: trip.route,
-              demo_currency: trip.currency,
-              demo_travelers: partySize,
-              // The whole-trip estimate — for display only. The server prices the
-              // supplier transport from the legs, never from this.
-              demo_trip_estimate: {
-                total: trip.total_price,
-                transport: trip.costs.transport,
-                accommodation: trip.costs.accommodation,
-                transfer: trip.costs.ground_transfer,
-              },
-              demo_legs: legs.map((l) => {
-                const [carrier, ...rest] = (l.operator || "").split(" ");
-                return {
-                  origin: l.from,
-                  destination: l.to,
-                  departure: l.departure,
-                  arrival: l.arrival,
-                  carrier: carrier || "",
-                  flight_number: rest.join(" "),
-                  price_per_person: l.price_per_person,
-                };
-              }),
-            }),
+        selection_id: trip.selection_id,
         service_tier: chosenTier,
       });
       setBookingId(created.booking_id);
       setIntent(created);
       return created.booking_id;
     },
-    [bookingId, legs, trip, partySize],
+    [bookingId, trip.selection_id],
   );
 
   // Create the intent as soon as the screen opens so the tier comparison shows
@@ -452,6 +432,13 @@ export function BookingExperience({
 
         <section className="booking__panel">
           {error && <div className="booking__error">{error}</div>}
+
+          {!providerBookable && (
+            <div className="booking__error">
+              This journey is not backed by a live provider selection, so
+              Detoura cannot open checkout or ticketing for it.
+            </div>
+          )}
 
           {phase === "tier" && (
             <TierStep

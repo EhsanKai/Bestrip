@@ -172,6 +172,18 @@
   }
 }
 
+.rec__select-journey--limited {
+  border-style: dashed;
+}
+
+.rec__bookability {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
 
 /* Photo composition: one panorama, two angled panes, three strips, then mosaic. */
 .app .rec .rec__hero { position: relative; min-height: 330px; }

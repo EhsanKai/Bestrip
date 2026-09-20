@@ -222,3 +222,38 @@ def test_traveler_model_has_no_account_fields():
     fields = set(Traveler.model_fields)
     for bad in ("user_id", "password_hash", "email_normalized"):
         assert bad not in fields
+
+
+# ======================================================================
+# V9 account/auth security audit: a 422 validation error must never echo a
+# submitted password back in its response body. FastAPI's default handler
+# for RequestValidationError puts the raw invalid value in each error's
+# "input" - harmless for most fields, but a password that merely exceeds the
+# max-length check came back verbatim in the response otherwise.
+# ======================================================================
+def test_register_oversized_password_422_does_not_echo_password(client):
+    secret_marker = "AuditRegressionSecretMarker123!"
+    oversized = secret_marker + ("a" * 1200)  # exceeds RegisterRequest.password max_length=1000
+    r = client.post("/api/v1/auth/register", json={"email": "audit-422@example.com", "password": oversized})
+    assert r.status_code == 422
+    assert secret_marker not in r.text
+    detail = r.json()["detail"]
+    assert any(err.get("loc") == ["body", "password"] and "input" not in err for err in detail)
+
+
+def test_login_oversized_password_422_does_not_echo_password(client):
+    secret_marker = "AuditRegressionLoginMarker456!"
+    oversized = secret_marker + ("a" * 1200)
+    r = client.post("/api/v1/auth/login", json={"email": "audit-422@example.com", "password": oversized})
+    assert r.status_code == 422
+    assert secret_marker not in r.text
+
+
+def test_non_sensitive_field_validation_error_still_echoes_input(client):
+    """The redaction is scoped to sensitive field names - an ordinary field
+    (email) still reports its invalid value, since there is nothing to
+    protect and the client needs to see what it sent."""
+    r = client.post("/api/v1/auth/register", json={"email": "x", "password": "a-fine-password"})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert any(err.get("loc") == ["body", "email"] and err.get("input") == "x" for err in detail)

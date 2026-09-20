@@ -25,6 +25,8 @@ import logging
 import os
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
@@ -56,6 +58,15 @@ _logger = logging.getLogger("detoura.api")
 # Where the Vite dev server runs. Kept as the default because the common case
 # is a developer with `npm run dev` on one port and `uvicorn` on another.
 DEV_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
+
+#: Field names whose submitted value a 422 validation error must never echo
+#: back (see ``_validation_exception_handler``) - mirrors the intent of
+#: ``observability.logging.FORBIDDEN_FIELDS`` but for API responses rather
+#: than logs.
+_SENSITIVE_VALIDATION_FIELDS = frozenset({
+    "password", "token", "secret", "csrf", "csrf_token", "authorization",
+    "cookie", "card_number", "cvc", "cvv", "client_secret",
+})
 
 DESCRIPTION = """
 **Detoura** - AI travel discovery and optimization.
@@ -163,6 +174,24 @@ def create_app() -> FastAPI:
             status_code=500,
             content={"detail": {"message": "An unexpected error occurred.", "request_id": request_id}},
         )
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Same shape as FastAPI's own default handler, except a field whose
+        name marks it sensitive never has its submitted value echoed back
+        (V9 account/auth security audit): FastAPI's default handler puts the
+        raw invalid value in each error's ``input``, so a password that only
+        failed a length check - never anything about its content - came back
+        verbatim in the 422 body. ``type``/``loc``/``msg`` are kept, so the
+        client still learns *what* was wrong, just not the secret itself."""
+        errors = jsonable_encoder(exc.errors())
+        for error in errors:
+            loc = error.get("loc") or ()
+            if any(str(part).lower() in _SENSITIVE_VALIDATION_FIELDS for part in loc):
+                error.pop("input", None)
+        return JSONResponse(status_code=422, content={"detail": errors})
 
     @app.get("/readyz")
     def readyz() -> JSONResponse:

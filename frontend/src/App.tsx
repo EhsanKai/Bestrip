@@ -16,6 +16,7 @@ import {
 import { MobileNav } from "./components/shell/MobileNav";
 import { track } from "./lib/analytics";
 import { funnel } from "./lib/funnel";
+import { applyNoIndexSeo, applyPublicHomeSeo } from "./lib/seo";
 const Compare = lazy(() => import("./screens/Compare").then(module => ({ default: module.Compare })));
 const Discover = lazy(() => import("./screens/Discover").then(module => ({ default: module.Discover })));
 import { Landing } from "./screens/Landing";
@@ -81,6 +82,17 @@ export default function App() {
       });
     } else if (search.status === "failed" && screen === "searching") setScreen("results");
   }, [search.status, screen, search.response]);
+
+  useEffect(() => {
+    if (screen === "landing") {
+      applyPublicHomeSeo();
+      return;
+    }
+    applyNoIndexSeo(
+      "Detoura app | Private trip planning",
+      "This Detoura application state is for trip planning, checkout, account, or booking use and is not intended for search indexing.",
+    );
+  }, [screen]);
 
   const runSearch = useCallback(
     (request: TripSearchRequest) => {

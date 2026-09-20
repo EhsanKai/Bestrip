@@ -54,10 +54,12 @@ def hash_token(token: str) -> str:
 # Accounts
 # ======================================================================
 def create_user(
-    db: Database, *, email_normalized: str, password_hash: str, now: datetime | None = None,
+    db: Database, *, email_normalized: str, password_hash: str | None, now: datetime | None = None,
 ) -> str:
     """Raises :class:`DuplicateEmail` if the normalized email is already
-    registered. Returns the new ``user_id``."""
+    registered. Returns the new ``user_id``. ``password_hash=None`` creates
+    a Google-only account (V9 Google auth §11) - never an empty string or a
+    random hidden value standing in for "no password"."""
     now = now or datetime.now(timezone.utc)
     ts = now.isoformat()
     user_id = new_user_id()
@@ -211,3 +213,245 @@ def list_trip_ids_for_user(db: Database, user_id: str) -> Sequence[str]:
         "SELECT booking_id FROM trip_ownership WHERE user_id=? ORDER BY claimed_at DESC", (user_id,),
     )
     return [r["booking_id"] for r in rows]
+
+
+# ======================================================================
+# Auth identities (V9 Google auth) - one row per (provider, provider_subject)
+# ======================================================================
+def new_identity_id() -> str:
+    return "ident_" + secrets.token_urlsafe(16)
+
+
+def create_identity(
+    db: Database, *, user_id: str, provider: str, provider_subject: str,
+    provider_email: str = "", now: datetime | None = None,
+) -> str:
+    """Raises the DB's own ``IntegrityError`` if ``(provider,
+    provider_subject)`` is already bound to some account - callers must
+    check :func:`get_identity_by_subject` first inside the same decision,
+    never rely on this as the only guard, since "already linked to a
+    DIFFERENT user" is a conflict to detect and report, not merely an
+    insert to retry."""
+    now = now or datetime.now(timezone.utc)
+    ts = now.isoformat()
+    identity_id = new_identity_id()
+    with db.write() as conn:
+        conn.execute(
+            "INSERT INTO auth_identities (identity_id, user_id, provider, provider_subject,"
+            " provider_email, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            (identity_id, user_id, provider, provider_subject, provider_email, ts, ts),
+        )
+    return identity_id
+
+
+def create_google_user_with_identity(
+    db: Database, *, email_normalized: str, provider: str, provider_subject: str,
+    provider_email: str, now: datetime | None = None,
+) -> str:
+    """Case A (brand-new Google identity) needs both rows to exist
+    together or not at all: two separate ``db.write()`` transactions (one
+    per table) leave a real, if narrow, window between them where a second
+    concurrent sign-in for the exact same identity could observe "account
+    exists, no identity yet" and misread it as Case C (existing account,
+    unlinked identity) - safe (no data corruption, no auth bypass) but
+    confusing. One transaction closes that window entirely. Raises
+    :class:`DuplicateEmail` exactly like :func:`create_user`."""
+    now = now or datetime.now(timezone.utc)
+    ts = now.isoformat()
+    user_id = new_user_id()
+    identity_id = new_identity_id()
+    try:
+        with db.write() as conn:
+            conn.execute(
+                "INSERT INTO user_accounts (user_id, email_normalized, password_hash,"
+                " status, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                (user_id, email_normalized, None, "ACTIVE", ts, ts),
+            )
+            conn.execute(
+                "INSERT INTO auth_identities (identity_id, user_id, provider, provider_subject,"
+                " provider_email, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+                (identity_id, user_id, provider, provider_subject, provider_email, ts, ts),
+            )
+    except Exception as exc:  # sqlite3.IntegrityError on either UNIQUE constraint
+        if "UNIQUE" in str(exc).upper():
+            raise DuplicateEmail("an account with this email already exists") from exc
+        raise
+    return user_id
+
+
+def get_identity_by_subject(db: Database, *, provider: str, provider_subject: str) -> dict | None:
+    row = db.query_one(
+        "SELECT * FROM auth_identities WHERE provider=? AND provider_subject=?",
+        (provider, provider_subject),
+    )
+    return dict(row) if row else None
+
+
+def list_identities_for_user(db: Database, user_id: str) -> Sequence[dict]:
+    rows = db.query(
+        "SELECT * FROM auth_identities WHERE user_id=? ORDER BY created_at", (user_id,),
+    )
+    return [dict(r) for r in rows]
+
+
+def touch_identity_email(
+    db: Database, identity_id: str, *, provider_email: str, now: datetime | None = None,
+) -> None:
+    """Refreshes the cached ``provider_email`` metadata only - never
+    re-keys or re-links the identity itself (V9 Google auth §5: a changed
+    Google email never moves which Detoura account this identity points
+    at)."""
+    ts = (now or datetime.now(timezone.utc)).isoformat()
+    with db.write() as conn:
+        conn.execute(
+            "UPDATE auth_identities SET provider_email=?, updated_at=? WHERE identity_id=?",
+            (provider_email, ts, identity_id),
+        )
+
+
+def delete_identities_for_user(db: Database, user_id: str) -> int:
+    with db.write() as conn:
+        cur = conn.execute("DELETE FROM auth_identities WHERE user_id=?", (user_id,))
+        return cur.rowcount
+
+
+# ======================================================================
+# Password reset tokens - opaque, single-use, hashed at rest (§10)
+# ======================================================================
+def new_reset_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def create_reset_token(
+    db: Database, *, user_id: str, token_hash: str, ttl_seconds: int, now: datetime | None = None,
+) -> None:
+    from datetime import timedelta
+
+    now = now or datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=ttl_seconds)
+    with db.write() as conn:
+        conn.execute(
+            "INSERT INTO password_reset_tokens (token_hash, user_id, created_at, expires_at)"
+            " VALUES (?,?,?,?)",
+            (token_hash, user_id, now.isoformat(), expires_at.isoformat()),
+        )
+
+
+def get_reset_token(db: Database, token_hash: str) -> dict | None:
+    row = db.query_one("SELECT * FROM password_reset_tokens WHERE token_hash=?", (token_hash,))
+    return dict(row) if row else None
+
+
+def consume_reset_token(db: Database, token_hash: str, *, now: datetime | None = None) -> bool:
+    """Atomically claims the token - ``True`` only for the first caller to
+    consume an unconsumed row; a repeated/racing confirm with the same
+    token gets ``False`` (§10 "single use")."""
+    ts = (now or datetime.now(timezone.utc)).isoformat()
+    with db.write() as conn:
+        cur = conn.execute(
+            "UPDATE password_reset_tokens SET consumed_at=? WHERE token_hash=? AND consumed_at IS NULL",
+            (ts, token_hash),
+        )
+        return cur.rowcount == 1
+
+
+# ======================================================================
+# Google OAuth transport state (state -> PKCE verifier/nonce), V9 Google auth
+# ======================================================================
+def new_oauth_state() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def create_pending_oauth(
+    db: Database, *, state_hash: str, code_verifier: str, nonce: str,
+    link_user_id: str | None, ttl_seconds: int, now: datetime | None = None,
+) -> None:
+    from datetime import timedelta
+
+    now = now or datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=ttl_seconds)
+    with db.write() as conn:
+        conn.execute(
+            "INSERT INTO google_oauth_pending (state_hash, code_verifier, nonce, link_user_id,"
+            " created_at, expires_at) VALUES (?,?,?,?,?,?)",
+            (state_hash, code_verifier, nonce, link_user_id, now.isoformat(), expires_at.isoformat()),
+        )
+
+
+def consume_pending_oauth(db: Database, state_hash: str, *, now: datetime | None = None) -> dict | None:
+    """Atomically reads and claims the pending round trip in one
+    transaction - a callback is only ever honoured once per ``state``
+    (single-use, closes an authorization-code/state replay window)."""
+    ts = (now or datetime.now(timezone.utc)).isoformat()
+    with db.write() as conn:
+        row = conn.execute(
+            "SELECT * FROM google_oauth_pending WHERE state_hash=? AND consumed_at IS NULL",
+            (state_hash,),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE google_oauth_pending SET consumed_at=? WHERE state_hash=?", (ts, state_hash),
+        )
+    return dict(row)
+
+
+# ======================================================================
+# Pending Google account links (Case C - existing password account, same
+# email, unauthenticated Google sign-in) - V9 Google auth
+# ======================================================================
+def new_link_id() -> str:
+    return "glink_" + secrets.token_urlsafe(16)
+
+
+def create_pending_link(
+    db: Database, *, provider_subject: str, provider_email: str,
+    ttl_seconds: int, now: datetime | None = None,
+) -> str:
+    from datetime import timedelta
+
+    now = now or datetime.now(timezone.utc)
+    link_id = new_link_id()
+    expires_at = now + timedelta(seconds=ttl_seconds)
+    with db.write() as conn:
+        conn.execute(
+            "INSERT INTO pending_google_links (link_id, provider_subject, provider_email,"
+            " created_at, expires_at) VALUES (?,?,?,?,?)",
+            (link_id, provider_subject, provider_email, now.isoformat(), expires_at.isoformat()),
+        )
+    return link_id
+
+
+def consume_pending_link(db: Database, link_id: str, *, now: datetime | None = None) -> dict | None:
+    ts = (now or datetime.now(timezone.utc)).isoformat()
+    with db.write() as conn:
+        row = conn.execute(
+            "SELECT * FROM pending_google_links WHERE link_id=? AND consumed_at IS NULL", (link_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE pending_google_links SET consumed_at=? WHERE link_id=?", (ts, link_id),
+        )
+    return dict(row)
+
+
+# ======================================================================
+# Account deletion (§13) - deactivate + scrub what is safely erasable.
+# Never touches trip_ownership, checkout_snapshots, payment_transactions,
+# financial_documents, or any other financial/booking record.
+# ======================================================================
+def scrub_account_for_deletion(db: Database, user_id: str, *, now: datetime | None = None) -> None:
+    ts = (now or datetime.now(timezone.utc)).isoformat()
+    tombstone = f"deleted-{user_id}@deleted.invalid"
+    with db.write() as conn:
+        conn.execute(
+            "UPDATE user_accounts SET status='DELETED', email_normalized=?,"
+            " password_hash=NULL, updated_at=? WHERE user_id=?",
+            (tombstone, ts, user_id),
+        )
+        conn.execute(
+            "UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",
+            (ts, user_id),
+        )
+        conn.execute("DELETE FROM auth_identities WHERE user_id=?", (user_id,))

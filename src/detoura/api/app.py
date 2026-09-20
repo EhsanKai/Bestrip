@@ -39,6 +39,8 @@ from ..persistence import get_db
 from ..services.feedback import configure_sessions
 from ..services.session_store import store_from_env
 from .auth import router as auth_router
+from .auth_account import router as auth_account_router
+from .auth_google import router as auth_google_router
 from .body_limit import DEFAULT_MAX_BODY_BYTES, MaxBodySizeMiddleware
 from .destination_images import mount_destination_images
 from .destination_images import router as destination_images_router
@@ -60,13 +62,22 @@ _logger = logging.getLogger("detoura.api")
 # is a developer with `npm run dev` on one port and `uvicorn` on another.
 DEV_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
 
-#: Field names whose submitted value a 422 validation error must never echo
-#: back (see ``_validation_exception_handler``) - mirrors the intent of
-#: ``observability.logging.FORBIDDEN_FIELDS`` but for API responses rather
-#: than logs.
+#: Field-name fragments whose submitted value a 422 validation error must
+#: never echo back (see ``_validation_exception_handler``) - mirrors the
+#: intent of ``observability.logging.FORBIDDEN_FIELDS`` but for API
+#: responses rather than logs. Matched as a substring, not an exact name
+#: (V9 Google auth + account lifecycle security review): the original,
+#: exact-match version of this set caught ``password`` but not
+#: ``current_password``/``new_password`` - both real field names on the
+#: password-change/reset endpoints added in this slice - which reproduced
+#: the exact same verbatim-secret-in-a-422-body leak the exact-match
+#: version was written to fix, just under a different field name. A
+#: substring match is the only way this list does not need a new literal
+#: entry every time a future endpoint's field happens to end in
+#: ``_password`` instead of being named ``password``.
 _SENSITIVE_VALIDATION_FIELDS = frozenset({
-    "password", "token", "secret", "csrf", "csrf_token", "authorization",
-    "cookie", "card_number", "cvc", "cvv", "client_secret",
+    "password", "token", "secret", "csrf", "authorization",
+    "cookie", "card_number", "cvc", "cvv",
 })
 
 DESCRIPTION = """
@@ -190,7 +201,10 @@ def create_app() -> FastAPI:
         errors = jsonable_encoder(exc.errors())
         for error in errors:
             loc = error.get("loc") or ()
-            if any(str(part).lower() in _SENSITIVE_VALIDATION_FIELDS for part in loc):
+            if any(
+                sensitive in str(part).lower()
+                for part in loc for sensitive in _SENSITIVE_VALIDATION_FIELDS
+            ):
                 error.pop("input", None)
         return JSONResponse(status_code=422, content={"detail": errors})
 
@@ -241,6 +255,8 @@ def create_app() -> FastAPI:
     # route are unaffected - nothing on the search/booking path depends on
     # these.
     app.include_router(auth_router)
+    app.include_router(auth_google_router)
+    app.include_router(auth_account_router)
     app.include_router(me_trips_router)
     # V9 Phase 4: payment intents/confirm/refund + provider webhook.
     # Server-owned amount/currency/quote throughout - never client-supplied.

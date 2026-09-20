@@ -179,8 +179,19 @@ def login(
         raise AuthError(GENERIC_LOGIN_FAILURE)
 
     if user["status"] != AccountStatus.ACTIVE.value:
-        verify_password(password, user["password_hash"])  # constant-shape, see above
+        verify_password(password, user["password_hash"] or _DUMMY_HASH)  # constant-shape, see above
         _record_login_failure(db, actor=user["user_id"], note="account disabled")
+        raise AuthError(GENERIC_LOGIN_FAILURE)
+
+    # A Google-only account (V9 Google auth §11) has no password credential
+    # at all - `password_hash` is genuinely NULL, never an empty string or
+    # a random hidden value. Verifying against the fixed dummy hash keeps
+    # this branch's timing indistinguishable from a real wrong-password
+    # check, and the failure is the exact same generic message: which auth
+    # method an account uses is not a fact login is allowed to reveal.
+    if user["password_hash"] is None:
+        verify_password(password, _DUMMY_HASH)
+        _record_login_failure(db, actor=user["user_id"], note="no password set")
         raise AuthError(GENERIC_LOGIN_FAILURE)
 
     if not verify_password(password, user["password_hash"]):
@@ -194,19 +205,27 @@ def login(
     # room to keep guessing against the rest.
     limiter.reset("login_pair", pair_key)
     store.set_last_login(db, user["user_id"], now=now)
+    audit.record(db, actor=user["user_id"], action="login_success",
+                target_type="user_account", target_id=user["user_id"])
+    return mint_session(db, user_id=user["user_id"], now=now, cfg=cfg)
 
+
+def mint_session(db: Database, *, user_id: str, now: datetime, cfg: AuthConfig | None = None) -> LoginResult:
+    """The single place a new Detoura session is ever minted - opaque
+    token, hashed at rest, same TTL/cookie contract regardless of caller
+    (§6 "the SAME Detoura session/security model"). :func:`login`, Google
+    Sign-In, and password change/reset (which re-issues the caller's own
+    session after revoking every other one) all go through this."""
+    cfg = cfg or auth_config()
     raw_token = store.new_session_token()
     raw_csrf = store.new_csrf_token()
     session_id = store.create_session(
-        db, user_id=user["user_id"], token_hash=store.hash_token(raw_token),
+        db, user_id=user_id, token_hash=store.hash_token(raw_token),
         csrf_token_hash=store.hash_token(raw_csrf), ttl_seconds=cfg.session_ttl_seconds, now=now,
     )
-    audit.record(db, actor=user["user_id"], action="login_success",
-                target_type="user_account", target_id=user["user_id"])
-
     from datetime import timedelta
     return LoginResult(
-        user_id=user["user_id"], session_id=session_id, raw_token=raw_token,
+        user_id=user_id, session_id=session_id, raw_token=raw_token,
         raw_csrf_token=raw_csrf, expires_at=now + timedelta(seconds=cfg.session_ttl_seconds),
     )
 

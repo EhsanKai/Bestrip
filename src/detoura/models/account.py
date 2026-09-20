@@ -24,6 +24,13 @@ from pydantic import BaseModel, ConfigDict, Field
 class AccountStatus(str, Enum):
     ACTIVE = "ACTIVE"
     DISABLED = "DISABLED"
+    #: Self-service account deletion (V9 Google auth + account lifecycle).
+    #: Sessions/identities are gone and the email is scrubbed to a tombstone
+    #: value, but the row itself is never deleted - trip_ownership and every
+    #: financial table (checkout_snapshots, payment_transactions,
+    #: financial_documents, ...) key on this user_id, and none of them are
+    #: ever cascade-deleted (see docs/V9_GOOGLE_AUTH_ACCOUNT_LIFECYCLE_REPORT.md §13).
+    DELETED = "DELETED"
 
 
 class UserAccount(BaseModel):
@@ -35,7 +42,11 @@ class UserAccount(BaseModel):
 
     user_id: str = Field(min_length=1, max_length=64)
     email_normalized: str = Field(min_length=3, max_length=320)
-    password_hash: str = Field(min_length=1, max_length=1000)
+    #: ``None`` for an account created entirely through Google Sign-In that
+    #: has never gone through the password-reset "set a password" flow
+    #: (V9 Google auth §11) - never an empty string, never a random hidden
+    #: value standing in for "no password".
+    password_hash: str | None = Field(default=None, max_length=1000)
     status: AccountStatus = AccountStatus.ACTIVE
     created_at: datetime
     updated_at: datetime
@@ -44,6 +55,30 @@ class UserAccount(BaseModel):
     @property
     def is_active(self) -> bool:
         return self.status is AccountStatus.ACTIVE
+
+    @property
+    def has_password(self) -> bool:
+        return self.password_hash is not None
+
+
+class AuthIdentity(BaseModel):
+    """A row of ``auth_identities`` (V9 Google auth): one external-provider
+    identity bound to one Detoura account. Keyed on ``(provider,
+    provider_subject)`` - the provider's own stable subject identifier,
+    never on email (see the module-level linking-policy discussion in
+    :mod:`detoura.services.google_auth_service`). No provider access/refresh
+    token is ever carried here; Detoura only needs the one-time identity
+    claim at login."""
+
+    model_config = ConfigDict(frozen=True)
+
+    identity_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    provider: str = Field(min_length=1, max_length=32)
+    provider_subject: str = Field(min_length=1, max_length=255)
+    provider_email: str = Field(default="", max_length=320)
+    created_at: datetime
+    updated_at: datetime
 
 
 class SessionRecord(BaseModel):

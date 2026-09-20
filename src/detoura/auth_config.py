@@ -32,6 +32,22 @@ DEFAULT_LOGIN_IP_MAX_ATTEMPTS = 30
 DEFAULT_LOGIN_IP_WINDOW_SECONDS = 300.0
 DEFAULT_REGISTER_MAX_ATTEMPTS = 5
 DEFAULT_REGISTER_WINDOW_SECONDS = 3600.0
+#: Password reset: opaque token TTL, and per-(IP, email)/per-IP request
+#: budgets mirroring register_pair/login_ip exactly (V9 Google auth §10/§14).
+DEFAULT_RESET_TOKEN_TTL_SECONDS = 30 * 60
+DEFAULT_RESET_REQUEST_MAX_ATTEMPTS = 5
+DEFAULT_RESET_REQUEST_WINDOW_SECONDS = 3600.0
+DEFAULT_RESET_REQUEST_IP_MAX_ATTEMPTS = 20
+DEFAULT_RESET_REQUEST_IP_WINDOW_SECONDS = 3600.0
+#: Confirming a reset token is a per-IP volume control only - the token
+#: itself is a 32-byte random value, not a guessable secret, so this is
+#: defense-in-depth against blind brute-forcing, not the primary control.
+DEFAULT_RESET_CONFIRM_MAX_ATTEMPTS = 20
+DEFAULT_RESET_CONFIRM_WINDOW_SECONDS = 3600.0
+#: Password change: an authenticated action, keyed per user_id - bounds a
+#: caller with a stolen/live session from brute-forcing "current password".
+DEFAULT_PASSWORD_CHANGE_MAX_ATTEMPTS = 10
+DEFAULT_PASSWORD_CHANGE_WINDOW_SECONDS = 3600.0
 #: Number of reverse-proxy hops in front of this service whose
 #: X-Forwarded-For entry is trusted. 0 (default) = trust nothing, use the
 #: raw TCP peer. See services/client_ip.py for the exact semantics and why
@@ -74,6 +90,15 @@ class AuthConfig:
     register_max_attempts: int = DEFAULT_REGISTER_MAX_ATTEMPTS
     register_window_seconds: float = DEFAULT_REGISTER_WINDOW_SECONDS
     trusted_proxy_hops: int = DEFAULT_TRUSTED_PROXY_HOPS
+    reset_token_ttl_seconds: int = DEFAULT_RESET_TOKEN_TTL_SECONDS
+    reset_request_max_attempts: int = DEFAULT_RESET_REQUEST_MAX_ATTEMPTS
+    reset_request_window_seconds: float = DEFAULT_RESET_REQUEST_WINDOW_SECONDS
+    reset_request_ip_max_attempts: int = DEFAULT_RESET_REQUEST_IP_MAX_ATTEMPTS
+    reset_request_ip_window_seconds: float = DEFAULT_RESET_REQUEST_IP_WINDOW_SECONDS
+    reset_confirm_max_attempts: int = DEFAULT_RESET_CONFIRM_MAX_ATTEMPTS
+    reset_confirm_window_seconds: float = DEFAULT_RESET_CONFIRM_WINDOW_SECONDS
+    password_change_max_attempts: int = DEFAULT_PASSWORD_CHANGE_MAX_ATTEMPTS
+    password_change_window_seconds: float = DEFAULT_PASSWORD_CHANGE_WINDOW_SECONDS
 
     @classmethod
     def from_env(cls) -> "AuthConfig":
@@ -87,6 +112,15 @@ class AuthConfig:
             register_max_attempts=max(1, _int("AUTH_REGISTER_MAX_ATTEMPTS", DEFAULT_REGISTER_MAX_ATTEMPTS)),
             register_window_seconds=float(max(1, _int("AUTH_REGISTER_WINDOW_SECONDS", int(DEFAULT_REGISTER_WINDOW_SECONDS)))),
             trusted_proxy_hops=max(0, _int("AUTH_TRUSTED_PROXY_HOPS", DEFAULT_TRUSTED_PROXY_HOPS)),
+            reset_token_ttl_seconds=max(60, _int("AUTH_RESET_TOKEN_TTL_SECONDS", DEFAULT_RESET_TOKEN_TTL_SECONDS)),
+            reset_request_max_attempts=max(1, _int("AUTH_RESET_REQUEST_MAX_ATTEMPTS", DEFAULT_RESET_REQUEST_MAX_ATTEMPTS)),
+            reset_request_window_seconds=float(max(1, _int("AUTH_RESET_REQUEST_WINDOW_SECONDS", int(DEFAULT_RESET_REQUEST_WINDOW_SECONDS)))),
+            reset_request_ip_max_attempts=max(1, _int("AUTH_RESET_REQUEST_IP_MAX_ATTEMPTS", DEFAULT_RESET_REQUEST_IP_MAX_ATTEMPTS)),
+            reset_request_ip_window_seconds=float(max(1, _int("AUTH_RESET_REQUEST_IP_WINDOW_SECONDS", int(DEFAULT_RESET_REQUEST_IP_WINDOW_SECONDS)))),
+            reset_confirm_max_attempts=max(1, _int("AUTH_RESET_CONFIRM_MAX_ATTEMPTS", DEFAULT_RESET_CONFIRM_MAX_ATTEMPTS)),
+            reset_confirm_window_seconds=float(max(1, _int("AUTH_RESET_CONFIRM_WINDOW_SECONDS", int(DEFAULT_RESET_CONFIRM_WINDOW_SECONDS)))),
+            password_change_max_attempts=max(1, _int("AUTH_PASSWORD_CHANGE_MAX_ATTEMPTS", DEFAULT_PASSWORD_CHANGE_MAX_ATTEMPTS)),
+            password_change_window_seconds=float(max(1, _int("AUTH_PASSWORD_CHANGE_WINDOW_SECONDS", int(DEFAULT_PASSWORD_CHANGE_WINDOW_SECONDS)))),
         )
 
 

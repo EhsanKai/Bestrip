@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -442,10 +442,16 @@ CREATE INDEX IF NOT EXISTS ix_priortask_lease ON market_prior_tasks (status, lea
 -- session's raw token is never stored - only its SHA-256 hash - and
 -- csrf_token_hash is likewise a hash, never the value handed to the browser.
 -- ==================================================================
+-- password_hash is nullable (V9 Google auth): an account created entirely
+-- through Google Sign-In has no password credential at all - not an empty
+-- string, not a random hidden value, genuinely NULL - until/unless it goes
+-- through the password-reset flow to establish one (see password_service.py
+-- and docs/V9_GOOGLE_AUTH_ACCOUNT_LIFECYCLE_REPORT.md §11). A pre-existing
+-- database's column is relaxed from NOT NULL by Database._relax_password_hash_nullable().
 CREATE TABLE IF NOT EXISTS user_accounts (
     user_id             TEXT PRIMARY KEY,
     email_normalized    TEXT NOT NULL UNIQUE,
-    password_hash       TEXT NOT NULL,
+    password_hash       TEXT,
     status              TEXT NOT NULL DEFAULT 'ACTIVE',
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
@@ -475,6 +481,73 @@ CREATE TABLE IF NOT EXISTS trip_ownership (
     claimed_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_trip_owner ON trip_ownership (user_id);
+
+-- ==================================================================
+-- V9 Google Sign-In + Account Lifecycle. Google identity is bound to the
+-- provider's stable subject (`sub`), never to email alone - see
+-- docs/V9_GOOGLE_AUTH_ACCOUNT_LIFECYCLE_REPORT.md for the full linking
+-- policy. No Google access/refresh token is ever persisted here: Detoura
+-- only ever needs the one-time identity claim at login, never ongoing
+-- access to a Google API on the user's behalf.
+-- ==================================================================
+CREATE TABLE IF NOT EXISTS auth_identities (
+    identity_id         TEXT PRIMARY KEY,
+    user_id             TEXT NOT NULL,
+    provider            TEXT NOT NULL,
+    provider_subject    TEXT NOT NULL,
+    provider_email      TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    UNIQUE (provider, provider_subject)
+);
+CREATE INDEX IF NOT EXISTS ix_identity_user ON auth_identities (user_id);
+
+-- One opaque, high-entropy, single-use password-reset token per row - only
+-- its SHA-256 hash is ever stored, exactly like a session token. Doubles as
+-- the "set a first password" mechanism for a Google-only account (§11):
+-- proving control of the registered email is the same bar either way.
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    token_hash          TEXT PRIMARY KEY,
+    user_id             TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    expires_at          TEXT NOT NULL,
+    consumed_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_reset_user ON password_reset_tokens (user_id);
+
+-- Transport-level OAuth state for one in-flight Google authorization-code +
+-- PKCE round trip (state -> code_verifier/nonce). Persisted (not in-process)
+-- so a callback landing on a different worker/process still finds it - see
+-- services/google_oauth.py. `state_hash` is SHA-256 of the opaque state
+-- value that actually travels to Google and back, mirroring the session/
+-- reset-token hash-at-rest convention. `link_user_id` is set only when this
+-- round trip was started by an already-authenticated user explicitly
+-- connecting their Google account (Case F), never inferred after the fact.
+CREATE TABLE IF NOT EXISTS google_oauth_pending (
+    state_hash          TEXT PRIMARY KEY,
+    code_verifier       TEXT NOT NULL,
+    nonce               TEXT NOT NULL,
+    link_user_id        TEXT,
+    created_at          TEXT NOT NULL,
+    expires_at          TEXT NOT NULL,
+    consumed_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_google_pending_expires ON google_oauth_pending (expires_at);
+
+-- A Google identity waiting to be claimed by an existing password account
+-- with the same email (Case C - "existing password account, same email,
+-- unauthenticated Google sign-in"). Never auto-links; this row only lets a
+-- caller who then separately proves control of the matching password
+-- account (an authenticated session whose own email matches) complete the
+-- link explicitly - see google_auth_service.py::confirm_google_link.
+CREATE TABLE IF NOT EXISTS pending_google_links (
+    link_id             TEXT PRIMARY KEY,
+    provider_subject    TEXT NOT NULL,
+    provider_email      TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    expires_at          TEXT NOT NULL,
+    consumed_at         TEXT
+);
 
 -- ==================================================================
 -- V9 Phase 3: Destination Attractiveness
@@ -807,6 +880,7 @@ class Database:
     def _migrate(self) -> None:
         with self._lock:
             self._conn.executescript(_DDL)
+            self._relax_password_hash_nullable()
             for table, column, ddl in self._ADD_COLUMNS:
                 cols = {
                     r["name"]
@@ -831,6 +905,37 @@ class Database:
                 self._conn.execute(
                     "UPDATE schema_version SET version = ?", (SCHEMA_VERSION,)
                 )
+
+    def _relax_password_hash_nullable(self) -> None:
+        """``CREATE TABLE IF NOT EXISTS`` only shapes a brand-new database -
+        a database created before V9 Google auth already has
+        ``user_accounts.password_hash`` as ``NOT NULL`` and SQLite has no
+        ``ALTER COLUMN ... DROP NOT NULL``, so an existing deployment needs
+        the standard SQLite rebuild-and-swap. A cheap ``PRAGMA table_info``
+        check makes this a no-op on every startup after the first (fresh
+        databases already get the nullable column straight from ``_DDL``
+        above, so this never runs at all for them)."""
+        cols = self._conn.execute("PRAGMA table_info(user_accounts)").fetchall()
+        password_col = next((c for c in cols if c["name"] == "password_hash"), None)
+        if password_col is None or password_col["notnull"] == 0:
+            return
+        self._conn.execute(
+            "CREATE TABLE user_accounts__v9_migration ("
+            " user_id TEXT PRIMARY KEY,"
+            " email_normalized TEXT NOT NULL UNIQUE,"
+            " password_hash TEXT,"
+            " status TEXT NOT NULL DEFAULT 'ACTIVE',"
+            " created_at TEXT NOT NULL,"
+            " updated_at TEXT NOT NULL,"
+            " last_login_at TEXT)"
+        )
+        self._conn.execute(
+            "INSERT INTO user_accounts__v9_migration "
+            "SELECT user_id, email_normalized, password_hash, status,"
+            " created_at, updated_at, last_login_at FROM user_accounts"
+        )
+        self._conn.execute("DROP TABLE user_accounts")
+        self._conn.execute("ALTER TABLE user_accounts__v9_migration RENAME TO user_accounts")
 
     @contextmanager
     def write(self) -> Iterator[sqlite3.Connection]:

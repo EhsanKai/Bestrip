@@ -27,6 +27,8 @@ from ..models.travel_pass import (
     PassTicket,
 )
 from ..models.traveler import TravelerParty
+from ..observability import log_event
+from ..observability import metrics as _metrics
 from ..providers.duffel import DuffelTransportProvider, is_test_token
 from ..providers.http import RateLimiter, RetryingHttpClient, UrllibHttpClient
 from ..models.booking import BookingState
@@ -197,6 +199,7 @@ def create_run_from_selection(
         session_ref="sess_" + secrets.token_urlsafe(8),
         owner_user_id=owner_user_id,
     )
+    log_event(logger, "booking_intent_created", booking_id=run.booking_id, mode=run.mode.value, item_count=len(items))
     return run
 
 
@@ -243,7 +246,7 @@ def create_run_demo(
     supplier_transport = round(
         sum(i.quoted_price * max(i.travelers, 1) for i in items), 2
     )
-    return BookingRun(
+    run = BookingRun(
         booking_id="bk_" + secrets.token_urlsafe(15),
         journey_reference=new_journey_reference(),
         mode=PassMode.DEMO_ONLY,
@@ -257,6 +260,8 @@ def create_run_demo(
         session_ref="sess_" + secrets.token_urlsafe(8),
         owner_user_id=owner_user_id,
     )
+    log_event(logger, "booking_intent_created", booking_id=run.booking_id, mode=run.mode.value, item_count=len(items))
+    return run
 
 
 def attach_travelers(run: BookingRun, party: TravelerParty) -> None:
@@ -274,7 +279,7 @@ def _duffel_for_booking() -> DuffelTransportProvider | None:
     if not is_test_token(token):
         return None
     http = RetryingHttpClient(
-        UrllibHttpClient(), max_retries=2, rate_limiter=RateLimiter(0.25)
+        UrllibHttpClient(), max_retries=2, rate_limiter=RateLimiter(0.25), provider="duffel",
     )
     return DuffelTransportProvider(
         access_token=token, http_client=http, max_calls=40, timeout=15.0
@@ -332,6 +337,7 @@ def start_confirmation(
     """
     from ..models.commercial import ServiceTier
 
+    log_event(logger, "booking_confirmation_requested", booking_id=run.booking_id)
     if run.service_tier is ServiceTier.BASIC:
         # Hard guarantee: the orchestrator never runs for a self-service
         # booking. The Basic flow goes through services.self_service instead.
@@ -387,9 +393,24 @@ def start_confirmation(
                         run.booking_id, run.phase.value, outcome.payment.payment_id,
                         outcome.summary,
                     )
+                    # A second, structured event alongside the message above
+                    # (kept verbatim - V9 Phase 6 caplog tests pin it) so an
+                    # Ops dashboard can alert on `event=booking_recovery_required`
+                    # without parsing free text (V9 Limited Beta observability
+                    # contract §11).
+                    log_event(
+                        logger, "booking_recovery_required", level=logging.WARNING,
+                        booking_id=run.booking_id, phase=run.phase.value,
+                        payment_id=outcome.payment.payment_id,
+                    )
+                    _metrics.observe_booking_outcome(phase="RECOVERY_REQUIRED")
             else:
                 run_booking(run, duffel=duffel, already_claimed=True)
-        except Exception:  # defensive: a run thread must not die silently
+        except Exception as exc:  # defensive: a run thread must not die silently
+            log_event(
+                logger, "booking_execution_error", level=logging.ERROR,
+                booking_id=run.booking_id, exception_type=type(exc).__name__,
+            )
             with run._lock:
                 # Independent review finding: `run_booking` may have ALREADY
                 # settled `run` into a truthful terminal phase (COMPLETE/

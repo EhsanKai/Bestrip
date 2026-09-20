@@ -237,10 +237,16 @@ class AuthorizedHttpFetcher:
                 source_id=self.registration.source_id,
                 min_interval_seconds=pol.effective_min_interval_seconds,
             )
-            self._client = RetryingHttpClient(gated, rate_limiter=RateLimiter(0.0))
+            self._client = RetryingHttpClient(
+                gated, rate_limiter=RateLimiter(0.0),
+                provider=f"market_source:{self.registration.source_id}",
+            )
         else:
             self._rate_limiter = RateLimiter(min_interval_seconds=pol.effective_min_interval_seconds)
-            self._client = RetryingHttpClient(self.http_client, rate_limiter=self._rate_limiter)
+            self._client = RetryingHttpClient(
+                self.http_client, rate_limiter=self._rate_limiter,
+                provider=f"market_source:{self.registration.source_id}",
+            )
 
     def _check_authorized(self) -> None:
         if not self.registration.network_allowed:

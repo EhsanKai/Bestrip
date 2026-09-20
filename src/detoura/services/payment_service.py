@@ -19,6 +19,7 @@ ever called - see :func:`freeze_checkout_snapshot`.
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 
 from ..models.booking import BookingState
@@ -35,12 +36,65 @@ from ..models.payment import (
     Refund,
     RefundStatus,
 )
+from ..observability import log_event
+from ..observability import metrics as _metrics
 from ..payment_config import PaymentConfig, payment_config
 from ..persistence import payments as store
 from ..persistence.db import Database
 from ..providers.payment_provider import PaymentProvider, ProviderResult
 
+logger = logging.getLogger(__name__)
+
 CENTS = 0.005
+
+
+#: Internal ``PaymentEvent.event_type`` (already persisted to the
+#: ``payment_events`` table) -> the stable application-log event name this
+#: baseline emits for it (V9 Limited Beta observability contract §9). Kept
+#: as an explicit map rather than a ``.lower()`` transform so the log schema
+#: names match the contract exactly, independent of how the persistence
+#: layer happens to spell its own event_type strings.
+_PAYMENT_LOG_EVENTS: dict[str, str] = {
+    "PAYMENT_CREATED": "payment_created",
+    "AUTHORIZATION_REQUESTED": "payment_authorization_started",
+    "AUTHORIZED": "payment_authorized",
+    "REQUIRES_CUSTOMER_ACTION": "payment_requires_customer_action",
+    "AUTHORIZATION_FAILED": "payment_failed",
+    "RECONCILIATION_REQUIRED": "payment_reconciliation_required",
+    "CAPTURE_REQUESTED": "payment_capture_started",
+    "CAPTURED": "payment_captured",
+    "CAPTURE_FAILED": "payment_capture_failed",
+    "AUTHORIZATION_CANCELLED": "payment_authorization_cancelled",
+    "REFUND_REQUESTED": "payment_refund_started",
+    "REFUND_SUCCEEDED": "payment_refunded",
+    "REFUND_FAILED": "payment_refund_failed",
+    "RECONCILED": "payment_reconciled",
+}
+
+
+def _log_transition(event_type: str, *, payment_id: str, booking_id: str | None = None) -> None:
+    """The one place a payment state transition becomes a structured,
+    machine-parseable log event - safe identifiers only (payment_id,
+    booking_id), never an amount, card detail, or provider secret (V9
+    Limited Beta observability contract §9). ``event_type`` is the SAME
+    value already passed to ``store.record_event`` at each call site, so the
+    application log and the persisted ``payment_events`` row are never able
+    to drift onto different taxonomies."""
+    event = _PAYMENT_LOG_EVENTS.get(event_type, event_type.lower())
+    log_event(logger, event, payment_id=payment_id, booking_id=booking_id)
+    _metrics.observe_payment_transition(event_type=event_type)
+
+
+def _log_reconciliation_finding(finding: ReconciliationFinding) -> None:
+    """A reconciliation finding (V9 Limited Beta observability contract §11:
+    "these are especially important for Beta") - classification and status
+    strings only, never the provider's raw response the finding was built
+    from."""
+    log_event(
+        logger, "payment_reconciliation_finding",
+        payment_id=finding.payment_id, classification=finding.classification.value,
+        local_status=finding.local_status, provider_status=finding.provider_status,
+    )
 
 
 class QuoteExpired(Exception):
@@ -122,6 +176,7 @@ def create_payment(
             amount=payment.customer_total,
             detail=f"checkout_snapshot={snapshot.snapshot_id}",
         ))
+        _log_transition("PAYMENT_CREATED", payment_id=payment.payment_id, booking_id=payment.booking_id)
         _write_allocations(db, payment=payment, quote=snapshot.quote, now=now)
     return payment, created
 
@@ -189,6 +244,7 @@ def authorize_payment(
         event_id=_event_id(), payment_id=payment.payment_id,
         event_type="AUTHORIZATION_REQUESTED", occurred_at=now, amount=payment.customer_total,
     ))
+    _log_transition("AUTHORIZATION_REQUESTED", payment_id=payment.payment_id, booking_id=payment.booking_id)
     idem = _provider_idempotency_key(payment.payment_id, "authorize", payment.version)
     result = provider.authorize(
         idempotency_key=idem, amount=payment.customer_total, currency=payment.currency,
@@ -236,6 +292,7 @@ def _apply_authorize_result(
         occurred_at=now, amount=result.authorized_amount, detail=detail,
         data={"provider_reference": result.provider_reference} if result.provider_reference else {},
     ))
+    _log_transition(event_type, payment_id=payment.payment_id, booking_id=payment.booking_id)
     return stored
 
 
@@ -262,6 +319,7 @@ def request_capture(
         event_id=_event_id(), payment_id=payment.payment_id, event_type="CAPTURE_REQUESTED",
         occurred_at=now, amount=amount or payment.authorized_amount,
     ))
+    _log_transition("CAPTURE_REQUESTED", payment_id=payment.payment_id, booking_id=payment.booking_id)
 
     idem = _provider_idempotency_key(payment.payment_id, "capture", payment.version)
     result = provider.capture(
@@ -282,6 +340,7 @@ def request_capture(
         event_id=_event_id(), payment_id=payment.payment_id, event_type=event_type,
         occurred_at=now, amount=result.captured_amount, detail=detail,
     ))
+    _log_transition(event_type, payment_id=payment.payment_id, booking_id=payment.booking_id)
     return stored
 
 
@@ -306,6 +365,7 @@ def cancel_authorization(
             event_type="AUTHORIZATION_CANCELLED", occurred_at=now,
             detail="cancelled before any provider authorization existed",
         ))
+        _log_transition("AUTHORIZATION_CANCELLED", payment_id=payment.payment_id, booking_id=payment.booking_id)
         return stored
 
     pending = payment.with_status(PaymentStatus.CANCEL_PENDING, now=now)
@@ -335,6 +395,7 @@ def cancel_authorization(
         event_id=_event_id(), payment_id=payment.payment_id, event_type=event_type,
         occurred_at=now, detail=detail,
     ))
+    _log_transition(event_type, payment_id=payment.payment_id, booking_id=payment.booking_id)
     return stored
 
 
@@ -381,6 +442,7 @@ def request_refund(
         event_id=_event_id(), payment_id=payment.payment_id, event_type="REFUND_REQUESTED",
         occurred_at=now, amount=amount, detail=reason, data={"refund_id": refund.refund_id},
     ))
+    _log_transition("REFUND_REQUESTED", payment_id=payment.payment_id, booking_id=payment.booking_id)
 
     idem = _provider_idempotency_key(refund.refund_id, "refund", refund.version)
     result = provider.refund(
@@ -434,6 +496,7 @@ def _apply_refund_result(
         occurred_at=now, amount=refund.amount, detail=detail,
         data={"refund_id": refund.refund_id},
     ))
+    _log_transition(event_type, payment_id=payment.payment_id, booking_id=payment.booking_id)
     return stored_payment, stored_refund
 
 
@@ -455,6 +518,7 @@ def mark_reconciliation_required(
         event_id=_event_id(), payment_id=payment.payment_id,
         event_type="RECONCILIATION_REQUIRED", occurred_at=now, detail=detail, data=data or {},
     ))
+    _log_transition("RECONCILIATION_REQUIRED", payment_id=payment.payment_id, booking_id=payment.booking_id)
     return stored
 
 
@@ -478,6 +542,7 @@ def reconcile_payment(
             detail="no provider reference recorded to reconcile against", created_at=now,
         )
         store.create_finding(db, finding)
+        _log_reconciliation_finding(finding)
         return payment, finding
 
     result = provider.retrieve(provider_reference=payment.provider_payment_reference)
@@ -489,6 +554,7 @@ def reconcile_payment(
             detail=f"provider retrieve itself failed/unknown: {result.detail}", created_at=now,
         )
         store.create_finding(db, finding)
+        _log_reconciliation_finding(finding)
         if payment.status is not PaymentStatus.RECONCILIATION_REQUIRED:
             escalated = payment.with_status(PaymentStatus.RECONCILIATION_REQUIRED, now=now)
             payment = store.compare_and_swap_payment(db, payment=escalated, expected_version=payment.version)
@@ -506,6 +572,7 @@ def reconcile_payment(
             event_id=_event_id(), payment_id=payment.payment_id, event_type="RECONCILED",
             occurred_at=now, detail=f"synced to provider truth: {result.status}",
         ))
+        _log_transition("RECONCILED", payment_id=payment.payment_id, booking_id=payment.booking_id)
         return stored, None
 
     finding = ReconciliationFinding(
@@ -515,6 +582,7 @@ def reconcile_payment(
         detail=f"local={payment.status.value} provider={result.status}",
     )
     store.create_finding(db, finding)
+    _log_reconciliation_finding(finding)
     if payment.status is not PaymentStatus.RECONCILIATION_REQUIRED:
         escalated = payment.with_status(PaymentStatus.RECONCILIATION_REQUIRED, now=now)
         payment = store.compare_and_swap_payment(db, payment=escalated, expected_version=payment.version)

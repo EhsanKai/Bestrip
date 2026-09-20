@@ -326,7 +326,7 @@ class DuffelTransportProvider:
         self.http = (
             http_client
             if isinstance(http_client, RetryingHttpClient)
-            else RetryingHttpClient(http_client or UrllibHttpClient())
+            else RetryingHttpClient(http_client or UrllibHttpClient(), provider="duffel")
         )
         self.search_calls = 0
         self.offers_seen = 0

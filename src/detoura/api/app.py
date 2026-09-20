@@ -21,12 +21,18 @@ when there is one on disk - see :mod:`detoura.api.static`.
 
 from __future__ import annotations
 
+import logging
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse
 
+from ..observability import configure_logging, log_event, render_prometheus_text
+from ..observability.logging import current_request_id
+from ..observability.middleware import CorrelationMiddleware
 from ..persistence import bootstrap as bootstrap_db
+from ..persistence import get_db
 from ..services.feedback import configure_sessions
 from ..services.session_store import store_from_env
 from .auth import router as auth_router
@@ -44,6 +50,8 @@ from .payments import router as payments_router
 from .routes import router as engine_router
 from .static import mount_frontend
 from .v1 import router as product_router
+
+_logger = logging.getLogger("detoura.api")
 
 # Where the Vite dev server runs. Kept as the default because the common case
 # is a developer with `npm run dev` on one port and `uvicorn` on another.
@@ -93,6 +101,11 @@ def _max_body_bytes() -> int:
 
 
 def create_app() -> FastAPI:
+    # Structured (JSON) logging on the root logger, before any request or
+    # startup log line is emitted. Idempotent - safe even if create_app()
+    # runs more than once in a process (tests build the app repeatedly).
+    configure_logging()
+
     # Install the session store this deployment is configured for, before any
     # request can touch it.
     #
@@ -125,6 +138,56 @@ def create_app() -> FastAPI:
     # the most-recently-added middleware first) so it can refuse before
     # CORS or any route even sees the request. See body_limit.py.
     app.add_middleware(MaxBodySizeMiddleware, max_bytes=_max_body_bytes())
+    # Limited Beta observability baseline: request correlation + timing +
+    # structured request_completed/request_failed logging. Added last/
+    # outermost (see MaxBodySizeMiddleware's own comment above on Starlette's
+    # ordering) so it wraps and times every request, including one CORS or
+    # the body-size guard itself rejects.
+    app.add_middleware(CorrelationMiddleware)
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        """The generic-500 safety net (V9 Limited Beta observability
+        contract §16): logs the exception server-side with the request's
+        correlation id, and returns a safe, stack-trace-free body carrying
+        that same id so a report to Ops can be matched back to these logs.
+        Never intercepts an ``HTTPException`` - FastAPI handles those on its
+        own path with the message the route author chose, unchanged."""
+        request_id = current_request_id()
+        log_event(
+            _logger, "unhandled_exception", level=logging.ERROR,
+            method=request.method, route=request.url.path,
+            exception_type=type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": {"message": "An unexpected error occurred.", "request_id": request_id}},
+        )
+
+    @app.get("/readyz")
+    def readyz() -> JSONResponse:
+        """Readiness (V9 Limited Beta observability contract §15): checks
+        only what this process needs to accept traffic at all - a live
+        connection to its own database. Deliberately does NOT call Duffel or
+        Stripe: a temporary provider outage should not pull the whole app
+        out of a load balancer's rotation when it can still serve search,
+        auth, and read-only routes just fine."""
+        try:
+            get_db().query_one("SELECT 1")
+        except Exception:
+            return JSONResponse(status_code=503, content={"status": "not_ready"})
+        return JSONResponse(status_code=200, content={"status": "ready"})
+
+    if os.getenv("DETOURA_METRICS_ENABLED", "").strip().lower() in ("1", "true", "yes"):
+        # Off by default (V9 Limited Beta observability contract §13): this
+        # process has no auth story for its own endpoints, so /metrics is
+        # opt-in and the operator is expected to keep it off any
+        # publicly-reachable network path - see the observability report's
+        # deployment notes.
+        @app.get("/metrics")
+        def metrics_endpoint() -> PlainTextResponse:
+            return PlainTextResponse(render_prometheus_text(), media_type="text/plain; version=0.0.4")
+
     app.include_router(product_router)
     app.include_router(engine_router)
     # V9 Phase 2.6: account auth + My Trips. Anonymous callers of every other

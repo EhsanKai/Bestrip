@@ -23,6 +23,7 @@ is then PARTIAL_FAILURE (some legs confirmed) or FAILED (none), never CONFIRMED.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -39,6 +40,8 @@ from ..models.booking import (
 from ..models.commercial import CommercialQuote, ServiceTier
 from ..models.travel_pass import PassMode
 from ..models.traveler import TravelerParty
+from ..observability import log_event
+from ..observability import metrics as _metrics
 from ..providers.duffel import (
     DuffelOfferGone,
     DuffelOrderError,
@@ -47,6 +50,8 @@ from ..providers.duffel import (
 )
 from ..providers.http import ProviderHttpError
 from .selection_store import SelectedOffer
+
+_logger = logging.getLogger(__name__)
 
 
 class BookingPhase(str, Enum):
@@ -300,6 +305,7 @@ def claim_for_execution(run: BookingRun) -> None:
             # the confirm-endpoint flow.
             raise ValueError(f"cannot confirm from phase {run.phase.value}")
         run.phase = BookingPhase.REVALIDATING
+    log_event(_logger, "booking_claimed", booking_id=run.booking_id)
 
 
 def run_booking(
@@ -340,6 +346,7 @@ def run_booking(
                 )
     else:
         claim_for_execution(run)
+    log_event(_logger, "booking_execution_started", booking_id=run.booking_id, item_count=len(run.items))
     with run._lock:
         for item in run.items:
             item.state = BookingState.REVALIDATING
@@ -365,15 +372,30 @@ def run_booking(
         if failed_reval:
             run.phase = BookingPhase.FAILED
             _mark_unattempted(run)
-            return
-        if changed and _breaches_tolerance(run):
+            stop_reval, reval_outcome = True, "failed"
+        elif changed and _breaches_tolerance(run):
             run.phase = BookingPhase.RECONFIRM_REQUIRED
             run.reconfirm_note = "; ".join(changed)
             for i in run.items:
                 if i.state is BookingState.READY:
                     pass  # stays READY, awaiting a fresh confirm
-            return
-        run.phase = BookingPhase.ISSUING
+            stop_reval, reval_outcome = True, "reconfirm_required"
+        else:
+            run.phase = BookingPhase.ISSUING
+            stop_reval, reval_outcome = False, "ready"
+
+    # Logged outside `run._lock` (independent review finding: logging is
+    # I/O, and holding a per-run lock across it would stall any concurrent
+    # status-poll handler blocked on the same lock for no reason) - matches
+    # the pattern already used at this function's own terminal outcome log.
+    log_event(
+        _logger, "booking_revalidation_completed", booking_id=run.booking_id,
+        outcome=reval_outcome, failed_required_items=len(failed_reval) if failed_reval else 0,
+    )
+    if stop_reval:
+        if reval_outcome == "failed":
+            _log_booking_outcome(run)
+        return
 
     # Issue, leg by leg, stopping at the first required failure.
     stop = False
@@ -426,6 +448,13 @@ def run_booking(
                 item.state = new_state
                 if item.required:
                     stop = True
+        if new_state is BookingState.CONFIRMED:
+            log_event(_logger, "booking_leg_issued", booking_id=run.booking_id, item_id=item.item_id)
+        else:
+            log_event(
+                _logger, "booking_leg_failed", booking_id=run.booking_id, item_id=item.item_id,
+                outcome=new_state.value, required=item.required,
+            )
         sleep(pace["issue_post"])
 
     with run._lock:
@@ -436,6 +465,21 @@ def run_booking(
             run.phase = BookingPhase.PARTIAL_FAILURE
         else:
             run.phase = BookingPhase.FAILED
+    _log_booking_outcome(run)
+
+
+def _log_booking_outcome(run: BookingRun) -> None:
+    """The terminal event for one execution of :func:`run_booking` - the
+    signal an operator's dashboard actually wants (V9 Limited Beta
+    observability contract §10/§12): did this run complete, partially fail,
+    or fail outright. Safe identifiers only."""
+    phase = run.phase.value
+    log_event(
+        _logger, f"booking_{phase.lower()}" if phase.lower() in ("complete", "partial_failure", "failed")
+        else "booking_execution_ended",
+        booking_id=run.booking_id, phase=phase,
+    )
+    _metrics.observe_booking_outcome(phase=phase)
 
 
 def _mark_unattempted(run: BookingRun) -> None:

@@ -33,11 +33,16 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import time
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
-from .http import HttpClient, HttpResponse, ProviderHttpError
+from ..observability import log_event
+from ..observability import metrics as _metrics
+from .http import HttpClient, HttpResponse, ProviderHttpError, _classify_status
+
+_logger = logging.getLogger(__name__)
 from .payment_provider import (
     ProviderCapabilities,
     ProviderEvent,
@@ -179,20 +184,44 @@ class StripePaymentProvider:
     def _post(self, path: str, *, idempotency_key: str, data: dict) -> HttpResponse | None:
         assert self.http is not None
         body = urlencode({k: v for k, v in data.items() if v is not None})
+        start = time.monotonic()
         try:
-            return self.http.request(
+            response = self.http.request(
                 "POST", f"{API_BASE}{path}", headers=self._headers(idempotency_key=idempotency_key),
                 body=body,
             )
         except (TimeoutError, OSError):
+            self._log_call(path, outcome="timeout", start=start)
             return None  # unknown outcome - the caller must treat this as UNKNOWN, never as failure
+        self._log_call(path, outcome="ok" if response.ok else _classify_status(response.status), start=start, status=response.status)
+        return response
 
     def _get(self, path: str) -> HttpResponse | None:
         assert self.http is not None
+        start = time.monotonic()
         try:
-            return self.http.request("GET", f"{API_BASE}{path}", headers=self._headers())
+            response = self.http.request("GET", f"{API_BASE}{path}", headers=self._headers())
         except (TimeoutError, OSError):
+            self._log_call(path, outcome="timeout", start=start)
             return None
+        self._log_call(path, outcome="ok" if response.ok else _classify_status(response.status), start=start, status=response.status)
+        return response
+
+    def _log_call(self, path: str, *, outcome: str, start: float, status: int | None = None) -> None:
+        """Stripe call observability (V9 Limited Beta observability contract
+        §9): status/timing/outcome only - never the request body (form-
+        encoded amount + idempotency key), the ``Authorization`` header, or
+        any response payload."""
+        duration_ms = round((time.monotonic() - start) * 1000, 2)
+        operation = path.strip("/").split("/")[0] or "root"
+        _metrics.observe_provider_call(
+            provider="stripe", operation=operation, outcome=outcome, duration_ms=duration_ms,
+        )
+        log_event(
+            _logger, "provider_request_completed",
+            provider="stripe", operation=operation, outcome=outcome, status=status,
+            duration_ms=duration_ms,
+        )
 
     # ------------------------------------------------------------------
     def authorize(

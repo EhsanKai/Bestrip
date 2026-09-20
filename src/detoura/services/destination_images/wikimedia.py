@@ -143,7 +143,7 @@ class WikimediaCommonsClient:
 
     def __post_init__(self) -> None:
         self._rate_limiter = RateLimiter(min_interval_seconds=self.min_request_interval_seconds)
-        self._client = RetryingHttpClient(self.http_client, rate_limiter=self._rate_limiter)
+        self._client = RetryingHttpClient(self.http_client, rate_limiter=self._rate_limiter, provider="wikimedia")
 
     def search_candidates(self, query: str, *, limit: int = 8, thumb_width: int = 1600) -> list[Candidate]:
         url = f"https://{API_DOMAIN}/w/api.php"

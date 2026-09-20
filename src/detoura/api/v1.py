@@ -16,12 +16,16 @@ decided which one is true.
 from __future__ import annotations
 
 import copy
+import logging
 import os
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from ..observability import log_event
+from ..observability import metrics as _metrics
 from ..models.itinerary import (
     Itinerary,
     PlannerMetadata,
@@ -129,6 +133,8 @@ from ..services.origin_resolver import CatalogOriginResolver
 
 router = APIRouter(prefix="/api/v1", tags=["detoura"])
 
+_logger = logging.getLogger(__name__)
+
 #: V9 Post-Phase-6 Search Integration: the consumer planner resolves origins
 #: against the full ~203-city catalog (see ``services.origin_resolver``)
 #: instead of the old closed 5-airport table - this is the concrete fix for
@@ -215,6 +221,35 @@ def _closest_price(planner: TravelPlanner, request: TripRequest) -> float | None
 def search(
     body: TripSearchRequest,
     planner: TravelPlanner = Depends(get_planner),
+) -> TripSearchResponse:
+    """Thin observability boundary around :func:`_search_impl` (V9 Limited
+    Beta observability contract §7): one ``search_started``/``search_
+    completed``/``search_failed`` event and one metric per call, regardless
+    of which of ``_search_impl``'s several return paths actually answers -
+    the search logic itself is untouched below."""
+    mode = body.search_mode
+    log_event(_logger, "search_started", mode=mode.value)
+    start = time.monotonic()
+    try:
+        response = _search_impl(body, planner)
+    except HTTPException:
+        duration_ms = round((time.monotonic() - start) * 1000, 2)
+        log_event(_logger, "search_failed", mode=mode.value, duration_ms=duration_ms)
+        _metrics.observe_search(mode=mode.value, outcome="failed", duration_ms=duration_ms)
+        raise
+    duration_ms = round((time.monotonic() - start) * 1000, 2)
+    log_event(
+        _logger, "search_completed", mode=mode.value, duration_ms=duration_ms,
+        result_count=len(response.recommendations),
+        supply_source=response.diagnostics.supply_source,
+    )
+    _metrics.observe_search(mode=mode.value, outcome="ok", duration_ms=duration_ms)
+    return response
+
+
+def _search_impl(
+    body: TripSearchRequest,
+    planner: TravelPlanner,
 ) -> TripSearchResponse:
     """Find trips worth taking.
 
@@ -469,7 +504,7 @@ def _search_live_duffel_or_none() -> DuffelTransportProvider | None:
     if not is_test_token(token):
         return None
     http = RetryingHttpClient(
-        UrllibHttpClient(), max_retries=2, rate_limiter=RateLimiter(0.2)
+        UrllibHttpClient(), max_retries=2, rate_limiter=RateLimiter(0.2), provider="duffel",
     )
     return DuffelTransportProvider(
         access_token=token, http_client=http, max_calls=16, timeout=12.0
@@ -567,7 +602,7 @@ def _revalidation_duffel() -> DuffelTransportProvider:
             },
         )
     http = RetryingHttpClient(
-        UrllibHttpClient(), max_retries=2, rate_limiter=RateLimiter(0.2)
+        UrllibHttpClient(), max_retries=2, rate_limiter=RateLimiter(0.2), provider="duffel",
     )
     return DuffelTransportProvider(
         access_token=token, http_client=http, max_calls=16, timeout=12.0

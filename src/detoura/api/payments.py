@@ -17,9 +17,12 @@ My Trips API uses).
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
 
 from ..models.payment import PaymentStatus
+from ..observability import log_event
 from ..payment_config import payment_config, resolve_provider
 from ..persistence import get_db
 from ..persistence import payments as store
@@ -28,6 +31,8 @@ from ..services.booking_flow import booking_store
 from .auth import get_optional_session, require_csrf
 
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
+
+_logger = logging.getLogger(__name__)
 
 
 class PaymentNotAllowed(HTTPException):
@@ -201,6 +206,10 @@ async def provider_webhook(provider_name: str, request: Request) -> dict:
     terminal state."""
     payload = await request.body()
     signature = request.headers.get("Stripe-Signature") or request.headers.get("X-Signature", "")
+    # Observability only (V9 Limited Beta observability contract §9): never
+    # the payload or signature - those may embed a client_secret/webhook
+    # secret or a raw provider event body.
+    log_event(_logger, "payment_webhook_received", provider=provider_name)
     provider = resolve_provider()
     if provider.name != provider_name:
         # A webhook arriving for a provider this deployment is not
@@ -209,6 +218,7 @@ async def provider_webhook(provider_name: str, request: Request) -> dict:
     try:
         event = provider.verify_event(payload=payload, signature=signature)
     except Exception:
+        log_event(_logger, "payment_webhook_rejected", level=logging.WARNING, provider=provider_name, reason="unverifiable")
         raise HTTPException(status_code=400, detail={"message": "invalid or unverifiable event"})
 
     db = get_db()
@@ -217,6 +227,7 @@ async def provider_webhook(provider_name: str, request: Request) -> dict:
         payment_id=None, event_type=event.event_type, payload=event.payload,
     )
     if not claimed:
+        log_event(_logger, "payment_webhook_duplicate_ignored", provider=provider_name, event_type=event.event_type)
         return {"status": "duplicate_ignored"}  # already processed - safe replay (§O)
 
     if event.provider_reference:
@@ -238,4 +249,5 @@ async def provider_webhook(provider_name: str, request: Request) -> dict:
                 # push notification for defence in depth).
                 ps.reconcile_payment(db, payment=payment, provider=provider)
     store.mark_provider_event_processed(db, provider=provider_name, provider_event_id=event.provider_event_id)
+    log_event(_logger, "payment_webhook_processed", provider=provider_name, event_type=event.event_type)
     return {"status": "processed"}

@@ -135,7 +135,7 @@ class AmadeusTransportProvider:
         self.http = (
             http_client
             if isinstance(http_client, RetryingHttpClient)
-            else RetryingHttpClient(http_client or _default_client())
+            else RetryingHttpClient(http_client or _default_client(), provider="amadeus")
         )
         self._token: str | None = None
         self._token_expires_at: datetime | None = None

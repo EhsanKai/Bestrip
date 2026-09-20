@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import socket
 import ssl
@@ -44,7 +45,12 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, runtime_checkable
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
+
+from ..observability import log_event
+from ..observability import metrics as _metrics
+
+_logger = logging.getLogger(__name__)
 
 
 def _build_ssl_context() -> ssl.SSLContext:
@@ -203,6 +209,35 @@ class ProviderHttpError(RuntimeError):
 
 class RateLimitExceeded(ProviderHttpError):
     """The upstream rate limit was hit and the retry budget is spent."""
+
+
+def _classify_status(status: int) -> str:
+    if status == 429:
+        return "rate_limited"
+    if status in (408, 504):
+        return "timeout"
+    if 400 <= status < 500:
+        return "client_error"
+    if 500 <= status < 600:
+        return "server_error"
+    return "unexpected_status"
+
+
+def _classify_error(exc: BaseException) -> str:
+    """Distinguish timeout / rate-limit / network failure for observability
+    (V9 Limited Beta observability contract §8) - never the exception's
+    message, which for a ``ProviderHttpError`` may embed the request URL."""
+    if isinstance(exc, RateLimitExceeded):
+        return "rate_limited"
+    if isinstance(exc, (TimeoutError,)):
+        return "timeout"
+    if isinstance(exc, ProviderHttpError):
+        status = exc.status
+        if status is not None:
+            return _classify_status(status)
+        message = str(exc)
+        return "timeout" if "timed out" in message else "network_error"
+    return "network_error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +446,7 @@ class RetryingHttpClient:
         max_backoff_seconds: float = DEFAULT_MAX_BACKOFF_SECONDS,
         rate_limiter: RateLimiter | None = None,
         sleep=time.sleep,
+        provider: str = "unknown",
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be >= 0")
@@ -421,6 +457,12 @@ class RetryingHttpClient:
         self.rate_limiter = rate_limiter or RateLimiter()
         self._sleep = sleep
         self.metrics = HttpMetrics()
+        #: A bounded, small-cardinality label for observability only (V9
+        #: Limited Beta observability contract §8) - "duffel"/"amadeus"/
+        #: "network_adapter"/... never an offer id or other identifier.
+        #: Defaults to "unknown" so existing callers that do not pass it
+        #: keep working exactly as before.
+        self.provider = provider
 
     def _delay(self, attempt: int, response: HttpResponse | None) -> float:
         """Exponential backoff, unless the server said how long to wait.
@@ -434,6 +476,49 @@ class RetryingHttpClient:
         return min(self.backoff_seconds * (2**attempt), self.max_backoff_seconds)
 
     def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        params: Mapping[str, str] | None = None,
+        body: str | None = None,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    ) -> HttpResponse:
+        """Retries/backoff/rate-limiting - unchanged - wrapped with an
+        observability boundary (V9 Limited Beta observability contract §8):
+        one structured log event + metric per call, classifying the outcome
+        (ok / timeout / rate_limited / client_error / server_error /
+        network_error), never the request/response body or headers (which,
+        for a provider like Stripe, carry the bearer credential)."""
+        start = time.monotonic()
+        try:
+            response = self._request_impl(
+                method, url, headers=headers, params=params, body=body, timeout=timeout,
+            )
+        except BaseException as exc:
+            self._log_outcome(method, url, outcome=_classify_error(exc), start=start)
+            raise
+        else:
+            outcome = "ok" if response.ok else _classify_status(response.status)
+            self._log_outcome(method, url, outcome=outcome, start=start, status=response.status)
+            return response
+
+    def _log_outcome(
+        self, method: str, url: str, *, outcome: str, start: float, status: int | None = None,
+    ) -> None:
+        duration_ms = round((time.monotonic() - start) * 1000, 2)
+        _metrics.observe_provider_call(
+            provider=self.provider, operation=method, outcome=outcome, duration_ms=duration_ms,
+        )
+        log_event(
+            _logger, "provider_request_completed",
+            level=logging.INFO if outcome == "ok" else logging.WARNING,
+            provider=self.provider, operation=method, host=urlparse(url).hostname or "",
+            outcome=outcome, status=status, duration_ms=duration_ms,
+        )
+
+    def _request_impl(
         self,
         method: str,
         url: str,

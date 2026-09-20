@@ -93,7 +93,7 @@ def duffel_for_ops() -> DuffelTransportProvider | None:
     if not is_test_token(token):
         return None
     http = RetryingHttpClient(
-        UrllibHttpClient(), max_retries=2, rate_limiter=RateLimiter(0.25)
+        UrllibHttpClient(), max_retries=2, rate_limiter=RateLimiter(0.25), provider="duffel",
     )
     return DuffelTransportProvider(
         access_token=token, http_client=http, max_calls=24, timeout=20.0

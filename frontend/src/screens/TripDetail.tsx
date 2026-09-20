@@ -16,7 +16,6 @@ import { Card } from "../components/ui/Card";
 import { Icon } from "../components/ui/Icon";
 import { Score } from "../components/ui/Score";
 import { hours, joinCities, matchBand, money, percent } from "../lib/format";
-import { track } from "../lib/analytics";
 import "./TripDetail.css";
 
 interface Props {
@@ -267,7 +266,6 @@ export function TripDetail({
             disabled={!providerBookable}
             onClick={() => {
               if (!providerBookable) return;
-              track("booking_clicked", { trip_id: trip.id });
               onBook();
             }}
           >
@@ -283,12 +281,6 @@ export function TripDetail({
             size="lg"
             onClick={() => {
               onSave(trip);
-              // There is no booking flow yet (see DEPLOY.md: prices are
-              // synthetic). This is the sticky primary action on a single
-              // trip - the CTA a real "Book" button would replace - so it is
-              // the one wired to `booking_clicked` now, as a no-op call site
-              // ready for when a real flow exists.
-              if (!saved) track("booking_clicked", { trip_id: trip.id });
             }}
             icon={saved ? Icon.heartFilled({ size: 18 }) : Icon.heart({ size: 18 })}
           >

@@ -18,7 +18,12 @@ import { Button } from "../components/ui/Button";
 import { JourneyPoster } from "../components/trip/JourneyPoster";
 import { TravelPass } from "../components/booking/TravelPass";
 import { money, signedMoney, clockTime, dayMonth } from "../lib/format";
-import { funnel } from "../lib/funnel";
+import {
+  classifyAnalyticsError,
+  track,
+  type AnalyticsEventName,
+  type AnalyticsEventPayloads,
+} from "../lib/analytics";
 import "./BookingExperience.css";
 
 /**
@@ -182,10 +187,31 @@ export function BookingExperience({
   const [promoInput, setPromoInput] = useState("");
   const pollRef = useRef<number | null>(null);
   const paymentIdempotencyRef = useRef<string | null>(null);
+  const outcomeKeysRef = useRef<Set<string>>(new Set());
 
   const legs = trip.legs;
   const providerBookable = Boolean(trip.selection_id);
   const flow: Flow = tier === "BASIC" ? "self_service" : "managed";
+
+  useEffect(() => {
+    track("checkout_started", {
+      tier,
+      recommendation_source: providerBookable ? "live" : "synthetic",
+      leg_count: trip.legs.length,
+      traveler_count: partySize,
+      currency: trip.currency,
+    }, { dedupeKey: `checkout:${trip.rank}` });
+  }, [partySize, providerBookable, tier, trip.currency, trip.legs.length, trip.rank]);
+
+  const dedupedTrack = useCallback(<K extends AnalyticsEventName>(
+    event: K,
+    props: AnalyticsEventPayloads[K],
+    key: string,
+  ) => {
+    if (outcomeKeysRef.current.has(key)) return;
+    outcomeKeysRef.current.add(key);
+    track(event, props, { dedupeKey: key });
+  }, []);
 
   const ensureIntent = useCallback(
     async (chosenTier: ServiceTier): Promise<string> => {
@@ -227,12 +253,6 @@ export function BookingExperience({
         setPayment(null);
         paymentIdempotencyRef.current = null;
         if (next.commercial) setTier(next.commercial.service_tier);
-        if (body.promo_code && next.commercial?.promo_accepted) {
-          funnel("PROMO_APPLIED", {
-            tier: next.commercial.service_tier,
-            props: { promo_code: next.commercial.promo_code ?? "" },
-          });
-        }
       } catch (e) {
         setError(
           e instanceof DetouraApiError ? e.message : "Could not update the price.",
@@ -245,7 +265,6 @@ export function BookingExperience({
   );
 
   const chooseTier = async (next: ServiceTier) => {
-    if (next !== tier) funnel("TIER_SWITCHED", { tier: next });
     setTier(next);
     setPayment(null);
     paymentIdempotencyRef.current = null;
@@ -271,10 +290,25 @@ export function BookingExperience({
           const tp = await api.getTravelPass(bookingId);
           if (cancelled) return;
           setPass(tp);
-          funnel(tp.status === "ready" ? "BOOKED" : "FAILED", {
-            tier,
-            props: { outcome: tp.status },
-          });
+          if (tp.status === "ready") {
+            dedupedTrack(
+              "booking_confirmed",
+              { tier, booking_state: "confirmed" },
+              `booking:${bookingId}:confirmed`,
+            );
+          } else if (tp.status === "recovery_required") {
+            dedupedTrack(
+              "booking_recovery_required",
+              { tier, booking_state: "recovery_required", error_category: "recovery_required" },
+              `booking:${bookingId}:recovery_required`,
+            );
+          } else {
+            dedupedTrack(
+              "booking_failed",
+              { tier, booking_state: "failed", error_category: "booking_failed" },
+              `booking:${bookingId}:failed`,
+            );
+          }
           setPhase("pass");
           return;
         }
@@ -289,7 +323,7 @@ export function BookingExperience({
       cancelled = true;
       if (pollRef.current) window.clearTimeout(pollRef.current);
     };
-  }, [phase, bookingId, tier]);
+  }, [phase, bookingId, tier, dedupedTrack]);
 
   const submitTravelers = async () => {
     setShowErrors(true);
@@ -313,7 +347,7 @@ export function BookingExperience({
       }));
       const next = await api.submitTravelers(id, travelers);
       setIntent(next);
-      funnel("REVIEW", { tier });
+      track("traveler_details_completed", { tier, traveler_count: travelers.length });
       setPhase("review");
     } catch (e) {
       setError(e instanceof DetouraApiError ? e.message : "Could not save traveller details.");
@@ -330,20 +364,28 @@ export function BookingExperience({
     }
     setBusy(true);
     setError(null);
-    funnel("CONFIRM", { tier });
+    track("booking_confirmation_started", { tier }, { dedupeKey: `confirm:${bookingId}` });
     try {
       const next = await api.confirmBooking(bookingId, { tolerance_absolute: toleranceAbsolute });
       setIntent(next);
       if (next.service_flow === "self_service") {
         const it = await api.getItinerary(bookingId);
         setItinerary(it);
-        funnel("BOOKED", { tier, props: { outcome: "itinerary_ready" } });
+        dedupedTrack(
+          "booking_confirmed",
+          { tier, booking_state: "self_service_ready" },
+          `booking:${bookingId}:self_service_ready`,
+        );
         setPhase("guided");
       } else {
         setPhase("working");
       }
     } catch (e) {
-      funnel("FAILED", { tier });
+      dedupedTrack(
+        "booking_failed",
+        { tier, booking_state: "failed", error_category: classifyAnalyticsError(e) },
+        `booking:${bookingId}:confirm_failed`,
+      );
       setError(e instanceof DetouraApiError ? e.message : "Could not confirm the journey.");
     } finally {
       setBusy(false);
@@ -354,6 +396,9 @@ export function BookingExperience({
     if (!bookingId) return;
     setBusy(true);
     setError(null);
+    track("payment_authorization_started", { tier, currency: intent?.currency ?? trip.currency }, {
+      dedupeKey: `payment_started:${bookingId}`,
+    });
     try {
       if (payment?.status === "FAILED" || payment?.status === "CANCELLED") {
         paymentIdempotencyRef.current = null;
@@ -367,15 +412,36 @@ export function BookingExperience({
       const authorized = await api.confirmPayment(created.payment_id);
       setPayment(authorized);
       if (authorized.status === "AUTHORIZED") {
-        funnel("PAYMENT_AUTHORIZED", { tier, props: { provider: authorized.provider } });
+        track("payment_authorized", {
+          tier,
+          currency: authorized.currency,
+          payment_state: "AUTHORIZED",
+        }, { dedupeKey: `payment:${bookingId}:authorized` });
         return;
       }
       if (authorized.status === "UNKNOWN" || authorized.status === "RECONCILIATION_REQUIRED") {
+        track("payment_unknown", {
+          tier,
+          payment_state: authorized.status,
+          error_category: "payment_unknown",
+        }, { dedupeKey: `payment:${bookingId}:unknown` });
         setError("Payment is being verified. Do not retry while Detoura reconciles it.");
         return;
       }
+      if (authorized.status === "FAILED" || authorized.status === "CANCELLED") {
+        track("payment_failed", {
+          tier,
+          payment_state: authorized.status,
+          error_category: "payment_failed",
+        }, { dedupeKey: `payment:${bookingId}:failed` });
+      }
       setError(`Payment is ${authorized.status.toLowerCase().replaceAll("_", " ")}.`);
     } catch (e) {
+      track("payment_failed", {
+        tier,
+        payment_state: "FAILED",
+        error_category: classifyAnalyticsError(e),
+      }, { dedupeKey: `payment:${bookingId}:failed` });
       setError(e instanceof DetouraApiError ? e.message : "Could not authorize payment.");
     } finally {
       setBusy(false);
@@ -449,7 +515,6 @@ export function BookingExperience({
               providerBookable={providerBookable}
               onSelect={chooseTier}
               onContinue={() => {
-                funnel("TIER_SELECTED", { tier });
                 setPhase("traveler");
               }}
             />

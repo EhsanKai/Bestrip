@@ -7,6 +7,7 @@ import type {
   TripConfirmation,
 } from "../api/types";
 import type { AccountStatus } from "../state/useAccount";
+import { track } from "../lib/analytics";
 import { dayMonth, money } from "../lib/format";
 import "./MyTrips.css";
 
@@ -136,6 +137,14 @@ export function MyTrips({ accountStatus, onDiscover, onLogin }: MyTripsProps) {
       ),
     [trips],
   );
+  useEffect(() => {
+    if (accountStatus === "authenticated" && listStatus === "ready") {
+      track("my_trips_viewed", {
+        trip_count: sortedTrips.length,
+        empty: sortedTrips.length === 0,
+      }, { dedupeKey: `my_trips:${sortedTrips.length}` });
+    }
+  }, [accountStatus, listStatus, sortedTrips.length]);
   if (accountStatus === "loading") {
     return <StateShell title="Checking your account" body="We are restoring your Detoura session." />;
   }
@@ -174,6 +183,9 @@ export function MyTrips({ accountStatus, onDiscover, onLogin }: MyTripsProps) {
             link.remove();
             window.setTimeout(() => URL.revokeObjectURL(url), 0);
             setDownloadState({ id: null, error: null });
+            track("document_downloaded", {
+              document_type: documentTypeForAnalytics(document.document_type),
+            });
           } catch (error) {
             setDownloadState({
               id: null,
@@ -523,6 +535,14 @@ function routeText(trip: MyTripSummary): string {
 
 function documentLabel(document: FinancialDocument): string {
   return `${humanize(document.document_type)} ${document.document_number}`;
+}
+
+function documentTypeForAnalytics(value: string): "receipt" | "invoice" | "credit_note" | "unknown" {
+  const normalized = value.toLowerCase();
+  if (normalized.includes("receipt")) return "receipt";
+  if (normalized.includes("invoice")) return "invoice";
+  if (normalized.includes("credit")) return "credit_note";
+  return "unknown";
 }
 
 function humanize(value: string): string {

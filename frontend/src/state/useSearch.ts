@@ -6,7 +6,7 @@ import {
   type TripSearchRequest,
   type TripSearchResponse,
 } from "../api/types";
-import { track } from "../lib/analytics";
+import { classifyAnalyticsError, recommendationSource, track } from "../lib/analytics";
 import { captureException } from "../lib/errorTracking";
 
 /* DEEP's own estimate is 8-20s, with a 25s hard ceiling on the adaptive beam
@@ -104,6 +104,8 @@ export function useSearch() {
         search_mode: request.search_mode ?? "SMART",
         result_count: response.recommendations.length,
         no_results: response.no_results !== null,
+        recommendation_source: recommendationSource(response.diagnostics.supply_source),
+        currency: response.currency,
       });
       return response;
     } catch (error) {
@@ -123,8 +125,7 @@ export function useSearch() {
       });
       track("search_failed", {
         search_mode: request.search_mode ?? "SMART",
-        status: failure.status,
-        issue_kind: failure.issue?.kind,
+        error_category: classifyAnalyticsError(failure),
       });
       captureException(failure, { request });
       return null;
@@ -162,12 +163,18 @@ export function useSearch() {
         deeper: true,
         result_count: response.recommendations.length,
         no_results: response.no_results !== null,
+        recommendation_source: recommendationSource(response.diagnostics.supply_source),
+        currency: response.currency,
       });
       return response;
     } catch (error) {
       // A failed deepening must not destroy the results we already have.
       setState((prev) => ({ ...prev, deeperPending: false }));
-      track("search_failed", { search_mode: "DEEP", deeper: true });
+      track("search_failed", {
+        search_mode: "DEEP",
+        deeper: true,
+        error_category: classifyAnalyticsError(error),
+      });
       captureException(error, { request, deeper: true });
       throw error;
     }

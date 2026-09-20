@@ -5,7 +5,6 @@ import type {
   TripRecheckResponse,
   TripRecommendation,
 } from "../api/types";
-import { track } from "../lib/analytics";
 import { captureException } from "../lib/errorTracking";
 
 const KEY = "detoura-saved";
@@ -63,9 +62,6 @@ export function useSaved() {
     setTrips((current) => {
       const already = current.some((saved) => saved.id === trip.id);
       if (already) return current.filter((saved) => saved.id !== trip.id);
-      // Only the add half is "trip_saved" - removing a trip is not a save
-      // event, and double-counting it would inflate the metric with unsaves.
-      track("trip_saved", { trip_id: trip.id, total_price: trip.total_price });
       return [
         ...current,
         {
@@ -112,7 +108,6 @@ export function useSaved() {
         ...current,
         [trip.id]: { status: "done", result },
       }));
-      track("trip_refreshed", { trip_id: trip.id, status: result.status });
     } catch (error) {
       // A failed re-check says nothing about the trip, so the saved price is
       // left exactly as it was and the error is reported as ours.

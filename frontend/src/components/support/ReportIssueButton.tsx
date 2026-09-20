@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { track } from "../../lib/analytics";
 import { buildIssueReport, reportIssue, type ErrorContext } from "../../lib/errorTracking";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -33,8 +32,8 @@ export function ReportIssueButton({ summary, context, quiet = false }: Props) {
   const report = open ? buildIssueReport({ summary, context }) : null;
 
   const submit = (method: "email" | "copy") => {
+    void method;
     reportIssue({ summary, context });
-    track("feedback_submitted", { method, summary });
   };
 
   return (

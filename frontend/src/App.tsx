@@ -14,8 +14,7 @@ import {
   type JourneyDrawerStatus,
 } from "./components/journey/JourneyDrawer";
 import { MobileNav } from "./components/shell/MobileNav";
-import { track } from "./lib/analytics";
-import { funnel } from "./lib/funnel";
+import { recommendationSource, track } from "./lib/analytics";
 import { applyNoIndexSeo, applyPublicHomeSeo } from "./lib/seo";
 const Compare = lazy(() => import("./screens/Compare").then(module => ({ default: module.Compare })));
 const Discover = lazy(() => import("./screens/Discover").then(module => ({ default: module.Discover })));
@@ -71,15 +70,18 @@ export default function App() {
   const journeyModel = journeyDraft ? toDrawerModel(journeyDraft) : null;
   const journeyTrip = journeyDraft?.trip ?? null;
 
+  useEffect(() => {
+    if (screen === "landing") {
+      track("landing_viewed", { landing_context: "home" }, { dedupeKey: "home" });
+    }
+  }, [screen]);
+
   // Keep the shell in step with the search: entering "searching" is a state
   // transition the hook owns, and this maps it onto a screen.
   useEffect(() => {
     if (search.status === "searching") setScreen("searching");
     else if (search.status === "done" && screen === "searching") {
       setScreen("results");
-      funnel("RESULT_VIEW", {
-        props: { result_count: search.response?.recommendations.length ?? 0 },
-      });
     } else if (search.status === "failed" && screen === "searching") setScreen("results");
   }, [search.status, screen, search.response]);
 
@@ -98,13 +100,6 @@ export default function App() {
     (request: TripSearchRequest) => {
       setSelected(null);
       setComparing([]);
-      funnel("SEARCH", {
-        props: {
-          search_mode: request.search_mode ?? "SMART",
-          profile: request.profile ?? "BEST_VALUE",
-          repeat: Boolean(search.request),
-        },
-      });
       void search.run(request);
     },
     [search],
@@ -150,9 +145,14 @@ export default function App() {
     setSelected(trip);
     setScreen("detail");
     window.scrollTo({ top: 0 });
-    track("result_viewed", { trip_id: trip.id, rank: trip.rank });
-    funnel("TRIP_OPEN", { props: { rank: trip.rank } });
-  }, []);
+    track("journey_viewed", {
+      recommendation_rank: trip.rank,
+      recommendation_source: recommendationSource(search.response?.diagnostics.supply_source),
+      bookable: Boolean(trip.selection_id),
+      leg_count: trip.legs.length,
+      currency: trip.currency,
+    }, { dedupeKey: `journey:${trip.rank}` });
+  }, [search.response]);
 
   const selectJourney = useCallback((trip: TripRecommendation) => {
     const draft = makeJourneyDraft(trip, search.request);
@@ -160,9 +160,14 @@ export default function App() {
     setJourneyDraft(draft);
     saveJourneyDraft(draft);
     setJourneyDrawerOpen(true);
-    track("journey_selected", { trip_id: trip.id, rank: trip.rank });
-    funnel("JOURNEY_SELECT", { props: { rank: trip.rank } });
-  }, [search.request]);
+    track("recommendation_selected", {
+      recommendation_rank: trip.rank,
+      recommendation_source: recommendationSource(search.response?.diagnostics.supply_source),
+      bookable: Boolean(trip.selection_id),
+      leg_count: trip.legs.length,
+      currency: trip.currency,
+    });
+  }, [search.request, search.response]);
 
   const setJourneyStatus = useCallback((status: JourneyDrawerStatus) => {
     if (status === "empty") {
@@ -203,8 +208,14 @@ export default function App() {
     setComparing([]);
     setSelected(next);
     window.scrollTo({ top: 0 });
-    track("result_viewed", { trip_id: next.id, rank: next.rank });
-  }, []);
+    track("journey_viewed", {
+      recommendation_rank: next.rank,
+      recommendation_source: recommendationSource(search.response?.diagnostics.supply_source),
+      bookable: Boolean(next.selection_id),
+      leg_count: next.legs.length,
+      currency: next.currency,
+    }, { dedupeKey: `journey:${next.rank}` });
+  }, [search.response]);
 
   const comparedTrips = (search.response?.recommendations ?? []).filter((trip) =>
     comparing.includes(trip.id),

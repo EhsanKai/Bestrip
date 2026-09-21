@@ -48,6 +48,20 @@ import {
 const BASE = import.meta.env.VITE_API_BASE || "/api/v1";
 const CSRF_COOKIE = "detoura_csrf";
 
+/* `GET /auth/google/start` is a 302 to Google, and `/callback` is Google's
+ * own redirect target - both are full-page browser navigations by design
+ * (Google only ever redirects a browser, never answers a fetch/XHR with
+ * useful data), never something this client calls with `fetch`. The
+ * backend owns the entire OAuth/OIDC exchange - client id, PKCE, state,
+ * nonce, token validation, session minting - so the frontend's only job is
+ * to send the browser here and later read the plain, non-secret query
+ * parameters the backend's callback redirects back with (see
+ * `lib/googleAuthReturn.ts`). No Google client secret, authorization code,
+ * or token of any kind ever exists in frontend code. */
+export function googleAuthStartUrl(): string {
+  return `${BASE}/auth/google/start`;
+}
+
 interface ApiErrorBody {
   detail?: string | { message?: string; issue?: unknown };
 }
@@ -159,6 +173,17 @@ export const api = {
 
   logout() {
     return request<{ ok: true }>("/auth/logout", { method: "POST" });
+  },
+
+  /* Google Sign-In: `/auth/google/link/confirm` is the only Google auth
+   * call the frontend makes through `fetch` - see `googleAuthStartUrl()`
+   * below for why the other two (`start`/`callback`) are full-page
+   * navigations instead. Backend contract: `docs/V9_GOOGLE_AUTH_ACCOUNT_LIFECYCLE_REPORT.md`. */
+  googleLinkConfirm(body: { link_id: string }) {
+    return request<{ ok: true }>("/auth/google/link/confirm", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   },
 
   search(body: TripSearchRequest, signal?: AbortSignal) {

@@ -5,6 +5,8 @@ import type {
   TripRecommendation,
   TripSearchRequest,
 } from "./api/types";
+import { DetouraApiError } from "./api/types";
+import { api, googleAuthStartUrl } from "./api/client";
 import { SearchProgress } from "./components/search/SearchProgress";
 import { SlowSearchNotice } from "./components/search/SlowSearchNotice";
 import { ErrorState } from "./components/search/ErrorState";
@@ -15,6 +17,7 @@ import {
 } from "./components/journey/JourneyDrawer";
 import { MobileNav } from "./components/shell/MobileNav";
 import { recommendationSource, track } from "./lib/analytics";
+import { clearGoogleReturnParams, readGoogleReturnOutcome } from "./lib/googleAuthReturn";
 import { applyNoIndexSeo, applyPublicHomeSeo } from "./lib/seo";
 const Compare = lazy(() => import("./screens/Compare").then(module => ({ default: module.Compare })));
 const Discover = lazy(() => import("./screens/Discover").then(module => ({ default: module.Discover })));
@@ -24,6 +27,7 @@ const SavedTrips = lazy(() => import("./screens/SavedTrips").then(module => ({ d
 const TripDetail = lazy(() => import("./screens/TripDetail").then(module => ({ default: module.TripDetail })));
 const BookingExperience = lazy(() => import("./screens/BookingExperience").then(module => ({ default: module.BookingExperience })));
 const Login = lazy(() => import("./screens/Login").then(module => ({ default: module.Login })));
+import type { GoogleNotice } from "./screens/Login";
 const MyTrips = lazy(() => import("./screens/MyTrips").then(module => ({ default: module.MyTrips })));
 import { useSearch } from "./state/useSearch";
 import { useSaved } from "./state/useSaved";
@@ -69,6 +73,62 @@ export default function App() {
   const [journeyDraft, setJourneyDraft] = useState<JourneyDraft | null>(() => loadJourneyDraft());
   const journeyModel = journeyDraft ? toDrawerModel(journeyDraft) : null;
   const journeyTrip = journeyDraft?.trip ?? null;
+
+  // Google Sign-In: the backend owns the entire OAuth/OIDC exchange and
+  // redirects the browser back to this same origin with plain, non-secret
+  // query parameters (see lib/googleAuthReturn.ts) - never a token, code,
+  // or anything this app treats as a credential. `googleLinkId` holds a
+  // Case-C link ticket (V9_GOOGLE_AUTH_ACCOUNT_LIFECYCLE_REPORT.md §4/§9)
+  // between "backend said an existing account must verify itself first"
+  // and "that verification (a normal password login) just succeeded".
+  const [googleRedirecting, setGoogleRedirecting] = useState(false);
+  const [googleNotice, setGoogleNotice] = useState<GoogleNotice | null>(null);
+  const [googleJustSignedIn, setGoogleJustSignedIn] = useState(false);
+  const [googleLinked, setGoogleLinked] = useState(false);
+  const [googleLinkId, setGoogleLinkId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const outcome = readGoogleReturnOutcome(window.location.search);
+    if (!outcome) return;
+    clearGoogleReturnParams();
+    setScreen("login");
+    if (outcome.kind === "success") {
+      setGoogleJustSignedIn(true);
+    } else if (outcome.kind === "link_required") {
+      setGoogleLinkId(outcome.linkId);
+      setGoogleNotice(outcome);
+    } else {
+      setGoogleNotice(outcome);
+    }
+    // Reads the URL exactly once, on the initial page load this backend
+    // redirect landed on - never re-run for later in-app screen changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const continueWithGoogle = useCallback(() => {
+    if (googleRedirecting) return;
+    setGoogleRedirecting(true);
+    window.location.href = googleAuthStartUrl();
+  }, [googleRedirecting]);
+
+  const loginWithPassword = useCallback(async (payload: { email: string; password: string }) => {
+    await account.login(payload.email, payload.password);
+    if (!googleLinkId) return;
+    const pendingLinkId = googleLinkId;
+    setGoogleLinkId(null);
+    try {
+      await api.googleLinkConfirm({ link_id: pendingLinkId });
+      setGoogleNotice(null);
+      setGoogleLinked(true);
+    } catch (error) {
+      // The password login above already succeeded and stands regardless -
+      // a failed link (expired ticket, since-claimed by someone else) is
+      // reported, never silently retried (§13) and never treated as a
+      // login failure.
+      const status = error instanceof DetouraApiError ? error.status : 0;
+      setGoogleNotice({ kind: "error", reason: status === 409 ? "link_conflict" : "failed" });
+    }
+  }, [account, googleLinkId]);
 
   useEffect(() => {
     if (screen === "landing") {
@@ -334,9 +394,14 @@ export default function App() {
             profile={account.profile}
             sessionStatus={account.status}
             sessionError={account.error}
-            onLogin={({ email, password }) => account.login(email, password)}
+            onLogin={loginWithPassword}
             onSignup={({ email, password }) => account.register(email, password)}
             onLogout={account.logout}
+            onContinueWithGoogle={continueWithGoogle}
+            googleRedirecting={googleRedirecting}
+            googleNotice={googleNotice}
+            googleJustSignedIn={googleJustSignedIn}
+            googleLinked={googleLinked}
           />
         )}
 

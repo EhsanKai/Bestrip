@@ -81,6 +81,66 @@
   color: var(--accent);
 }
 
+/* Secondary, not brand-dominant: a bordered outline button, never filled
+ * with the Detoura accent color the primary submit button uses - Google is
+ * an additional sign-in method, not the headline action on this screen. */
+.account-google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  margin-top: 34px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+}
+
+.account-google:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.account-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 20px 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.account-divider::before,
+.account-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.account-google-notice {
+  margin: 0 0 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.account-google-notice--error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .account-form {
   display: grid;
   gap: 18px;
@@ -111,6 +171,7 @@
 .account-field input:focus-visible,
 .account-field__password button:focus-visible,
 .account-form__submit:focus-visible,
+.account-google:focus-visible,
 .account-entry__switch button:focus-visible,
 .account-confirm button:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
@@ -233,6 +294,10 @@
 @media (hover: hover) {
   .account-form__submit:not(:disabled):hover {
     background: var(--accent-hover);
+  }
+
+  .account-google:not(:disabled):hover {
+    border-color: var(--text-muted);
   }
 }
 

@@ -96,15 +96,19 @@ export function Login({
     return emailValid && password.length > 0;
   }, [emailValid, isForgot, isResetConfirm, isLoading, isSignup, password.length, passwordReady, passwordsMatch, resetCode]);
 
-  function switchMode(nextMode: AccountMode) {
-    setMode(nextMode);
-    setSubmitState("idle");
-    setSubmitMessage(null);
+  function clearSecrets() {
     setPassword("");
     setConfirmPassword("");
     setResetCode("");
     setShowPassword(false);
     setShowConfirm(false);
+  }
+
+  function switchMode(nextMode: AccountMode) {
+    setMode(nextMode);
+    setSubmitState("idle");
+    setSubmitMessage(null);
+    clearSecrets();
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -122,15 +126,18 @@ export function Login({
       if (isResetConfirm) {
         await onConfirmResetPassword?.({ token: resetCode.trim(), newPassword: password });
         setSubmitState("success");
+        clearSecrets();
         setMode("passwordUpdated");
         return;
       }
       if (isSignup) {
         await onSignup?.({ email, password });
+        clearSecrets();
         setSubmitState("success");
         return;
       }
       await onLogin?.({ email, password });
+      clearSecrets();
       setSubmitState("success");
     } catch (error) {
       setSubmitMessage(accountErrorMessage(error, mode));
@@ -143,8 +150,8 @@ export function Login({
     setSubmitMessage(null);
     try {
       await onLogout?.();
-      setPassword("");
-      setConfirmPassword("");
+      clearSecrets();
+      setEmail("");
       setSubmitState("idle");
     } catch (error) {
       setSubmitMessage(accountErrorMessage(error, mode));
@@ -178,6 +185,10 @@ export function Login({
             {googleLinked && (
               <p className="account-form__status account-form__status--success">Your Google account is now connected.</p>
             )}
+            {googleNotice?.kind === "error" && (
+              <p role="status" className="account-form__status account-form__status--error">{googleNoticeMessage(googleNotice)}</p>
+            )}
+            {submitState === "error" && <p role="alert" className="account-form__status account-form__status--error">{submitMessage}</p>}
             <button type="button" className="account-form__submit" onClick={handleLogout} disabled={isLoading}>
               {isLoading ? "Signing out..." : "Log out"}
             </button>

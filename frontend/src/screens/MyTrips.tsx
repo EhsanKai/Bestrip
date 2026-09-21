@@ -61,6 +61,7 @@ export function MyTrips({ accountStatus, onDiscover, onLogin }: MyTripsProps) {
     setListError(null);
     try {
       const response = await api.listMyTrips(signal);
+      if (signal?.aborted) return;
       setTrips(response.trips);
       setListStatus("ready");
       if (selectedId && !response.trips.some((trip) => trip.booking_id === selectedId)) {

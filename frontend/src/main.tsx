@@ -9,6 +9,9 @@ import "./design/tokens.css";
 import "./design/base.css";
 import "./design/luxury.css";
 
+// Remove the retired Ops bearer-token key even on a consumer-only visit.
+try { sessionStorage.removeItem("detoura.ops.session"); } catch { /* Storage may be denied. */ }
+
 // Both are no-ops with no env vars set - see .env.example. Called once, here,
 // so no screen has to know whether analytics or error tracking exist.
 initAnalytics();

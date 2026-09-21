@@ -4,21 +4,19 @@
 const BASE = (import.meta.env.VITE_API_BASE || "/api/v1") + "/ops";
 const TOKEN_KEY = "detoura.ops.session";
 
-export function getToken(): string {
-  try {
-    return sessionStorage.getItem(TOKEN_KEY) || "";
-  } catch {
-    return "";
-  }
+// Bearer credentials live only in this page's memory. Discard the legacy
+// tab-persisted credential rather than silently restoring it after a reload.
+let sessionToken = "";
+function clearLegacyToken(): void {
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* Storage may be denied. */ }
 }
+clearLegacyToken();
+
+export function getToken(): string { return sessionToken; }
 
 export function setToken(token: string): void {
-  try {
-    if (token) sessionStorage.setItem(TOKEN_KEY, token);
-    else sessionStorage.removeItem(TOKEN_KEY);
-  } catch {
-    /* private mode - session stays in memory only for this page load */
-  }
+  sessionToken = token;
+  clearLegacyToken();
 }
 
 export class OpsError extends Error {
@@ -43,6 +41,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   } catch (e) {
     throw new OpsError("Could not reach Detoura Ops.", 0);
   }
+  if (res.status === 401) setToken("");
   if (res.status === 204) return undefined as T;
   let body: unknown = null;
   try {

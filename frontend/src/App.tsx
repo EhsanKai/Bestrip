@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type {
   ProfileName,
   SearchMode,
@@ -87,6 +87,21 @@ export default function App() {
   const [googleLinked, setGoogleLinked] = useState(false);
   const [googleLinkId, setGoogleLinkId] = useState<string | null>(null);
 
+  const googleLinkAttempt = useRef(0);
+  const previousAccount = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (account.status === "loading") return;
+    const currentAccount = account.profile?.user_id ?? null;
+    if (previousAccount.current !== undefined && previousAccount.current !== currentAccount) {
+      if (previousAccount.current !== null) ++googleLinkAttempt.current;
+      setGoogleLinkId(null);
+      setGoogleNotice(null);
+      setGoogleJustSignedIn(false);
+      setGoogleLinked(false);
+    }
+    previousAccount.current = currentAccount;
+  }, [account.status, account.profile?.user_id]);
+
   useEffect(() => {
     const outcome = readGoogleReturnOutcome(window.location.search);
     if (!outcome) return;
@@ -112,12 +127,14 @@ export default function App() {
   }, [googleRedirecting]);
 
   const loginWithPassword = useCallback(async (payload: { email: string; password: string }) => {
+    const attempt = ++googleLinkAttempt.current;
     await account.login(payload.email, payload.password);
-    if (!googleLinkId) return;
+    if (!googleLinkId || attempt !== googleLinkAttempt.current) return;
     const pendingLinkId = googleLinkId;
     setGoogleLinkId(null);
     try {
       await api.googleLinkConfirm({ link_id: pendingLinkId });
+      if (attempt !== googleLinkAttempt.current) return;
       setGoogleNotice(null);
       setGoogleLinked(true);
     } catch (error) {
@@ -125,6 +142,7 @@ export default function App() {
       // a failed link (expired ticket, since-claimed by someone else) is
       // reported, never silently retried (§13) and never treated as a
       // login failure.
+      if (attempt !== googleLinkAttempt.current) return;
       const status = error instanceof DetouraApiError ? error.status : 0;
       setGoogleNotice({ kind: "error", reason: status === 409 ? "link_conflict" : "failed" });
     }
@@ -369,10 +387,10 @@ export default function App() {
 
         {screen === "booking" && selected && (
           <BookingExperience
-            // Keyed by trip id: accepting a re-optimized journey swaps
+            // Keyed by account and trip: accepting a re-optimized journey swaps
             // `selected`, which fully remounts the booking flow so no stale
             // intent, offer or revalidation from the previous journey survives.
-            key={selected.id}
+            key={`${account.profile?.user_id ?? "anonymous"}:${selected.id}`}
             trip={selected}
             travelers={search.request?.travelers ?? 1}
             onBack={() => setScreen("results")}
@@ -391,12 +409,20 @@ export default function App() {
 
         {screen === "login" && (
           <Login
+            key={account.profile?.user_id ?? "anonymous"}
             profile={account.profile}
             sessionStatus={account.status}
             sessionError={account.error}
             onLogin={loginWithPassword}
             onSignup={({ email, password }) => account.register(email, password)}
-            onLogout={account.logout}
+            onLogout={async () => {
+              ++googleLinkAttempt.current;
+              await account.logout();
+              setGoogleLinkId(null);
+              setGoogleNotice(null);
+              setGoogleJustSignedIn(false);
+              setGoogleLinked(false);
+            }}
             onForgotPassword={async ({ email }) => {
               await api.requestPasswordReset({ email });
             }}
@@ -413,6 +439,7 @@ export default function App() {
 
         {screen === "myTrips" && (
           <MyTrips
+            key={account.profile?.user_id ?? "anonymous"}
             accountStatus={account.status}
             onDiscover={() => setScreen("discover")}
             onLogin={() => setScreen("login")}

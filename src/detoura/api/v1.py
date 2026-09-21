@@ -61,7 +61,8 @@ from ..services.payment_booking_orchestrator import (
 )
 from ..payment_config import payment_config, resolve_provider
 from ..services.booking_orchestrator import BookingPhase
-from .auth import get_optional_session, require_csrf
+from ..services.rate_limit import rate_limiter as _rate_limiter
+from .auth import _client_ip, get_optional_session, require_csrf
 from ..models.commercial import ServiceTier
 from ..persistence import analytics as analytics_store
 from ..persistence import get_db
@@ -981,11 +982,24 @@ def _intent_dto(run) -> BookingIntentResponse:
     )
 
 
+#: Coarse per-IP volume control on the unauthenticated events endpoint -
+#: bounds flood/storage-exhaustion abuse without meaningfully constraining
+#: real browser telemetry (a page session emits at most a handful of
+#: batches, each already capped at 50 events by TrackEventsRequest).
+_EVENTS_RATE_LIMIT_MAX_CALLS = 120
+_EVENTS_RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+
 @router.post("/events")
-def track_events(body: TrackEventsRequest) -> dict:
+def track_events(request: Request, body: TrackEventsRequest) -> dict:
     """Anonymous product-funnel events from the web client. No auth (it is the
     public site) and no PII - the store keeps only whitelisted event names and
     prop keys and drops anything that looks like personal data."""
+    if not _rate_limiter().allow(
+        "track_events", _client_ip(request),
+        max_calls=_EVENTS_RATE_LIMIT_MAX_CALLS, window_seconds=_EVENTS_RATE_LIMIT_WINDOW_SECONDS,
+    ):
+        raise HTTPException(status_code=429, detail={"message": "Too many requests."})
     kept = analytics_store.record_many(
         get_db(),
         [{"event": e.event, "tier": e.tier, "props": e.props} for e in body.events],

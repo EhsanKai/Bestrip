@@ -121,7 +121,7 @@ export function useSaved() {
               : "We couldn't re-check this trip.",
         },
       }));
-      captureException(error, { trip_id: trip.id });
+      captureException(error, { operation: "saved_recheck" });
     }
   }, []);
 

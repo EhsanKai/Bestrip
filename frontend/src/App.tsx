@@ -151,7 +151,7 @@ export default function App() {
       bookable: Boolean(trip.selection_id),
       leg_count: trip.legs.length,
       currency: trip.currency,
-    }, { dedupeKey: `journey:${trip.rank}` });
+    });
   }, [search.response]);
 
   const selectJourney = useCallback((trip: TripRecommendation) => {
@@ -214,7 +214,7 @@ export default function App() {
       bookable: Boolean(next.selection_id),
       leg_count: next.legs.length,
       currency: next.currency,
-    }, { dedupeKey: `journey:${next.rank}` });
+    });
   }, [search.response]);
 
   const comparedTrips = (search.response?.recommendations ?? []).filter((trip) =>

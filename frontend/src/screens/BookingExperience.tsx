@@ -187,7 +187,7 @@ export function BookingExperience({
   const [promoInput, setPromoInput] = useState("");
   const pollRef = useRef<number | null>(null);
   const paymentIdempotencyRef = useRef<string | null>(null);
-  const outcomeKeysRef = useRef<Set<string>>(new Set());
+  const checkoutScope = useRef({});
 
   const legs = trip.legs;
   const providerBookable = Boolean(trip.selection_id);
@@ -200,7 +200,7 @@ export function BookingExperience({
       leg_count: trip.legs.length,
       traveler_count: partySize,
       currency: trip.currency,
-    }, { dedupeKey: `checkout:${trip.rank}` });
+    }, { dedupeKey: "checkout", dedupeScope: checkoutScope.current });
   }, [partySize, providerBookable, tier, trip.currency, trip.legs.length, trip.rank]);
 
   const dedupedTrack = useCallback(<K extends AnalyticsEventName>(
@@ -208,8 +208,6 @@ export function BookingExperience({
     props: AnalyticsEventPayloads[K],
     key: string,
   ) => {
-    if (outcomeKeysRef.current.has(key)) return;
-    outcomeKeysRef.current.add(key);
     track(event, props, { dedupeKey: key });
   }, []);
 
@@ -253,6 +251,9 @@ export function BookingExperience({
         setPayment(null);
         paymentIdempotencyRef.current = null;
         if (next.commercial) setTier(next.commercial.service_tier);
+        if (body.promo_code && next.commercial?.promo_accepted) {
+          track("promo_applied", { tier: next.commercial.service_tier, applied: true });
+        }
       } catch (e) {
         setError(
           e instanceof DetouraApiError ? e.message : "Could not update the price.",
@@ -302,7 +303,7 @@ export function BookingExperience({
               { tier, booking_state: "recovery_required", error_category: "recovery_required" },
               `booking:${bookingId}:recovery_required`,
             );
-          } else {
+          } else if (tp.status === "failed") {
             dedupedTrack(
               "booking_failed",
               { tier, booking_state: "failed", error_category: "booking_failed" },
@@ -364,7 +365,7 @@ export function BookingExperience({
     }
     setBusy(true);
     setError(null);
-    track("booking_confirmation_started", { tier }, { dedupeKey: `confirm:${bookingId}` });
+    track("booking_confirmation_started", { tier });
     try {
       const next = await api.confirmBooking(bookingId, { tolerance_absolute: toleranceAbsolute });
       setIntent(next);
@@ -372,8 +373,8 @@ export function BookingExperience({
         const it = await api.getItinerary(bookingId);
         setItinerary(it);
         dedupedTrack(
-          "booking_confirmed",
-          { tier, booking_state: "self_service_ready" },
+          "self_service_ready",
+          { tier },
           `booking:${bookingId}:self_service_ready`,
         );
         setPhase("guided");
@@ -382,8 +383,8 @@ export function BookingExperience({
       }
     } catch (e) {
       dedupedTrack(
-        "booking_failed",
-        { tier, booking_state: "failed", error_category: classifyAnalyticsError(e) },
+        "booking_confirmation_failed",
+        { tier, error_category: classifyAnalyticsError(e) },
         `booking:${bookingId}:confirm_failed`,
       );
       setError(e instanceof DetouraApiError ? e.message : "Could not confirm the journey.");
@@ -396,9 +397,7 @@ export function BookingExperience({
     if (!bookingId) return;
     setBusy(true);
     setError(null);
-    track("payment_authorization_started", { tier, currency: intent?.currency ?? trip.currency }, {
-      dedupeKey: `payment_started:${bookingId}`,
-    });
+    track("payment_authorization_started", { tier, currency: intent?.currency ?? trip.currency });
     try {
       if (payment?.status === "FAILED" || payment?.status === "CANCELLED") {
         paymentIdempotencyRef.current = null;
@@ -416,7 +415,7 @@ export function BookingExperience({
           tier,
           currency: authorized.currency,
           payment_state: "AUTHORIZED",
-        }, { dedupeKey: `payment:${bookingId}:authorized` });
+        }, { dedupeKey: `payment:${authorized.payment_id}:authorized` });
         return;
       }
       if (authorized.status === "UNKNOWN" || authorized.status === "RECONCILIATION_REQUIRED") {
@@ -424,7 +423,7 @@ export function BookingExperience({
           tier,
           payment_state: authorized.status,
           error_category: "payment_unknown",
-        }, { dedupeKey: `payment:${bookingId}:unknown` });
+        }, { dedupeKey: `payment:${authorized.payment_id}:${authorized.status}` });
         setError("Payment is being verified. Do not retry while Detoura reconciles it.");
         return;
       }
@@ -433,13 +432,12 @@ export function BookingExperience({
           tier,
           payment_state: authorized.status,
           error_category: "payment_failed",
-        }, { dedupeKey: `payment:${bookingId}:failed` });
+        }, { dedupeKey: `payment:${authorized.payment_id}:${authorized.status}` });
       }
       setError(`Payment is ${authorized.status.toLowerCase().replaceAll("_", " ")}.`);
     } catch (e) {
-      track("payment_failed", {
+      track("payment_request_failed", {
         tier,
-        payment_state: "FAILED",
         error_category: classifyAnalyticsError(e),
       }, { dedupeKey: `payment:${bookingId}:failed` });
       setError(e instanceof DetouraApiError ? e.message : "Could not authorize payment.");
@@ -515,6 +513,7 @@ export function BookingExperience({
               providerBookable={providerBookable}
               onSelect={chooseTier}
               onContinue={() => {
+                track("service_tier_selected", { tier });
                 setPhase("traveler");
               }}
             />

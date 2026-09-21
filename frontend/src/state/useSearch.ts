@@ -127,7 +127,7 @@ export function useSearch() {
         search_mode: request.search_mode ?? "SMART",
         error_category: classifyAnalyticsError(failure),
       });
-      captureException(failure, { request });
+      captureException(failure, { operation: "search" });
       return null;
     }
   }, []);
@@ -175,7 +175,7 @@ export function useSearch() {
         deeper: true,
         error_category: classifyAnalyticsError(error),
       });
-      captureException(error, { request, deeper: true });
+      captureException(error, { operation: "search_deeper" });
       throw error;
     }
   }, [state.request]);

@@ -1,25 +1,12 @@
-/* A vendor-neutral error-reporting seam, on the same principle as
- * `analytics.ts`: screens call `captureException()`, never a vendor SDK, so
- * the app runs with zero error-tracking dependency and zero network calls
- * until someone deliberately configures one.
- *
- * There is no Sentry adapter here yet, on purpose. `@sentry/*` is not a
- * dependency of this project (check `package.json`), and adding it as a real,
- * wired-up integration without verifying it against a live DSN would mean
- * shipping a "half" integration - the kind that silently no-ops in a way
- * that is easy to mistake for "it's fine, nothing broke" and hard to notice
- * is a lie. `init()` below reads `VITE_SENTRY_DSN` and, if it is set, warns
- * once in dev and otherwise stays on the console adapter, so setting the
- * variable without also shipping the adapter fails loudly in development
- * instead of pretending to work.
- *
- * TODO(sentry-adapter): when `@sentry/browser` is added as a dependency, wire
- * a real adapter into `init()` behind a dynamic `import("@sentry/browser")` so
- * a build with `VITE_SENTRY_DSN` unset never pulls the SDK in - the same
- * lazy-load discipline `analytics.ts` uses for GA4/Plausible.
- */
+/* Error instrumentation receives only categories and a narrow operation context.
+ * User-requested support reports remain a separate application feature. */
+import { classifyAnalyticsError, type ErrorCategory } from "./analytics";
 
 export type ErrorContext = Record<string, unknown>;
+
+export interface SafeErrorContext {
+  operation?: "search" | "search_deeper" | "saved_recheck";
+}
 
 export interface ErrorTrackingConfig {
   /** Defaults to `import.meta.env.VITE_SENTRY_DSN`. */
@@ -27,15 +14,14 @@ export interface ErrorTrackingConfig {
 }
 
 interface ErrorTrackingAdapter {
-  captureException(error: unknown, context?: ErrorContext): void;
+  captureException(category: ErrorCategory, context: SafeErrorContext): void;
 }
 
-/** Prints in every environment - unlike analytics, a swallowed error is a
- *  real cost during development even with no backend configured. */
+/** Development-only, categorical diagnostics. No raw error objects. */
 const consoleAdapter: ErrorTrackingAdapter = {
   captureException(error, context) {
     // eslint-disable-next-line no-console
-    console.error("[errorTracking]", error, context ?? {});
+    if (import.meta.env.DEV) console.error("[errorTracking]", error, context);
   },
 };
 
@@ -62,8 +48,12 @@ export function init(config: ErrorTrackingConfig = {}): void {
 }
 
 /** The one function every screen and error boundary calls. */
-export function captureException(error: unknown, context?: ErrorContext): void {
-  adapter.captureException(error, context);
+export function captureException(error: unknown, context?: SafeErrorContext): void {
+  try {
+    const safe: SafeErrorContext = {};
+    if (context?.operation && ["search", "search_deeper", "saved_recheck"].includes(context.operation)) safe.operation = context.operation;
+    adapter.captureException(classifyAnalyticsError(error), safe);
+  } catch { /* Instrumentation must not replace the application failure. */ }
 }
 
 /* ------------------------------------------------------------------ */
@@ -106,15 +96,9 @@ export function buildIssueReport({ summary, context }: IssueReportInput): IssueR
   return { subject, body, mailtoHref };
 }
 
-/**
- * The single entry point the "Report an issue" UI calls. It both hands back
- * something the user can act on (an email, or text to copy) and records that
- * a report was filed through whatever error-tracking backend is configured -
- * so swapping the no-op/console backend for a real one later is a change to
- * this file alone, not to every call site that lets a user file a report.
- */
+/** Prepare the user-requested support report without forwarding it to telemetry. */
 export function reportIssue(input: IssueReportInput): IssueReport {
   const report = buildIssueReport(input);
-  captureException(new Error(`User-reported issue: ${input.summary}`), input.context);
+  // The user-visible report is not an error/analytics payload.
   return report;
 }

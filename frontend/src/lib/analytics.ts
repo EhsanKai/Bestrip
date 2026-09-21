@@ -5,6 +5,8 @@
  * can be connected without putting SDK calls in screens.
  */
 
+import { sanitizeEvent } from "./analyticsPayloads";
+
 const BASE = import.meta.env.VITE_API_BASE || "/api/v1";
 const ATTRIBUTION_KEY = "detoura.attribution.v1";
 const ATTRIBUTION_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 30;
@@ -72,7 +74,7 @@ interface CommonProps {
 }
 
 export interface AnalyticsEventPayloads {
-  landing_viewed: { landing_context: "home" };
+  landing_viewed: { landing_context: "home" | "destinations" | "destination" | "inspiration" };
   search_started: Pick<CommonProps, "search_mode" | "deeper" | "viewport_class">;
   search_completed: Pick<CommonProps, "search_mode" | "deeper" | "result_count" | "no_results" | "recommendation_source" | "currency">;
   search_failed: Pick<CommonProps, "search_mode" | "deeper" | "error_category">;
@@ -84,8 +86,13 @@ export interface AnalyticsEventPayloads {
   payment_authorized: Pick<CommonProps, "tier" | "currency"> & { payment_state: "AUTHORIZED" };
   payment_failed: Pick<CommonProps, "tier" | "error_category"> & { payment_state: "FAILED" | "CANCELLED" };
   payment_unknown: Pick<CommonProps, "tier" | "error_category"> & { payment_state: "UNKNOWN" | "RECONCILIATION_REQUIRED" };
+  self_service_ready: Pick<CommonProps, "tier">;
+  payment_request_failed: Pick<CommonProps, "tier" | "error_category">;
+  booking_confirmation_failed: Pick<CommonProps, "tier" | "error_category">;
+  service_tier_selected: { tier: ServiceTier };
+  promo_applied: { tier: ServiceTier; applied: true };
   booking_confirmation_started: Pick<CommonProps, "tier">;
-  booking_confirmed: Pick<CommonProps, "tier"> & { booking_state: "confirmed" | "self_service_ready" };
+  booking_confirmed: Pick<CommonProps, "tier"> & { booking_state: "confirmed" };
   booking_recovery_required: Pick<CommonProps, "tier" | "error_category"> & { booking_state: "recovery_required" };
   booking_failed: Pick<CommonProps, "tier" | "error_category"> & { booking_state: "failed" };
   my_trips_viewed: { trip_count?: number; empty?: boolean };
@@ -103,21 +110,23 @@ type EventProps = Record<string, string | number | boolean>;
 
 interface TrackOptions {
   dedupeKey?: string;
+  /** In-memory measurement scope; never serialized or used as product state. */
+  dedupeScope?: object;
   includeAttribution?: boolean;
 }
 
 let consent: AnalyticsConsent = { analytics: false, marketing: false };
 let adapters: AnalyticsAdapter[] = [];
 let initialized = false;
-const emitted = new Set<string>();
+let emitted = new WeakMap<object, Map<AnalyticsAdapter, Set<string>>>();
+const sessionScope = {};
 
 export function init(config: AnalyticsConfig = {}): void {
   if (initialized) return;
   initialized = true;
-  consent = { ...consent, ...config.consent };
-  captureAttribution();
+  setAnalyticsConsent(config.consent ?? {});
 
-  if (import.meta.env.DEV || config.diagnostics || import.meta.env.VITE_ANALYTICS_DEBUG === "true") {
+  if (import.meta.env.DEV && config.diagnostics !== false) {
     adapters.push(devDiagnosticsAdapter);
   }
   if (import.meta.env.VITE_ANALYTICS_FIRST_PARTY === "true") {
@@ -126,7 +135,21 @@ export function init(config: AnalyticsConfig = {}): void {
 }
 
 export function setAnalyticsConsent(next: Partial<AnalyticsConsent>): void {
-  consent = { ...consent, ...next };
+  try {
+    const wasAllowed = consent.analytics;
+    if ("analytics" in next) consent.analytics = next.analytics === true;
+    if ("marketing" in next) consent.marketing = next.marketing === true;
+    if (!consent.analytics) {
+      queue = [];
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      sessionKey = visitorKey = "";
+      emitted = new WeakMap();
+      for (const [kind, key] of [["sessionStorage", ATTRIBUTION_KEY], ["sessionStorage", "detoura.fk.s"], ["localStorage", "detoura.fk.v"]] as const) {
+        try { window[kind].removeItem(key); } catch { /* Storage may be denied. */ }
+      }
+    } else if (!wasAllowed) captureAttribution();
+  } catch { /* Policy plumbing must never interrupt the product. */ }
 }
 
 export function track<K extends AnalyticsEventName>(
@@ -134,31 +157,34 @@ export function track<K extends AnalyticsEventName>(
   props: AnalyticsEventPayloads[K],
   options: TrackOptions = {},
 ): void {
-  const dedupeKey = options.dedupeKey ? `${event}:${options.dedupeKey}` : "";
-  if (dedupeKey) {
-    if (emitted.has(dedupeKey)) return;
-    emitted.add(dedupeKey);
-  }
-  const safe = sanitizeProps({
-    ...props,
-    viewport_class: "viewport_class" in props ? props.viewport_class : viewportClass(),
-    ...(options.includeAttribution === false ? {} : attributionProps()),
-  });
-  for (const adapter of adapters) {
-    if (adapter.purpose === "analytics" && !consent.analytics) continue;
-    if (adapter.purpose === "marketing" && !consent.marketing) continue;
-    try {
-      adapter.track(event, safe);
-    } catch {
-      /* Analytics must never affect product behavior. */
+  try {
+    const safe = sanitizeEvent(event, props);
+    if (!safe) return;
+    safe.viewport_class = viewportClass();
+    if (consent.analytics && options.includeAttribution !== false) Object.assign(safe, attributionProps());
+    const scope = options.dedupeScope ?? sessionScope;
+    const dedupeKey = options.dedupeKey ? `${event}:${options.dedupeKey}` : "";
+    for (const adapter of adapters) {
+      if (adapter.purpose === "analytics" && !consent.analytics) continue;
+      if (adapter.purpose === "marketing" && !consent.marketing) continue;
+      try {
+        let byAdapter = emitted.get(scope);
+        if (!byAdapter) emitted.set(scope, byAdapter = new Map());
+        let keys = byAdapter.get(adapter);
+        if (!keys) byAdapter.set(adapter, keys = new Set());
+        if (dedupeKey && (keys.has(dedupeKey) || keys.size >= 4096)) continue;
+        adapter.track(event, safe);
+        // Bound observational memory. No booking truth is persisted.
+        if (dedupeKey) keys.add(dedupeKey);
+      } catch { /* Analytics must never affect product behavior. */ }
     }
-  }
+  } catch { /* Includes invalid runtime inputs and unavailable browser APIs. */ }
 }
 
 export function classifyAnalyticsError(error: unknown): ErrorCategory {
   const status = typeof error === "object" && error !== null && "status" in error
     ? Number((error as { status?: unknown }).status)
-    : 0;
+    : undefined;
   const issue = typeof error === "object" && error !== null && "issue" in error
     ? (error as { issue?: { kind?: string } }).issue
     : undefined;
@@ -178,13 +204,15 @@ export function recommendationSource(value?: string | null): "live" | "synthetic
 }
 
 function captureAttribution(): void {
-  if (typeof window === "undefined") return;
-  const params = new URLSearchParams(window.location.search);
+  if (!consent.analytics || typeof window === "undefined") return;
+  const params = new URLSearchParams(window.location.search.slice(0, 4096));
   const next: Partial<CampaignAttribution> = {};
   for (const key of ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"] as const) {
     const value = normalizeCampaignValue(params.get(key));
     if (value) next[key] = value;
   }
+  // Preserve a permitted campaign across reloads without campaign parameters.
+  if (Object.keys(next).length === 0 && readAttribution()) return;
   const referrer = referrerOrigin(document.referrer);
   if (referrer) next.referrer_origin = referrer;
   const landingPath = normalizeLandingPath(window.location.pathname);
@@ -196,28 +224,29 @@ function captureAttribution(): void {
 function attributionProps(): EventProps {
   const attribution = readAttribution();
   if (!attribution) return {};
-  return sanitizeProps({
-    utm_source: attribution.utm_source,
-    utm_medium: attribution.utm_medium,
-    utm_campaign: attribution.utm_campaign,
-    utm_content: attribution.utm_content,
-    utm_term: attribution.utm_term,
-    referrer_origin: attribution.referrer_origin,
-    landing_path: attribution.landing_path,
-  });
+  const out: EventProps = {};
+  for (const key of ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"] as const) {
+    const value = normalizeCampaignValue(attribution[key]);
+    if (value) out[key] = value;
+  }
+  if (["internal", "external"].includes(attribution.referrer_origin ?? "")) out.referrer_origin = attribution.referrer_origin!;
+  const path = normalizeLandingPath(attribution.landing_path ?? "");
+  if (path) out.landing_path = path;
+  return out;
 }
 
 function readAttribution(): CampaignAttribution | null {
   try {
+    if (!consent.analytics) return null;
     const raw = sessionStorage.getItem(ATTRIBUTION_KEY);
     if (!raw) return null;
+    if (raw.length > 2048) throw new Error();
     const parsed = JSON.parse(raw) as CampaignAttribution;
-    if (Date.now() - Date.parse(parsed.captured_at) > ATTRIBUTION_MAX_AGE_MS) {
-      sessionStorage.removeItem(ATTRIBUTION_KEY);
-      return null;
-    }
+    const age = Date.now() - Date.parse(parsed.captured_at);
+    if (!Number.isFinite(age) || age < 0 || age > ATTRIBUTION_MAX_AGE_MS) throw new Error();
     return parsed;
   } catch {
+    try { sessionStorage.removeItem(ATTRIBUTION_KEY); } catch { /* unavailable */ }
     return null;
   }
 }
@@ -230,26 +259,29 @@ function writeAttribution(value: CampaignAttribution): void {
   }
 }
 
-function normalizeCampaignValue(value: string | null): string | undefined {
-  const cleaned = (value ?? "").trim().slice(0, MAX_VALUE_LENGTH);
-  if (!cleaned || /[<>{}"'`\\]/.test(cleaned) || /@|\+?\d{7,}/.test(cleaned)) return undefined;
-  return cleaned.replace(/[^\w .:/+-]/g, "").trim() || undefined;
+function normalizeCampaignValue(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > MAX_VALUE_LENGTH) return undefined;
+  const cleaned = value.trim().toLowerCase();
+  // Campaign labels, never URLs, encoded content, arbitrary text or identifiers.
+  if (!/^[a-z][a-z0-9_-]{0,79}$/.test(cleaned) || /\d{7,}/.test(cleaned)) return undefined;
+  return cleaned;
 }
 
 function normalizeLandingPath(path: string): string | undefined {
-  if (!path || path.length > MAX_VALUE_LENGTH) return undefined;
-  return path.startsWith("/") && !/[<>{}"'`\\]/.test(path) ? path : undefined;
+  if (path === "/" || path === "/destinations") return path;
+  if (/^\/destinations\/[a-z-]{1,60}$/.test(path)) return "/destinations/:slug";
+  if (/^\/inspiration\/[a-z-]{1,60}$/.test(path)) return "/inspiration/:slug";
+  if (path === "/destinations/:slug" || path === "/inspiration/:slug") return path;
+  return undefined;
 }
 
 function referrerOrigin(referrer: string): string | undefined {
   try {
-    if (!referrer) return undefined;
+    if (!referrer || referrer.length > 4096) return undefined;
     const url = new URL(referrer);
-    if (url.origin === window.location.origin) return undefined;
-    return normalizeCampaignValue(url.origin);
-  } catch {
-    return undefined;
-  }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+    return url.origin === window.location.origin ? "internal" : "external";
+  } catch { return undefined; }
 }
 
 function viewportClass(): "mobile" | "tablet" | "desktop" {
@@ -257,20 +289,6 @@ function viewportClass(): "mobile" | "tablet" | "desktop" {
   if (width < 720) return "mobile";
   if (width < 1024) return "tablet";
   return "desktop";
-}
-
-function sanitizeProps(input: Record<string, unknown>): EventProps {
-  const out: EventProps = {};
-  for (const [key, value] of Object.entries(input)) {
-    if (value === undefined || value === null) continue;
-    if (typeof value === "boolean") out[key] = value;
-    else if (typeof value === "number" && Number.isFinite(value)) out[key] = Math.round(value * 100) / 100;
-    else if (typeof value === "string") {
-      const cleaned = normalizeCampaignValue(value);
-      if (cleaned) out[key] = cleaned;
-    }
-  }
-  return out;
 }
 
 const devDiagnosticsAdapter: AnalyticsAdapter = {
@@ -316,35 +334,30 @@ function enqueueFirstParty(event: FirstPartyEvent): void {
 }
 
 function flushFirstParty(): void {
-  if (queue.length === 0) return;
-  const body = JSON.stringify({
-    session_key: sessionKey,
-    visitor_key: visitorKey,
-    events: queue.slice(0, 50),
-  });
-  queue = [];
-  if (navigator.sendBeacon) {
-    navigator.sendBeacon(`${BASE}/events`, new Blob([body], { type: "application/json" }));
-    return;
-  }
-  void fetch(`${BASE}/events`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
-    keepalive: true,
-  }).catch(() => undefined);
+  try {
+    if (!consent.analytics) { queue = []; return; }
+    if (queue.length === 0) return;
+    const body = JSON.stringify({ session_key: sessionKey, visitor_key: visitorKey, events: queue.slice(0, 50) });
+    queue = [];
+    try {
+      if (navigator.sendBeacon?.(`${BASE}/events`, new Blob([body], { type: "application/json" }))) return;
+    } catch { /* Fall back to fetch if beacon is denied. */ }
+    void fetch(`${BASE}/events`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true,
+    }).catch(() => undefined);
+  } catch { /* Timers and pagehide must also be non-throwing. */ }
 }
 
 function ensureKeys(): void {
   if (sessionKey || visitorKey) return;
-  sessionKey = storageKey(sessionStorage, "detoura.fk.s");
-  visitorKey = storageKey(localStorage, "detoura.fk.v");
+  try { sessionKey = storageKey(sessionStorage, "detoura.fk.s"); } catch { /* unavailable */ }
+  try { visitorKey = storageKey(localStorage, "detoura.fk.v"); } catch { /* unavailable */ }
 }
 
 function storageKey(store: Storage, name: string): string {
   try {
     const existing = store.getItem(name);
-    if (existing) return existing;
+    if (existing && /^[a-f0-9]{24}$/.test(existing)) return existing;
     const value = randomKey();
     store.setItem(name, value);
     return value;
@@ -372,19 +385,19 @@ function toLegacyFunnelEvent(event: AnalyticsEventName, props: EventProps): Firs
     case "search_started": return { event: "SEARCH", props: legacyProps };
     case "search_completed": return { event: "RESULT_VIEW", props: legacyProps };
     case "journey_viewed": return { event: "TRIP_OPEN", props: legacyProps };
-    case "checkout_started": return { event: "TIER_SELECTED", tier, props: legacyProps };
+    case "service_tier_selected": return { event: "TIER_SELECTED", tier, props: legacyProps };
     case "traveler_details_completed": return { event: "REVIEW", tier, props: legacyProps };
     case "booking_confirmation_started": return { event: "CONFIRM", tier, props: legacyProps };
     case "booking_confirmed": return { event: "BOOKED", tier, props: legacyProps };
-    case "booking_failed":
-    case "booking_recovery_required": return { event: "FAILED", tier, props: legacyProps };
+    case "promo_applied": return { event: "PROMO_APPLIED", tier, props: { outcome: "applied" } };
+    case "booking_failed": return { event: "FAILED", tier, props: legacyProps };
     default: return null;
   }
 }
 
 if (typeof window !== "undefined") {
   window.addEventListener("pagehide", flushFirstParty);
-  window.addEventListener("visibilitychange", () => {
+  document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flushFirstParty();
   });
 }

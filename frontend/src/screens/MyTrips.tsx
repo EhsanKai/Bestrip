@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { DetouraApiError } from "../api/types";
 import type {
@@ -39,6 +39,8 @@ type DetailState =
   | { status: "error"; error: string; trip: MyTripSummary | null; confirmation: TripConfirmation | null; documents: FinancialDocument[] };
 
 export function MyTrips({ accountStatus, onDiscover, onLogin }: MyTripsProps) {
+  const viewScope = useRef({});
+  const downloadsInFlight = useRef(new Set<string>());
   const [trips, setTrips] = useState<MyTripSummary[]>([]);
   const [listStatus, setListStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [listError, setListError] = useState<string | null>(null);
@@ -142,7 +144,7 @@ export function MyTrips({ accountStatus, onDiscover, onLogin }: MyTripsProps) {
       track("my_trips_viewed", {
         trip_count: sortedTrips.length,
         empty: sortedTrips.length === 0,
-      }, { dedupeKey: `my_trips:${sortedTrips.length}` });
+      }, { dedupeKey: "my_trips", dedupeScope: viewScope.current });
     }
   }, [accountStatus, listStatus, sortedTrips.length]);
   if (accountStatus === "loading") {
@@ -169,7 +171,8 @@ export function MyTrips({ accountStatus, onDiscover, onLogin }: MyTripsProps) {
         onBack={() => setSelectedId(null)}
         onRetry={() => setSelectedId((id) => id)}
         onDownload={async (document) => {
-          if (!selectedId || !document.download_available) return;
+          if (!selectedId || !document.download_available || downloadsInFlight.current.has(document.document_id)) return;
+          downloadsInFlight.current.add(document.document_id);
           setDownloadState({ id: document.document_id, error: null });
           try {
             const blob = await api.downloadTripDocument(selectedId, document.document_id);
@@ -191,6 +194,8 @@ export function MyTrips({ accountStatus, onDiscover, onLogin }: MyTripsProps) {
               id: null,
               error: messageFor(error, "We could not download this document."),
             });
+          } finally {
+            downloadsInFlight.current.delete(document.document_id);
           }
         }}
       />

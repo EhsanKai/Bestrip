@@ -175,6 +175,28 @@ export const api = {
     return request<{ ok: true }>("/auth/logout", { method: "POST" });
   },
 
+  /* Password recovery (V9 password-recovery frontend slice). Backend
+   * contract: `docs/V9_GOOGLE_AUTH_ACCOUNT_LIFECYCLE_REPORT.md` §10 - the
+   * reset "token" is an opaque one-time code the backend emails as plain
+   * text, never a clickable link, so it travels only in the JSON body of
+   * `confirmPasswordReset`, never a URL/query parameter. Both endpoints are
+   * anonymous (no session exists yet); `request()` above only ever attaches
+   * `X-CSRF-Token` when a CSRF cookie happens to be present, which neither
+   * endpoint requires. */
+  requestPasswordReset(body: { email: string }) {
+    return request<{ message: string }>("/auth/password/reset/request", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
+  confirmPasswordReset(body: { token: string; new_password: string }) {
+    return request<{ ok: true }>("/auth/password/reset/confirm", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
   /* Google Sign-In: `/auth/google/link/confirm` is the only Google auth
    * call the frontend makes through `fetch` - see `googleAuthStartUrl()`
    * below for why the other two (`start`/`callback`) are full-page

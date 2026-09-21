@@ -4,7 +4,7 @@ import { DetouraApiError, type AccountProfile } from "../api/types";
 import type { GoogleReturnOutcome } from "../lib/googleAuthReturn";
 import "./Login.css";
 
-type AccountMode = "login" | "signup" | "forgot" | "resetRequested" | "passwordUpdated";
+type AccountMode = "login" | "signup" | "forgot" | "resetRequested" | "resetConfirm" | "passwordUpdated";
 type SubmitState = "idle" | "loading" | "invalid" | "error" | "success";
 /** Everything `GoogleReturnOutcome` can be except the "already signed in"
  * case, which the confirmed-session view below handles on its own. */
@@ -21,6 +21,12 @@ interface Props {
   onSignup?: (payload: Required<AccountPayload>) => void | Promise<void>;
   onLogout?: () => void | Promise<void>;
   onForgotPassword?: (payload: Pick<AccountPayload, "email">) => void | Promise<void>;
+  /** POST the emailed one-time reset code + a new password to the backend's
+   * anonymous confirm endpoint (`POST /auth/password/reset/confirm`,
+   * `docs/V9_GOOGLE_AUTH_ACCOUNT_LIFECYCLE_REPORT.md` §10). No session is
+   * established by this call - a reset revokes every session and issues
+   * none (deliberate, §12); the caller logs in fresh afterward. */
+  onConfirmResetPassword?: (payload: { token: string; newPassword: string }) => void | Promise<void>;
   profile?: AccountProfile | null;
   sessionStatus?: "loading" | "anonymous" | "authenticated" | "error";
   sessionError?: string | null;
@@ -52,6 +58,7 @@ export function Login({
   onSignup,
   onLogout,
   onForgotPassword,
+  onConfirmResetPassword,
   profile,
   sessionStatus = "anonymous",
   sessionError,
@@ -65,6 +72,7 @@ export function Login({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [resetCode, setResetCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [submitState, setSubmitState] = useState<SubmitState>("idle");
@@ -78,13 +86,15 @@ export function Login({
   const isLogin = mode === "login";
   const isSignup = mode === "signup";
   const isForgot = mode === "forgot";
+  const isResetConfirm = mode === "resetConfirm";
 
   const canSubmit = useMemo(() => {
     if (isLoading) return false;
     if (isForgot) return emailValid;
+    if (isResetConfirm) return resetCode.trim().length > 0 && passwordReady && passwordsMatch;
     if (isSignup) return emailValid && passwordReady && passwordsMatch;
     return emailValid && password.length > 0;
-  }, [emailValid, isForgot, isLoading, isSignup, password.length, passwordReady, passwordsMatch]);
+  }, [emailValid, isForgot, isResetConfirm, isLoading, isSignup, password.length, passwordReady, passwordsMatch, resetCode]);
 
   function switchMode(nextMode: AccountMode) {
     setMode(nextMode);
@@ -92,6 +102,7 @@ export function Login({
     setSubmitMessage(null);
     setPassword("");
     setConfirmPassword("");
+    setResetCode("");
     setShowPassword(false);
     setShowConfirm(false);
   }
@@ -108,6 +119,12 @@ export function Login({
         setMode("resetRequested");
         return;
       }
+      if (isResetConfirm) {
+        await onConfirmResetPassword?.({ token: resetCode.trim(), newPassword: password });
+        setSubmitState("success");
+        setMode("passwordUpdated");
+        return;
+      }
       if (isSignup) {
         await onSignup?.({ email, password });
         setSubmitState("success");
@@ -116,7 +133,7 @@ export function Login({
       await onLogin?.({ email, password });
       setSubmitState("success");
     } catch (error) {
-      setSubmitMessage(accountErrorMessage(error));
+      setSubmitMessage(accountErrorMessage(error, mode));
       setSubmitState(isAuthFailure(error) ? "invalid" : "error");
     }
   }
@@ -130,7 +147,7 @@ export function Login({
       setConfirmPassword("");
       setSubmitState("idle");
     } catch (error) {
-      setSubmitMessage(accountErrorMessage(error));
+      setSubmitMessage(accountErrorMessage(error, mode));
       setSubmitState("error");
     }
   }
@@ -166,12 +183,24 @@ export function Login({
             </button>
           </div>
         ) : mode === "resetRequested" || mode === "passwordUpdated" ? (
-          <ConfirmationView mode={mode} onBack={() => switchMode("login")} />
+          <ConfirmationView
+            mode={mode}
+            onBack={() => switchMode("login")}
+            onEnterCode={mode === "resetRequested" ? () => switchMode("resetConfirm") : undefined}
+          />
         ) : (
           <>
             <div className="account-entry__head">
-              <p>{isSignup ? "Create account" : isForgot ? "Password help" : "Welcome back"}</p>
-              <h2>{isSignup ? "Create your Detoura account" : isForgot ? "Reset your password" : "Log in to Detoura"}</h2>
+              <p>{isSignup ? "Create account" : isForgot || isResetConfirm ? "Password help" : "Welcome back"}</p>
+              <h2>
+                {isSignup
+                  ? "Create your Detoura account"
+                  : isForgot
+                    ? "Reset your password"
+                    : isResetConfirm
+                      ? "Enter your reset code"
+                      : "Log in to Detoura"}
+              </h2>
             </div>
 
             {isLogin && googleNotice && (
@@ -208,34 +237,47 @@ export function Login({
             )}
 
             <form className="account-form" onSubmit={handleSubmit} noValidate>
-              <Field
-                id="account-email"
-                label="Email"
-                type="email"
-                value={email}
-                onChange={setEmail}
-                autoComplete="email"
-                error={email && !emailValid ? "Enter a valid email address." : undefined}
-              />
+              {!isResetConfirm && (
+                <Field
+                  id="account-email"
+                  label="Email"
+                  type="email"
+                  value={email}
+                  onChange={setEmail}
+                  autoComplete="email"
+                  error={email && !emailValid ? "Enter a valid email address." : undefined}
+                />
+              )}
+
+              {isResetConfirm && (
+                <Field
+                  id="account-reset-code"
+                  label="Reset code"
+                  type="text"
+                  value={resetCode}
+                  onChange={setResetCode}
+                  autoComplete="one-time-code"
+                />
+              )}
 
               {!isForgot && (
                 <PasswordField
                   id="account-password"
-                  label="Password"
+                  label={isResetConfirm ? "New password" : "Password"}
                   value={password}
                   onChange={setPassword}
                   visible={showPassword}
                   onToggle={() => setShowPassword(value => !value)}
-                  autoComplete={isSignup ? "new-password" : "current-password"}
-                  help={isSignup ? "Use at least 8 characters." : undefined}
-                  error={isSignup && password && !passwordReady ? "Password must be at least 8 characters." : undefined}
+                  autoComplete={isSignup || isResetConfirm ? "new-password" : "current-password"}
+                  help={isSignup || isResetConfirm ? "Use at least 8 characters." : undefined}
+                  error={(isSignup || isResetConfirm) && password && !passwordReady ? "Password must be at least 8 characters." : undefined}
                 />
               )}
 
-              {isSignup && (
+              {(isSignup || isResetConfirm) && (
                 <PasswordField
                   id="account-confirm-password"
-                  label="Confirm password"
+                  label={isResetConfirm ? "Confirm new password" : "Confirm password"}
                   value={confirmPassword}
                   onChange={setConfirmPassword}
                   visible={showConfirm}
@@ -255,7 +297,15 @@ export function Login({
               <StatusMessage state={submitState} mode={mode} id={statusId} message={submitMessage} />
 
               <button className="account-form__submit" type="submit" disabled={!canSubmit} aria-describedby={statusId}>
-                {isLoading ? "Please wait..." : isSignup ? "Create account" : isForgot ? "Send reset email" : "Log in"}
+                {isLoading
+                  ? "Please wait..."
+                  : isSignup
+                    ? "Create account"
+                    : isForgot
+                      ? "Send reset email"
+                      : isResetConfirm
+                        ? "Update password"
+                        : "Log in"}
               </button>
             </form>
 
@@ -268,6 +318,12 @@ export function Login({
               )}
               {isSignup && <button type="button" onClick={() => switchMode("login")}>Already have an account? Log in</button>}
               {isForgot && <button type="button" onClick={() => switchMode("login")}>Back to login</button>}
+              {isResetConfirm && (
+                <>
+                  <button type="button" onClick={() => switchMode("forgot")}>Request a new code</button>
+                  <button type="button" onClick={() => switchMode("login")}>Back to login</button>
+                </>
+              )}
             </div>
           </>
         )}
@@ -373,7 +429,9 @@ function StatusMessage({
   const fallback = state === "loading"
     ? "Submitting securely..."
     : state === "invalid"
-      ? "We could not log you in with those details."
+      ? mode === "resetConfirm"
+        ? "This reset code is invalid or has expired."
+        : "We could not log you in with those details."
       : state === "error"
         ? "Something went wrong. Please try again."
         : mode === "signup"
@@ -382,21 +440,44 @@ function StatusMessage({
   return <p id={id} className={`account-form__status account-form__status--${state}`} aria-live="polite">{message ?? fallback}</p>;
 }
 
-function ConfirmationView({ mode, onBack }: { mode: AccountMode; onBack: () => void }) {
+function ConfirmationView({
+  mode,
+  onBack,
+  onEnterCode,
+}: {
+  mode: AccountMode;
+  onBack: () => void;
+  onEnterCode?: () => void;
+}) {
   const resetRequested = mode === "resetRequested";
   return (
     <div className="account-confirm" aria-live="polite">
       <span aria-hidden="true">✓</span>
       <p>{resetRequested ? "Check your email" : "Password updated"}</p>
-      <h2>{resetRequested ? "If an account exists, reset instructions are on their way." : "You can return to Detoura and log in again."}</h2>
-      <button type="button" className="account-form__submit" onClick={onBack}>Back to login</button>
+      <h2>
+        {resetRequested
+          ? "If an account exists for that email, we've sent a reset code."
+          : "Your password has been updated."}
+      </h2>
+      {resetRequested && onEnterCode ? (
+        <>
+          <button type="button" className="account-form__submit" onClick={onEnterCode}>
+            I have a reset code
+          </button>
+          <div className="account-entry__switch">
+            <button type="button" onClick={onBack}>Back to login</button>
+          </div>
+        </>
+      ) : (
+        <button type="button" className="account-form__submit" onClick={onBack}>Sign in</button>
+      )}
     </div>
   );
 }
 
 function panelLabel(mode: AccountMode) {
   if (mode === "signup") return "Create account";
-  if (mode === "forgot" || mode === "resetRequested") return "Password reset";
+  if (mode === "forgot" || mode === "resetRequested" || mode === "resetConfirm") return "Password reset";
   if (mode === "passwordUpdated") return "Password updated";
   return "Log in";
 }
@@ -405,8 +486,17 @@ function isAuthFailure(error: unknown): boolean {
   return error instanceof DetouraApiError && (error.status === 401 || error.status === 400);
 }
 
-function accountErrorMessage(error: unknown): string {
+function accountErrorMessage(error: unknown, mode: AccountMode): string {
   if (error instanceof DetouraApiError) {
+    if (mode === "resetConfirm") {
+      if (error.status === 429) return "Too many attempts. Try again later.";
+      if (error.status === 0) return "We couldn't reach Detoura. Check your connection and try again.";
+      // Deliberately generic for any other failure (400 = invalid/expired/
+      // used token) - the backend itself never distinguishes why a reset
+      // token failed (§10 "single use"), so the frontend does not invent a
+      // distinction either.
+      return "This reset code is invalid or has expired. Request a new one.";
+    }
     if (error.status === 401) return "Invalid email or password.";
     if (error.status === 429) return "Too many attempts. Try again later.";
     if (error.status === 400) return error.message || "We could not create that account.";

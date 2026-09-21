@@ -397,6 +397,12 @@ export default function App() {
             onLogin={loginWithPassword}
             onSignup={({ email, password }) => account.register(email, password)}
             onLogout={account.logout}
+            onForgotPassword={async ({ email }) => {
+              await api.requestPasswordReset({ email });
+            }}
+            onConfirmResetPassword={async ({ token, newPassword }) => {
+              await api.confirmPasswordReset({ token, new_password: newPassword });
+            }}
             onContinueWithGoogle={continueWithGoogle}
             googleRedirecting={googleRedirecting}
             googleNotice={googleNotice}

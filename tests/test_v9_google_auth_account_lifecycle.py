@@ -615,6 +615,225 @@ def test_export_and_delete_reject_already_deleted_account():
 
 
 # ======================================================================
+# V9 Limited Beta privacy policy — communication scrub + adversarial
+# deletion coverage (docs/V9_LIMITED_BETA_PRIVACY_POLICY_IMPLEMENTATION_REPORT.md)
+# ======================================================================
+def _make_communication(*, booking_id: str, user_id: str | None, recipient: str):
+    from detoura.models.communication import (
+        CommunicationChannel,
+        CommunicationStatus,
+        CommunicationType,
+        CustomerCommunication,
+    )
+    from detoura.persistence.communications import new_id
+
+    return CustomerCommunication(
+        communication_id=new_id("comm"),
+        booking_id=booking_id,
+        journey_reference=f"JRN-{booking_id}",
+        user_id=user_id,
+        channel=CommunicationChannel.EMAIL,
+        communication_type=CommunicationType.BOOKING_CONFIRMATION,
+        status=CommunicationStatus.PENDING,
+        recipient_address=recipient,
+        idempotency_key=new_id("idem"),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+
+def test_delete_account_scrubs_communication_recipient_but_keeps_ledger_and_booking_truth():
+    from detoura.persistence import bookings as bookings_store
+    from detoura.persistence import communications as comm_store
+    from detoura.persistence.bookings import BookingRecord
+    from detoura.services import auth_service
+
+    d = _db()
+    uid = auth_service.register(d, email="a@example.com", password="correct horse battery", now=NOW)
+    store.claim_trip(d, user_id=uid, booking_id="bkg_1", now=NOW)
+
+    bookings_store.upsert(d, BookingRecord(
+        booking_id="bkg_1", journey_reference="JRN-bkg_1", created_at=NOW, updated_at=NOW,
+        mode="STANDARD", phase="CONFIRMED", lead_name="A Traveler", lead_email="a@example.com",
+    ))
+    comm = _make_communication(booking_id="bkg_1", user_id=uid, recipient="a@example.com")
+    comm_store.create_communication(d, communication=comm)
+
+    account_lifecycle_service.delete_account(d, user_id=uid, now=NOW)
+
+    scrubbed = comm_store.get_communication(d, comm.communication_id)
+    assert scrubbed.recipient_address != "a@example.com"
+    assert scrubbed.recipient_address == f"deleted-{uid}@deleted.invalid"
+    # ledger fields untouched by the scrub - only the recipient changed
+    assert scrubbed.communication_id == comm.communication_id
+    assert scrubbed.status == comm.status
+    assert scrubbed.version == comm.version
+
+    # booking truth (lead contact) is NOT a communication record and must
+    # never be touched by account deletion (§13 / DEL-1, unchanged by this slice)
+    booking = bookings_store.get(d, "bkg_1")
+    assert booking.lead_email == "a@example.com"
+    assert booking.lead_name == "A Traveler"
+
+
+def test_delete_account_does_not_scrub_another_users_communication():
+    """Cross-account isolation: deleting account A must never touch a
+    communication that belongs to account B, even for the same booking
+    table shape - the UPDATE is scoped strictly by user_id."""
+    from detoura.persistence import communications as comm_store
+    from detoura.services import auth_service
+
+    d = _db()
+    uid_a = auth_service.register(d, email="a@example.com", password="correct horse battery", now=NOW)
+    uid_b = auth_service.register(d, email="b@example.com", password="correct horse battery", now=NOW)
+
+    comm_a = _make_communication(booking_id="bkg_a", user_id=uid_a, recipient="a@example.com")
+    comm_b = _make_communication(booking_id="bkg_b", user_id=uid_b, recipient="b@example.com")
+    comm_store.create_communication(d, communication=comm_a)
+    comm_store.create_communication(d, communication=comm_b)
+
+    account_lifecycle_service.delete_account(d, user_id=uid_a, now=NOW)
+
+    assert comm_store.get_communication(d, comm_a.communication_id).recipient_address == f"deleted-{uid_a}@deleted.invalid"
+    assert comm_store.get_communication(d, comm_b.communication_id).recipient_address == "b@example.com"
+
+
+def test_delete_account_does_not_scrub_communication_with_no_user_id():
+    """A guest/pre-link communication (user_id IS NULL) is not this
+    account's data by the same FK-ownership rule used everywhere else in
+    this module - it must never be swept up by a NULL-matching UPDATE."""
+    from detoura.persistence import communications as comm_store
+    from detoura.services import auth_service
+
+    d = _db()
+    uid = auth_service.register(d, email="a@example.com", password="correct horse battery", now=NOW)
+    guest_comm = _make_communication(booking_id="bkg_guest", user_id=None, recipient="guest@example.com")
+    comm_store.create_communication(d, communication=guest_comm)
+
+    account_lifecycle_service.delete_account(d, user_id=uid, now=NOW)
+
+    assert comm_store.get_communication(d, guest_comm.communication_id).recipient_address == "guest@example.com"
+
+
+def test_delete_account_communication_scrub_is_idempotent():
+    """A retried deletion call (e.g. a client retry after a timeout) must
+    not re-timestamp an already-scrubbed communication."""
+    from detoura.persistence import communications as comm_store
+    from detoura.services import account_lifecycle_service as als
+    from detoura.services import auth_service
+
+    d = _db()
+    uid = auth_service.register(d, email="a@example.com", password="correct horse battery", now=NOW)
+    comm = _make_communication(booking_id="bkg_1", user_id=uid, recipient="a@example.com")
+    comm_store.create_communication(d, communication=comm)
+
+    account_lifecycle_service.delete_account(d, user_id=uid, now=NOW)
+    first_updated_at = comm_store.get_communication(d, comm.communication_id).updated_at
+
+    # scrub_recipient_for_user is safe to call again directly (the service
+    # itself now rejects a second delete_account for a DELETED account, but
+    # the persistence primitive underneath must not re-touch settled rows)
+    later = NOW + timedelta(hours=1)
+    rowcount = comm_store.scrub_recipient_for_user(d, uid, now=later)
+    assert rowcount == 0
+    assert comm_store.get_communication(d, comm.communication_id).updated_at == first_updated_at
+
+
+def test_deleted_account_google_signin_cannot_resurrect_old_account():
+    """Adversarial: after deletion, a fresh Google sign-in with the same
+    Google identity/email must create a brand-new account, never resurrect
+    or silently re-link to the deleted one (§3 deletion contract)."""
+    from detoura.services import auth_service
+
+    d = _db()
+    uid = auth_service.register(d, email="a@example.com", password="correct horse battery", now=NOW)
+    _run_signin(d, claims=_claims(email="a@example.com"), link_user_id=uid)
+    account_lifecycle_service.delete_account(d, user_id=uid, now=NOW)
+
+    result = _run_signin(d, claims=_claims(email="a@example.com"))
+    new_uid = result.user_id
+    assert new_uid != uid
+    assert store.list_identities_for_user(d, uid) == []
+    identities = store.list_identities_for_user(d, new_uid)
+    assert len(identities) == 1
+
+
+def test_deleted_account_password_reset_cannot_resurrect_account():
+    """Adversarial: an outstanding password-reset token for an account that
+    gets deleted before the token is consumed must not be usable to
+    reactivate/authenticate the deleted account."""
+    from detoura.auth_config import auth_config
+    from detoura.services import auth_service, password_service
+
+    d = _db()
+    uid = auth_service.register(d, email="a@example.com", password="correct horse battery", now=NOW)
+    provider = RecordingProvider()
+    password_service.request_password_reset(d, email="a@example.com", now=NOW, cfg=auth_config(), provider=provider)
+    token = provider.sent[0]["body_text"].split("Reset code:")[1].split("\n")[0].strip()
+
+    account_lifecycle_service.delete_account(d, user_id=uid, now=NOW)
+
+    with pytest.raises(PasswordServiceError):
+        password_service.confirm_password_reset(d, token=token, new_password="brand new password 99", now=NOW)
+    user = store.get_user(d, uid)
+    assert user["status"] == AccountStatus.DELETED.value
+
+
+def test_concurrent_delete_account_calls_are_serialized_not_double_applied():
+    """Adversarial concurrency: two threads racing to delete the same
+    account must not both succeed, corrupt state, or crash - exactly one
+    wins, the other observes DELETED and raises cleanly."""
+    import threading
+
+    from detoura.services import auth_service
+
+    d = _db()
+    uid = auth_service.register(d, email="a@example.com", password="correct horse battery", now=NOW)
+
+    results: list[str] = []
+    lock = threading.Lock()
+
+    def attempt():
+        try:
+            account_lifecycle_service.delete_account(d, user_id=uid, now=NOW)
+            with lock:
+                results.append("ok")
+        except AccountLifecycleError:
+            with lock:
+                results.append("rejected")
+
+    threads = [threading.Thread(target=attempt) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert results.count("ok") == 1
+    assert results.count("rejected") == 4
+    user = store.get_user(d, uid)
+    assert user["status"] == AccountStatus.DELETED.value
+
+
+def test_export_account_cannot_be_used_to_read_another_users_data():
+    """IDOR regression guard at the service layer: export is keyed
+    exclusively by the ``user_id`` the caller passes (the HTTP layer takes
+    this only from the authenticated session, never a request parameter -
+    see api/auth_account.py); one account's export must never surface
+    another account's owned bookings or identities."""
+    from detoura.services import auth_service
+
+    d = _db()
+    uid_a = auth_service.register(d, email="a@example.com", password="correct horse battery", now=NOW)
+    uid_b = auth_service.register(d, email="b@example.com", password="correct horse battery", now=NOW)
+    store.claim_trip(d, user_id=uid_a, booking_id="bkg_a", now=NOW)
+    store.claim_trip(d, user_id=uid_b, booking_id="bkg_b", now=NOW)
+
+    data_a = account_lifecycle_service.export_account_data(d, user_id=uid_a)
+    assert data_a["owned_booking_ids"] == ["bkg_a"]
+    assert data_a["account"]["user_id"] == uid_a
+
+
+# ======================================================================
 # HTTP API — cookies, CSRF, session integration
 # ======================================================================
 @pytest.fixture

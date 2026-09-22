@@ -195,6 +195,48 @@ def get_communication_for_booking(
     return _row_to_communication(row) if row else None
 
 
+def scrub_recipient_for_user(db: Database, user_id: str, *, now: datetime | None = None) -> int:
+    """Anonymize ``recipient_address`` on every communication linked to
+    ``user_id`` (V9 Limited Beta privacy policy §Communication Deletion
+    Medium). Only the recipient email is overwritten - the row, its
+    ``status``, ``version``, and every ``communication_attempts``/
+    ``communication_events`` history stays exactly as it was, because the
+    delivery outcome (was this sent, when, to how many attempts) is
+    ledger/audit evidence for the booking this communication was for, not
+    identifying PII.
+
+    ``communication_type`` is currently ``BOOKING_CONFIRMATION`` only - a
+    delivery notification, not itself the financial record (that is
+    ``financial_documents``, untouched by this call and by account
+    deletion generally). No communication type in this codebase carries a
+    documented retained-purpose classification today, so every row scoped
+    to this ``user_id`` is scrubbed unconditionally; this function does not
+    infer a retention classification from ``communication_type`` or any
+    other field; if a future communication type needs case-by-case
+    retention, that decision must be encoded as an explicit field on the
+    model before this function can branch on it - it must not guess.
+
+    Rows with ``user_id IS NULL`` (a communication sent before any account
+    link, or a guest booking) are never touched by this call - only
+    exact ``user_id`` matches, mirroring how ``trip_ownership`` and every
+    other account-scoped deletion in ``scrub_account_for_deletion`` works.
+
+    Returns the number of rows updated. Idempotent: already-scrubbed rows
+    (``recipient_address`` already equal to the tombstone for this
+    ``user_id``) are excluded from the ``UPDATE`` so a retried deletion
+    call does not re-timestamp them via ``updated_at``.
+    """
+    ts = (now or datetime.now(timezone.utc)).isoformat()
+    tombstone = f"deleted-{user_id}@deleted.invalid"
+    with db.write() as conn:
+        cur = conn.execute(
+            "UPDATE customer_communications SET recipient_address=?, updated_at=?"
+            " WHERE user_id=? AND recipient_address != ?",
+            (tombstone, ts, user_id, tombstone),
+        )
+        return cur.rowcount
+
+
 def list_communications_for_booking(db: Database, booking_id: str) -> list[CustomerCommunication]:
     """Every communication for a booking, across all (currently one)
     communication types - added for Ops visibility (V9 Phase 5 §

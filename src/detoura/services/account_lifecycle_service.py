@@ -15,6 +15,14 @@ unambiguously correct without one:
   records"). A deleted account can never log in again (§ email scrubbed,
   status DELETED) and can never be recreated with the same email by
   coincidence (the tombstone is derived from ``user_id``, not reused).
+  As of the Limited Beta privacy policy slice, deletion additionally
+  anonymizes ``recipient_address`` on this account's
+  ``customer_communications`` rows (see
+  ``persistence/communications.py::scrub_recipient_for_user``) - the one
+  communications field Product/Legal have now closed as having no
+  retained purpose. ``bookings.lead_email``/``lead_name`` are booking
+  truth, not a communication record, and remain untouched by this or any
+  other deletion step, unchanged from before.
 * **Export** returns exactly the account-owned metadata this codebase can
   state with confidence belongs to the account: identity fields, linked
   Google identities (provider + email + timestamps, never the internal
@@ -34,6 +42,7 @@ from datetime import datetime, timezone
 from ..models.account import AccountStatus
 from ..persistence import accounts as store
 from ..persistence import audit
+from ..persistence import communications as communications_store
 from ..persistence.db import Database
 
 
@@ -75,4 +84,5 @@ def delete_account(db: Database, *, user_id: str, now: datetime | None = None) -
         raise AccountLifecycleError("This account is not available.")
 
     store.scrub_account_for_deletion(db, user_id, now=now)
+    communications_store.scrub_recipient_for_user(db, user_id, now=now)
     audit.record(db, actor=user_id, action="account_deleted", target_type="user_account", target_id=user_id)

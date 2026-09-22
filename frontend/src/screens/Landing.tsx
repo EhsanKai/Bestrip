@@ -180,7 +180,7 @@ export function Landing({ onDiscover }: Props) {
         </ol></div>
       </motion.section>
       <motion.section className="landing__closing container" {...reveal}><h2>Somewhere wonderful<br />starts with you.</h2><Button size="lg" onClick={onDiscover} iconAfter={Icon.arrowRight({size:20})}>Discover</Button></motion.section>
-      <footer className="landing__footer container"><span>Detoura</span><p>Don't take the obvious trip.</p><a href="#how-it-works">How it works</a></footer>
+      <footer className="landing__footer container"><span>Detoura</span><p>Don't take the obvious trip.</p><a href="#how-it-works">How it works</a><nav aria-label="Legal"><a href="/privacy">Privacy</a></nav></footer>
     </div>
   );
 }

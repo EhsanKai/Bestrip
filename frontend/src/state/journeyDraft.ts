@@ -4,10 +4,13 @@ import { dayMonth, hours, money } from "../lib/format";
 
 const STORAGE_KEY = "detoura-journey-draft-v1";
 const STORAGE_VERSION = 1;
+export const JOURNEY_DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface JourneyDraft {
   version: 1;
   selectedAt: string;
+  createdAt: number;
+  expiresAt: number;
   trip: TripRecommendation;
   searchContext: {
     travelers: number;
@@ -21,9 +24,12 @@ export function makeJourneyDraft(
   trip: TripRecommendation,
   request: TripSearchRequest | null,
 ): JourneyDraft {
+  const createdAt = Date.now();
   return {
     version: STORAGE_VERSION,
-    selectedAt: new Date().toISOString(),
+    createdAt,
+    expiresAt: createdAt + JOURNEY_DRAFT_TTL_MS,
+    selectedAt: new Date(createdAt).toISOString(),
     trip,
     searchContext: {
       travelers: request?.travelers ?? 1,
@@ -77,7 +83,7 @@ export function toDrawerModel(draft: JourneyDraft): JourneyDrawerModel {
 
 export function saveJourneyDraft(draft: JourneyDraft | null) {
   try {
-    if (!draft) {
+    if (!draft || !isJourneyDraft(draft)) {
       localStorage.removeItem(STORAGE_KEY);
       return;
     }
@@ -117,6 +123,13 @@ function isJourneyDraft(value: unknown): value is JourneyDraft {
   return (
     draft.version === STORAGE_VERSION &&
     typeof draft.selectedAt === "string" &&
+    typeof draft.createdAt === "number" && Number.isSafeInteger(draft.createdAt) &&
+    typeof draft.expiresAt === "number" && Number.isSafeInteger(draft.expiresAt) &&
+    draft.createdAt > 0 && draft.createdAt <= Date.now() &&
+    Date.parse(draft.selectedAt) === draft.createdAt &&
+    draft.expiresAt > draft.createdAt &&
+    draft.expiresAt - draft.createdAt <= JOURNEY_DRAFT_TTL_MS &&
+    Date.now() < draft.expiresAt &&
     Boolean(trip) &&
     typeof trip?.id === "string" &&
     Array.isArray(trip?.cities) &&

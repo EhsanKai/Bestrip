@@ -1,6 +1,9 @@
 import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+// Entry points intentionally declare lazy screens without exporting components.
+// oxlint-disable-next-line react/only-export-components
+const Privacy = lazy(() => import("./screens/Privacy").then(module => ({ default: module.Privacy })));
 const OpsApp = lazy(() => import("./ops/OpsApp").then(module => ({ default: module.OpsApp })));
 import { init as initAnalytics } from "./lib/analytics";
 import { init as initErrorTracking } from "./lib/errorTracking";
@@ -24,7 +27,8 @@ const isOps = window.location.pathname.replace(/\/+$/, "").endsWith("/ops")
   || window.location.pathname.startsWith("/ops/");
 const isConsumerHome =
   window.location.pathname === "/" || window.location.pathname === "";
-const isKnownSpaPath = isConsumerHome || isOps;
+const isPrivacy = window.location.pathname === "/privacy" || window.location.pathname === "/privacy/";
+const isKnownSpaPath = isConsumerHome || isOps || isPrivacy;
 
 if (isOps) {
   applyNoIndexSeo(
@@ -47,7 +51,7 @@ createRoot(document.getElementById("root")!).render(
           <p>This URL is not a public Detoura page.</p>
           <a href="/">Go to Detoura home</a>
         </main>
-      ) : isOps ? <OpsApp /> : <App />}
+      ) : isOps ? <OpsApp /> : isPrivacy ? <Privacy /> : <App />}
     </Suspense>
   </StrictMode>,
 );

@@ -1,0 +1,14 @@
+.privacy-page__header { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding-block: 24px; border-bottom: 1px solid var(--border); }
+.privacy-notice { width: min(100%, 76ch); margin: 0 auto; padding: 40px 24px 72px; overflow-wrap: anywhere; }
+.privacy-notice h1 { font-size: clamp(2rem, 6vw, 3rem); margin-block: 28px 20px; }
+.privacy-notice h2 { font-size: 1.3rem; margin-bottom: 16px; }
+.privacy-notice p { line-height: 1.8; margin-block: 12px; }
+.privacy-notice section { margin-top: 36px; scroll-margin-top: 24px; }
+.privacy-notice address { font-style: normal; white-space: pre-line; }
+.privacy-notice nav { padding-block: 24px; border-block: 1px solid var(--border); margin-top: 28px; }
+.privacy-notice nav a { display: inline-block; padding-block: 6px; }
+.privacy-page a { text-decoration: underline; text-underline-offset: 4px; }
+.privacy-notice__language { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; }
+.privacy-notice select { min-height: 44px; padding: 8px 16px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg); }
+.privacy-notice__draft { padding: 16px; border: 1px solid var(--border-strong); background: var(--bg-sunken); }
+.privacy-page :focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }

@@ -117,3 +117,11 @@ export function applyNoIndexSeo(title: string, description: string) {
   setCanonical(null);
   clearPublicSocialMetadata();
 }
+
+export function applyPrivacySeo(title: string, description: string, ready: boolean) {
+  document.title = `${title} | Detoura`;
+  setNameMeta("description", description);
+  setNameMeta("robots", ready ? "index,follow" : "noindex,nofollow");
+  setCanonical(absolute("/privacy"));
+  clearPublicSocialMetadata();
+}

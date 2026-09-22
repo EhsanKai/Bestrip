@@ -171,6 +171,16 @@ export const api = {
     });
   },
 
+  exportAccountData(signal?: AbortSignal) {
+    return request<unknown>("/auth/account/export", { signal, cache: "no-store" });
+  },
+
+  deleteAccount(current_password?: string) {
+    return request<{ ok: true }>("/auth/account/delete", {
+      method: "POST", body: JSON.stringify({ current_password }),
+    });
+  },
+
   logout() {
     return request<{ ok: true }>("/auth/logout", { method: "POST" });
   },

@@ -40,7 +40,6 @@ import {
   type JourneyDraft,
 } from "./state/journeyDraft";
 import "./App.css";
-
 type Screen =
   | "landing"
   | "discover"
@@ -52,16 +51,6 @@ type Screen =
   | "booking"
   | "login"
   | "myTrips";
-
-/**
- * The shell.
- *
- * Screen state is held here rather than in a router because the journey is
- * genuinely linear (landing → discover → search → results → detail) and every
- * step needs the search result that produced it. A URL router would have to
- * re-run the search on every back-navigation, which is the wrong trade for a
- * one-to-three-second search whose results are already in memory.
- */
 export default function App() {
   const search = useSearch();
   const saved = useSaved();
@@ -71,9 +60,23 @@ export default function App() {
   const [comparing, setComparing] = useState<string[]>([]);
   const [journeyDrawerOpen, setJourneyDrawerOpen] = useState(false);
   const [journeyDraft, setJourneyDraft] = useState<JourneyDraft | null>(() => loadJourneyDraft());
+  useEffect(() => {
+    if (!journeyDraft) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const checkExpiry = () => {
+      clearTimeout(timer);
+      const remaining = journeyDraft.expiresAt - Date.now();
+      if (remaining <= 0) {
+        setJourneyDraft(null);
+        loadJourneyDraft(); // Purge expired storage without removing a newer tab's valid draft.
+      } else timer = setTimeout(checkExpiry, Math.min(remaining, 2_147_483_647));
+    };
+    checkExpiry();
+    window.addEventListener("focus", checkExpiry);
+    return () => { clearTimeout(timer); window.removeEventListener("focus", checkExpiry); };
+  }, [journeyDraft]);
   const journeyModel = journeyDraft ? toDrawerModel(journeyDraft) : null;
   const journeyTrip = journeyDraft?.trip ?? null;
-
   // Google Sign-In: the backend owns the entire OAuth/OIDC exchange and
   // redirects the browser back to this same origin with plain, non-secret
   // query parameters (see lib/googleAuthReturn.ts) - never a token, code,
@@ -86,7 +89,6 @@ export default function App() {
   const [googleJustSignedIn, setGoogleJustSignedIn] = useState(false);
   const [googleLinked, setGoogleLinked] = useState(false);
   const [googleLinkId, setGoogleLinkId] = useState<string | null>(null);
-
   const googleLinkAttempt = useRef(0);
   const previousAccount = useRef<string | null | undefined>(undefined);
   useEffect(() => {
@@ -101,7 +103,6 @@ export default function App() {
     }
     previousAccount.current = currentAccount;
   }, [account.status, account.profile?.user_id]);
-
   useEffect(() => {
     const outcome = readGoogleReturnOutcome(window.location.search);
     if (!outcome) return;
@@ -119,13 +120,11 @@ export default function App() {
     // redirect landed on - never re-run for later in-app screen changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
   const continueWithGoogle = useCallback(() => {
     if (googleRedirecting) return;
     setGoogleRedirecting(true);
     window.location.href = googleAuthStartUrl();
   }, [googleRedirecting]);
-
   const loginWithPassword = useCallback(async (payload: { email: string; password: string }) => {
     const attempt = ++googleLinkAttempt.current;
     await account.login(payload.email, payload.password);
@@ -147,13 +146,11 @@ export default function App() {
       setGoogleNotice({ kind: "error", reason: status === 409 ? "link_conflict" : "failed" });
     }
   }, [account, googleLinkId]);
-
   useEffect(() => {
     if (screen === "landing") {
       track("landing_viewed", { landing_context: "home" }, { dedupeKey: "home" });
     }
   }, [screen]);
-
   // Keep the shell in step with the search: entering "searching" is a state
   // transition the hook owns, and this maps it onto a screen.
   useEffect(() => {
@@ -162,7 +159,6 @@ export default function App() {
       setScreen("results");
     } else if (search.status === "failed" && screen === "searching") setScreen("results");
   }, [search.status, screen, search.response]);
-
   useEffect(() => {
     if (screen === "landing") {
       applyPublicHomeSeo();
@@ -413,6 +409,7 @@ export default function App() {
             profile={account.profile}
             sessionStatus={account.status}
             sessionError={account.error}
+            onDeleteAccount={account.deleteAccount}
             onLogin={loginWithPassword}
             onSignup={({ email, password }) => account.register(email, password)}
             onLogout={async () => {

@@ -2,61 +2,39 @@ import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { DetouraApiError, type AccountProfile } from "../api/types";
 import type { GoogleReturnOutcome } from "../lib/googleAuthReturn";
+import { AccountPrivacy } from "../components/account/AccountPrivacy";
 import "./Login.css";
-
 type AccountMode = "login" | "signup" | "forgot" | "resetRequested" | "resetConfirm" | "passwordUpdated";
 type SubmitState = "idle" | "loading" | "invalid" | "error" | "success";
-/** Everything `GoogleReturnOutcome` can be except the "already signed in"
- * case, which the confirmed-session view below handles on its own. */
 export type GoogleNotice = Exclude<GoogleReturnOutcome, { kind: "success" }>;
-
 type AccountPayload = {
   email: string;
   password?: string;
 };
-
 interface Props {
   initialMode?: AccountMode;
   onLogin?: (payload: Required<AccountPayload>) => void | Promise<void>;
   onSignup?: (payload: Required<AccountPayload>) => void | Promise<void>;
+  onDeleteAccount?: (password?: string) => Promise<void>;
   onLogout?: () => void | Promise<void>;
   onForgotPassword?: (payload: Pick<AccountPayload, "email">) => void | Promise<void>;
-  /** POST the emailed one-time reset code + a new password to the backend's
-   * anonymous confirm endpoint (`POST /auth/password/reset/confirm`,
-   * `docs/V9_GOOGLE_AUTH_ACCOUNT_LIFECYCLE_REPORT.md` §10). No session is
-   * established by this call - a reset revokes every session and issues
-   * none (deliberate, §12); the caller logs in fresh afterward. */
-  onConfirmResetPassword?: (payload: { token: string; newPassword: string }) => void | Promise<void>;
+    onConfirmResetPassword?: (payload: { token: string; newPassword: string }) => void | Promise<void>;
   profile?: AccountProfile | null;
   sessionStatus?: "loading" | "anonymous" | "authenticated" | "error";
   sessionError?: string | null;
-  /** Full-page navigation to the backend's Google OAuth entry point - see
-   * `api/client.ts::googleAuthStartUrl()`. Absent entirely if the caller
-   * has no way to start it (there is none today; kept optional so this
-   * screen never assumes Google is configured). */
-  onContinueWithGoogle?: () => void;
-  /** True for the brief window between the click and the browser actually
-   * leaving the page, so a slow navigation cannot be clicked twice. */
-  googleRedirecting?: boolean;
-  /** A just-returned-from-Google outcome that needs explaining - never set
-   * at the same time as an authenticated `profile`. */
-  googleNotice?: GoogleNotice | null;
-  /** The session just shown as "Signed in" below was established by Google,
-   * not by this form - purely a one-line acknowledgement. */
-  googleJustSignedIn?: boolean;
-  /** The password login that produced this "Signed in" view also completed
-   * a pending Google link (§10) - a one-line acknowledgement, never a
-   * claim that anything was merged automatically. */
-  googleLinked?: boolean;
+    onContinueWithGoogle?: () => void;
+    googleRedirecting?: boolean;
+    googleNotice?: GoogleNotice | null;
+    googleJustSignedIn?: boolean;
+    googleLinked?: boolean;
 }
-
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 export function Login({
   initialMode = "login",
   onLogin,
   onSignup,
   onLogout,
+  onDeleteAccount,
   onForgotPassword,
   onConfirmResetPassword,
   profile,
@@ -77,7 +55,6 @@ export function Login({
   const [showConfirm, setShowConfirm] = useState(false);
   const [submitState, setSubmitState] = useState<SubmitState>("idle");
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
-
   const emailValid = emailPattern.test(email);
   const passwordReady = password.length >= 8;
   const passwordsMatch = password === confirmPassword;
@@ -87,7 +64,6 @@ export function Login({
   const isSignup = mode === "signup";
   const isForgot = mode === "forgot";
   const isResetConfirm = mode === "resetConfirm";
-
   const canSubmit = useMemo(() => {
     if (isLoading) return false;
     if (isForgot) return emailValid;
@@ -95,7 +71,6 @@ export function Login({
     if (isSignup) return emailValid && passwordReady && passwordsMatch;
     return emailValid && password.length > 0;
   }, [emailValid, isForgot, isResetConfirm, isLoading, isSignup, password.length, passwordReady, passwordsMatch, resetCode]);
-
   function clearSecrets() {
     setPassword("");
     setConfirmPassword("");
@@ -103,14 +78,12 @@ export function Login({
     setShowPassword(false);
     setShowConfirm(false);
   }
-
   function switchMode(nextMode: AccountMode) {
     setMode(nextMode);
     setSubmitState("idle");
     setSubmitMessage(null);
     clearSecrets();
   }
-
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canSubmit) return;
@@ -144,7 +117,6 @@ export function Login({
       setSubmitState(isAuthFailure(error) ? "invalid" : "error");
     }
   }
-
   async function handleLogout() {
     setSubmitState("loading");
     setSubmitMessage(null);
@@ -158,7 +130,6 @@ export function Login({
       setSubmitState("error");
     }
   }
-
   return (
     <main className="account-entry" aria-labelledby="account-title">
       <section className="account-entry__visual" aria-label="Detoura account">
@@ -172,7 +143,6 @@ export function Login({
         </div>
         <span className="account-entry__location">Lake Como, Italy</span>
       </section>
-
       <section className="account-entry__panel" aria-label={panelLabel(mode)}>
         {profile && sessionStatus === "authenticated" ? (
           <div className="account-confirm" aria-live="polite">
@@ -192,6 +162,7 @@ export function Login({
             <button type="button" className="account-form__submit" onClick={handleLogout} disabled={isLoading}>
               {isLoading ? "Signing out..." : "Log out"}
             </button>
+            {onDeleteAccount && <AccountPrivacy onDelete={onDeleteAccount} />}
           </div>
         ) : mode === "resetRequested" || mode === "passwordUpdated" ? (
           <ConfirmationView
@@ -213,7 +184,6 @@ export function Login({
                       : "Log in to Detoura"}
               </h2>
             </div>
-
             {isLogin && googleNotice && (
               <p
                 id="google-notice"
@@ -228,7 +198,6 @@ export function Login({
                 {googleNoticeMessage(googleNotice)}
               </p>
             )}
-
             {(isLogin || isSignup) && onContinueWithGoogle && (
               <>
                 <button
@@ -246,7 +215,6 @@ export function Login({
                 </div>
               </>
             )}
-
             <form className="account-form" onSubmit={handleSubmit} noValidate>
               {!isResetConfirm && (
                 <Field
@@ -259,7 +227,6 @@ export function Login({
                   error={email && !emailValid ? "Enter a valid email address." : undefined}
                 />
               )}
-
               {isResetConfirm && (
                 <Field
                   id="account-reset-code"
@@ -270,7 +237,6 @@ export function Login({
                   autoComplete="one-time-code"
                 />
               )}
-
               {!isForgot && (
                 <PasswordField
                   id="account-password"
@@ -284,7 +250,6 @@ export function Login({
                   error={(isSignup || isResetConfirm) && password && !passwordReady ? "Password must be at least 8 characters." : undefined}
                 />
               )}
-
               {(isSignup || isResetConfirm) && (
                 <PasswordField
                   id="account-confirm-password"
@@ -297,16 +262,13 @@ export function Login({
                   error={confirmPassword && !passwordsMatch ? "Passwords do not match." : undefined}
                 />
               )}
-
               {sessionStatus === "loading" && (
                 <p className="account-form__status" role="status">Checking session...</p>
               )}
               {sessionError && (
                 <p className="account-form__status account-form__status--error">{sessionError}</p>
               )}
-
               <StatusMessage state={submitState} mode={mode} id={statusId} message={submitMessage} />
-
               <button className="account-form__submit" type="submit" disabled={!canSubmit} aria-describedby={statusId}>
                 {isLoading
                   ? "Please wait..."
@@ -319,7 +281,6 @@ export function Login({
                         : "Log in"}
               </button>
             </form>
-
             <div className="account-entry__switch">
               {isLogin && (
                 <>
@@ -338,11 +299,11 @@ export function Login({
             </div>
           </>
         )}
+        <a className="account-entry__privacy" href="/privacy">Privacy Notice</a>
       </section>
     </main>
   );
 }
-
 function Field({
   id,
   label,
@@ -377,7 +338,6 @@ function Field({
     </div>
   );
 }
-
 function PasswordField({
   id,
   label,
@@ -424,7 +384,6 @@ function PasswordField({
     </div>
   );
 }
-
 function StatusMessage({
   state,
   mode,
@@ -450,7 +409,6 @@ function StatusMessage({
           : "Signed in.";
   return <p id={id} className={`account-form__status account-form__status--${state}`} aria-live="polite">{message ?? fallback}</p>;
 }
-
 function ConfirmationView({
   mode,
   onBack,
@@ -485,18 +443,15 @@ function ConfirmationView({
     </div>
   );
 }
-
 function panelLabel(mode: AccountMode) {
   if (mode === "signup") return "Create account";
   if (mode === "forgot" || mode === "resetRequested" || mode === "resetConfirm") return "Password reset";
   if (mode === "passwordUpdated") return "Password updated";
   return "Log in";
 }
-
 function isAuthFailure(error: unknown): boolean {
   return error instanceof DetouraApiError && (error.status === 401 || error.status === 400);
 }
-
 function accountErrorMessage(error: unknown, mode: AccountMode): string {
   if (error instanceof DetouraApiError) {
     if (mode === "resetConfirm") {
@@ -516,9 +471,6 @@ function accountErrorMessage(error: unknown, mode: AccountMode): string {
   return "Something went wrong. Please try again.";
 }
 
-/** Safe, understandable copy for every outcome the backend's Google
- * callback can redirect back with - never the raw `reason` value, never a
- * provider/internal detail (V9 Google Sign-In consumer UI §12). */
 function googleNoticeMessage(notice: GoogleNotice): string {
   if (notice.kind === "link_required") {
     return "An account with this email already exists. Log in with your password below to verify it's you, and Detoura will connect your Google account.";
@@ -534,10 +486,6 @@ function googleNoticeMessage(notice: GoogleNotice): string {
   }
 }
 
-/** The standard Google "G" mark, inline - no external asset request, no
- * third-party site, nothing fetched at runtime. Purely decorative: the
- * button's own text already says "Continue with Google", so this is
- * `aria-hidden`. */
 function GoogleMark() {
   return (
     <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true" focusable="false">

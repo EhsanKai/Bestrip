@@ -122,7 +122,20 @@ export function useAccount() {
     }
   }, [finishMutation]);
 
-  return { ...state, refresh, login, register, logout };
+  const deleteAccount = useCallback(async (password?: string) => {
+    const currentGeneration = ++generation.current;
+    mutating.current = true;
+    try {
+      await api.deleteAccount(password);
+      if (currentGeneration !== generation.current) return;
+      setState({ status: "anonymous", profile: null, error: null });
+      notifySessionChange();
+    } finally {
+      await finishMutation();
+    }
+  }, [finishMutation]);
+
+  return { ...state, refresh, login, register, logout, deleteAccount };
 }
 
 function messageFor(error: unknown, fallback: string): string {

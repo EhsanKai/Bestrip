@@ -4,7 +4,7 @@
 # Set `base` to `frontend` in the Netlify UI, or deploy from this directory.
 
 [build]
-  command = "npm run build"
+  command = "npm run build:release"
   publish = "dist"
 
 [build.environment]

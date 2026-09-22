@@ -170,4 +170,46 @@ function loginHarness(props) {
 assert(read('App.tsx').includes('key={`${account.profile?.user_id ?? "anonymous"}:${selected.id}`}'));
 assert(read('App.tsx').includes('key={account.profile?.user_id ?? "anonymous"}'));
 assert(read('screens/MyTrips.tsx').includes('if (signal?.aborted) return;'));
-console.log('PASS: stale-session races, account-change revalidation, secret-free tab notifications, Ops token migration/memory/401 handling, credential cleanup and authenticated error visibility. No external side effects.');
+// Deletion invalidates stale session restoration and clears the account only on success.
+{
+  const host = hooks(); let release;
+  const api = { me: () => new Promise(resolve => { release = resolve; }), deleteAccount: async () => {} };
+  const mod = load('state/useAccount.ts', {}, name => name === 'react' ? host.react : name.endsWith('/client') ? { api } : { DetouraApiError: ApiError });
+  const account = host.render(() => mod.useAccount());
+  const pending = account.refresh(); await account.deleteAccount();
+  release({ user_id: 'deleted-account' }); await pending;
+  assert.equal(host.cells[0].status, 'anonymous'); assert.equal(host.cells[0].profile, null);
+  host.cells[0] = { status: 'authenticated', profile: { user_id: 'still-active' }, error: null };
+  api.deleteAccount = async () => { throw new ApiError('wrong password', 400); };
+  await assert.rejects(() => account.deleteAccount('wrong-password'));
+  assert.equal(host.cells[0].profile.user_id, 'still-active');
+}
+// Execute the real My Trips download handler, including a server response that
+// resolves despite abort. No old-account Blob or event may escape after departure.
+for (const depart of [false, true]) {
+  const host = hooks(); let release, signal; let clicks = 0, blobs = 0, events = 0;
+  const api = { downloadTripDocument: (_booking, _document, abortSignal) => {
+    signal = abortSignal; return new Promise(resolve => { release = resolve; });
+  } };
+  const win = { document: { createElement: () => ({ click() { clicks++; }, remove() {} }), body: { append() {} } }, setTimeout: fn => fn() };
+  const mod = load('screens/MyTrips.tsx', { AbortController, window: win, URL: { createObjectURL() { blobs++; return 'blob:synthetic'; }, revokeObjectURL() {} } }, name => {
+    if (name === 'react') return host.react;
+    if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx };
+    if (name.endsWith('/client')) return { api };
+    if (name.endsWith('/analytics')) return { track() { events++; } };
+    if (name.endsWith('/myTripPresentation')) return { documentTypeForAnalytics: () => 'receipt' };
+    return { DetouraApiError: ApiError };
+  });
+  host.render(() => mod.MyTrips({ accountStatus: 'authenticated' }));
+  host.cells[5] = 'owned-booking';
+  const tree = host.render(() => mod.MyTrips({ accountStatus: 'authenticated' }));
+  const cleanup = host.effects[0]();
+  const handler = walk(tree, node => typeof node.props?.onDownload === 'function').props.onDownload;
+  const pending = handler({ document_id: 'owned-document', download_available: true, document_type: 'receipt' });
+  assert(signal instanceof AbortSignal);
+  if (depart) cleanup();
+  release(new Blob(['synthetic receipt'])); await pending;
+  assert.equal(signal.aborted, depart);
+  assert.equal(clicks, depart ? 0 : 1); assert.equal(blobs, depart ? 0 : 1); assert.equal(events, depart ? 0 : 1);
+}
+console.log('PASS: stale-session races, account-change revalidation, secret-free tab notifications, Ops token migration/memory/401 handling, credential cleanup and authenticated error visibility, account deletion races, and document download cancellation. No external side effects.');

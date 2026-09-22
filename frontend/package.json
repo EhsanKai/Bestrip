@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify:legal": "node scripts/verify-legal-readiness.mjs",
+    "build:release": "npm run verify:legal && npm run build"
   },
   "dependencies": {
     "motion": "^13.2.0",

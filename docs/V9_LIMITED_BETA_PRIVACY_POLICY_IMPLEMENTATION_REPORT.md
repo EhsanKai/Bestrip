@@ -316,8 +316,7 @@ codebase's existing test architecture.
 ## Final Response
 
 **Starting HEAD**: `6931600`
-**Final HEAD**: (see checkpoint commit below — this report is written
-pre-commit; the commit hash is recorded at commit time, not invented here)
+**Final HEAD**: `940b20a` ("V9 implement Limited Beta privacy policy backend")
 
 **Policy Baseline**: Locked per §0, sourced from this task's own
 instructions — not re-derived or reinterpreted by this report.
@@ -387,10 +386,10 @@ modified passed in every configuration run.
 **Independent Review**: PERFORMED — §12, no demonstrated defect survived.
 
 **Report**: this document.
-**Checkpoint Commit**: to be recorded at commit time (git discipline §15 —
-narrow, exact-path staging only).
-**Remaining Dirty Paths**: none expected beyond the exact files this slice
-touched — verified via `git status --short` immediately before staging.
+**Checkpoint Commit**: `940b20a` — 7 files staged by exact path (never
+`git add .`/`-A`), never touching `frontend/**`, `AGENTS.md`, or `CLAUDE.md`.
+**Remaining Dirty Paths**: `AGENTS.md`, `CLAUDE.md` — pre-existing,
+untracked, untouched by this slice throughout, exactly as required.
 **Pushed**: NO
 
 **Limited Beta Backend Privacy Engineering Status**: The one previously

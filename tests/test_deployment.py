@@ -186,3 +186,112 @@ def test_blank_entries_are_dropped(monkeypatch):
     """Trailing commas are what hand-edited env vars look like."""
     monkeypatch.setenv("DETOURA_CORS_ORIGINS", "https://detoura.app,,")
     assert cors_origins() == ["https://detoura.app"]
+
+
+# ---------------------------------------------------------------------------
+# X-Robots-Tag (V9 staging hardening: DETOURA_FORCE_NOINDEX decouples this
+# from DETOURA_ENV/Secure cookies - a real Render deployment needed both
+# Secure cookies and noindex together, which the old single-flag gate could
+# not express)
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def _reset_auth_config():
+    from detoura.auth_config import reset_auth_config
+    reset_auth_config()
+    yield
+    reset_auth_config()
+
+
+def test_unset_env_is_noindexed_by_default(monkeypatch, _reset_auth_config):
+    monkeypatch.delenv("DETOURA_ENV", raising=False)
+    monkeypatch.delenv("DETOURA_FORCE_NOINDEX", raising=False)
+    client = TestClient(create_app())
+    assert client.get("/api/v1/health").headers["x-robots-tag"] == "noindex, nofollow"
+
+
+def test_production_alone_is_indexable(monkeypatch, _reset_auth_config):
+    """Unchanged behavior: a real production cutover with no new flag set
+    stays indexable exactly as before this slice - no silent regression."""
+    monkeypatch.setenv("DETOURA_ENV", "production")
+    monkeypatch.delenv("DETOURA_FORCE_NOINDEX", raising=False)
+    client = TestClient(create_app())
+    assert "x-robots-tag" not in client.get("/api/v1/health").headers
+
+
+def test_production_with_force_noindex_is_noindexed(monkeypatch, _reset_auth_config):
+    """The exact real-world case this slice fixes: Secure cookies (needs
+    DETOURA_ENV=production) and noindex (needs FORCE_NOINDEX) together."""
+    monkeypatch.setenv("DETOURA_ENV", "production")
+    monkeypatch.setenv("DETOURA_FORCE_NOINDEX", "true")
+    client = TestClient(create_app())
+    assert client.get("/api/v1/health").headers["x-robots-tag"] == "noindex, nofollow"
+
+
+def test_force_noindex_alone_without_production_still_noindexes(monkeypatch, _reset_auth_config):
+    monkeypatch.delenv("DETOURA_ENV", raising=False)
+    monkeypatch.setenv("DETOURA_FORCE_NOINDEX", "true")
+    client = TestClient(create_app())
+    assert client.get("/api/v1/health").headers["x-robots-tag"] == "noindex, nofollow"
+
+
+# ---------------------------------------------------------------------------
+# Security response headers (V9 staging hardening audit: none of these were
+# ever sent - see app.py's _CONTENT_SECURITY_POLICY comment for the
+# dependency audit this policy is derived from)
+# ---------------------------------------------------------------------------
+def test_security_headers_present_on_an_ordinary_response(monkeypatch, _reset_auth_config):
+    monkeypatch.delenv("DETOURA_ENV", raising=False)
+    client = TestClient(create_app())
+    headers = client.get("/api/v1/health").headers
+
+    assert headers["x-content-type-options"] == "nosniff"
+    assert headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert headers["x-frame-options"] == "DENY"
+    assert "camera=()" in headers["permissions-policy"]
+    csp = headers["content-security-policy"]
+    assert "default-src 'self'" in csp
+    assert "https://thumb.wikimedia.org" in csp
+    assert "frame-ancestors 'none'" in csp
+    # No inline script/style anywhere in the frontend - see the dependency
+    # audit comment in app.py - so neither directive should need to loosen.
+    assert "unsafe-inline" not in csp
+    assert "unsafe-eval" not in csp
+
+
+def test_csp_is_not_sent_on_swagger_docs(monkeypatch, _reset_auth_config):
+    """Swagger UI loads third-party CDN scripts by default; a strict CSP
+    with no exception would break /docs, /redoc and /openapi.json."""
+    monkeypatch.delenv("DETOURA_ENV", raising=False)
+    client = TestClient(create_app())
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert "content-security-policy" not in client.get(path).headers
+
+
+def test_docs_csp_exemption_does_not_remove_the_other_security_headers(monkeypatch, _reset_auth_config):
+    """The CSP exemption for Swagger UI is scoped to exactly one header -
+    confirms the other five (plus HSTS under production) are unaffected by
+    that path-based branch, not accidentally skipped along with it."""
+    monkeypatch.setenv("DETOURA_ENV", "production")
+    client = TestClient(create_app())
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        headers = client.get(path).headers
+        assert headers["x-content-type-options"] == "nosniff"
+        assert headers["referrer-policy"] == "strict-origin-when-cross-origin"
+        assert headers["x-frame-options"] == "DENY"
+        assert "camera=()" in headers["permissions-policy"]
+        assert "max-age=" in headers["strict-transport-security"]
+        assert "content-security-policy" not in headers
+
+
+def test_hsts_only_sent_when_production(monkeypatch, _reset_auth_config):
+    """Never emitted in local/plain-HTTP dev - a browser that believed it
+    would simply fail to connect on the next request."""
+    monkeypatch.delenv("DETOURA_ENV", raising=False)
+    client = TestClient(create_app())
+    assert "strict-transport-security" not in client.get("/api/v1/health").headers
+
+
+def test_hsts_sent_when_production(monkeypatch, _reset_auth_config):
+    monkeypatch.setenv("DETOURA_ENV", "production")
+    client = TestClient(create_app())
+    assert "max-age=" in client.get("/api/v1/health").headers["strict-transport-security"]

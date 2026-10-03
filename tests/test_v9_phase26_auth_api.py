@@ -257,3 +257,104 @@ def test_non_sensitive_field_validation_error_still_echoes_input(client):
     assert r.status_code == 422
     detail = r.json()["detail"]
     assert any(err.get("loc") == ["body", "email"] and err.get("input") == "x" for err in detail)
+
+
+# ======================================================================
+# V9 staging audit: the fix above was too narrow. A "missing field" error's
+# "input" is the *whole* submitted body (there is no sub-value to point to
+# when the field itself is absent), so a real, valid password submitted
+# alongside a separately-missing email rode along untouched - reproduced
+# live against the real Render staging deployment. These adversarial cases
+# are exactly the ones named in that audit.
+# ======================================================================
+def test_password_present_email_missing_422_does_not_echo_password(client):
+    """The real defect, reproduced: POST with a password but no email key
+    at all triggers a 'missing' error on email whose echoed 'input' used to
+    be the entire body, password included."""
+    secret_marker = "RealStagingPasswordMarker789!"
+    r = client.post("/api/v1/auth/login", json={"password": secret_marker})
+    assert r.status_code == 422
+    assert secret_marker not in r.text
+    detail = r.json()["detail"]
+    missing_email = next(err for err in detail if err.get("loc") == ["body", "email"])
+    assert missing_email.get("input") == {"password": "[redacted]"}
+
+
+def test_reset_confirm_both_sensitive_fields_missing_fully_stripped(client):
+    """A different endpoint than register/login, confirming the redaction is
+    not special-cased to those two routes. Both fields here (token,
+    new_password) are individually sensitive-named, so each missing-field
+    error is caught by the exact-loc check alone - no sibling value exists to
+    leak either way, since neither was actually submitted."""
+    r = client.post("/api/v1/auth/password/reset/confirm", json={})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert len(detail) == 2
+    assert all("input" not in err for err in detail)
+
+
+def test_redact_sensitive_handles_nested_structures():
+    """Unit-level coverage for nesting, independent of whether any current
+    route happens to accept a nested sensitive field today."""
+    from detoura.api.app import _redact_sensitive
+
+    nested = {
+        "email": "user@example.com",
+        "credentials": {"password": "super-secret", "note": "keep"},
+        "items": [{"token": "abc123"}, {"ok": "fine"}],
+    }
+    redacted = _redact_sensitive(nested)
+    assert redacted == {
+        "email": "user@example.com",
+        "credentials": {"password": "[redacted]", "note": "keep"},
+        "items": [{"token": "[redacted]"}, {"ok": "fine"}],
+    }
+
+
+def test_bare_scalar_body_is_not_echoed_back(client):
+    """Independent review finding: a request body that is not even a JSON
+    object at all (a bare string/number) fails with loc == ["body"] and
+    FastAPI's 'input' set to that raw value verbatim - no field name to
+    check for sensitivity and no dict for _redact_sensitive to walk, so a
+    malformed client that sent a real secret bare (e.g. forgot to wrap it in
+    {"password": ...}) must not have it echoed back either."""
+    secret_marker = "BareScalarBodySecretMarker321!"
+    r = client.post(
+        "/api/v1/auth/login",
+        content=f'"{secret_marker}"',
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 422
+    assert secret_marker not in r.text
+    detail = r.json()["detail"]
+    assert all("input" not in err for err in detail)
+
+
+def test_bare_list_body_is_not_echoed_back(client):
+    """Second-round independent review finding: a bare JSON *array* body hit
+    the dict/list redaction branch before the whole-body check could catch
+    it, and a list of plain strings has no dict keys for _redact_sensitive
+    to judge sensitivity by - so it passed through completely unredacted."""
+    secret_marker = "BareListBodySecretMarker654!"
+    r = client.post(
+        "/api/v1/auth/login",
+        content=f'["{secret_marker}"]',
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 422
+    assert secret_marker not in r.text
+    detail = r.json()["detail"]
+    assert all("input" not in err for err in detail)
+
+
+def test_oversized_password_still_fully_stripped_not_just_redacted(client):
+    """No regression to the original protection: when the erroring field
+    *itself* is sensitive, 'input' is dropped entirely, not merely redacted
+    to a placeholder - unchanged from before this slice."""
+    secret_marker = "StillFullyStrippedMarker000!"
+    oversized = secret_marker + ("a" * 1200)
+    r = client.post("/api/v1/auth/login", json={"email": "a@example.com", "password": oversized})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    password_error = next(err for err in detail if err.get("loc") == ["body", "password"])
+    assert "input" not in password_error

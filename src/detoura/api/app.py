@@ -81,6 +81,61 @@ _SENSITIVE_VALIDATION_FIELDS = frozenset({
     "cookie", "card_number", "cvc", "cvv",
 })
 
+
+def _is_sensitive_field(name: object) -> bool:
+    text = str(name).lower()
+    return any(sensitive in text for sensitive in _SENSITIVE_VALIDATION_FIELDS)
+
+
+def _redact_sensitive(value: object) -> object:
+    """Blank out dict values whose own key looks sensitive, recursively.
+
+    A FastAPI/Pydantic "missing" validation error's ``input`` is not that one
+    field's value - there is nothing to point to when the field itself is
+    absent - it is the *whole* submitted object the field was missing from.
+    Checking only the erroring field's own ``loc`` (as this handler used to)
+    misses that: a password submitted alongside a separately-missing email
+    rode along untouched inside that object. This walks the value looking for
+    sensitive keys independently of which field actually failed validation."""
+    if isinstance(value, dict):
+        return {
+            key: "[redacted]" if _is_sensitive_field(key) else _redact_sensitive(val)
+            for key, val in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive(item) for item in value]
+    return value
+
+
+#: Security response headers (V9 staging hardening audit,
+#: docs/V9_REAL_STAGING_DEPLOYMENT_REPORT.md): a real deployment was found
+#: sending none of these at all. The policy below is derived from this app's
+#: actual dependencies (audited directly, not templated): Wikimedia-hosted
+#: destination photography is the only cross-origin resource the client
+#: loads; Google sign-in is a server-side 302 redirect
+#: (api/auth_google.py), never a client-side script/iframe; there is no
+#: Stripe.js or other payment SDK wired up yet (Checkout.tsx is a
+#: placeholder); no inline <script>/<style> or `dangerouslySetInnerHTML`
+#: exists anywhere in the frontend; no camera/microphone/geolocation API is
+#: used. Swagger UI (/docs, /redoc, /openapi.json) is the one real exception
+#: - it loads third-party CDN assets and inline scripts by default - so it is
+#: excluded from the CSP below rather than loosening the policy for every
+#: route to accommodate it.
+_CSP_EXEMPT_PATHS = frozenset({"/docs", "/redoc", "/openapi.json"})
+_CONTENT_SECURITY_POLICY = "; ".join((
+    "default-src 'self'",
+    "img-src 'self' https://thumb.wikimedia.org",
+    "script-src 'self'",
+    "style-src 'self'",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "media-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+))
+
 DESCRIPTION = """
 **Detoura** - AI travel discovery and optimization.
 
@@ -171,20 +226,52 @@ def create_app() -> FastAPI:
 
     # V9 staging/production ops readiness: only a deployment that explicitly
     # sets DETOURA_ENV=production (see render.yaml and auth_config.py, which
-    # this same flag already gates Secure cookies on) is ever indexable.
-    # Anything else - a staging host, a review app, a bare `docker run` with
-    # no env set - fails closed to noindex, so a forgotten config flag costs
-    # search visibility, never the reverse (docs/V9_TECHNICAL_SEO_FOUNDATION
-    # _REPORT.md flagged staging noindex as unsolved; a client-side meta tag
-    # alone would miss crawlers that don't execute JS, so this is a real
-    # HTTP response header instead).
-    _indexable_deployment = auth_config().is_production
+    # this same flag already gates Secure cookies on) is ever indexable -
+    # *unless* DETOURA_FORCE_NOINDEX is also set, which keeps a Secure-cookie,
+    # DETOURA_ENV=production deployment noindexed anyway (V9 staging
+    # hardening: a real Render deployment needed Secure cookies but was not
+    # meant to be indexable, which the old single-flag gate could not express
+    # without sacrificing one for the other - see auth_config.py's
+    # force_noindex docstring). Anything else - a staging host, a review app,
+    # a bare `docker run` with no env set - fails closed to noindex, so a
+    # forgotten config flag costs search visibility, never the reverse
+    # (docs/V9_TECHNICAL_SEO_FOUNDATION_REPORT.md flagged staging noindex as
+    # unsolved; a client-side meta tag alone would miss crawlers that don't
+    # execute JS, so this is a real HTTP response header instead).
+    _cfg = auth_config()
+    _indexable_deployment = _cfg.is_production and not _cfg.force_noindex
 
     @app.middleware("http")
     async def _robots_header_middleware(request: Request, call_next):
         response = await call_next(request)
         if not _indexable_deployment:
             response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
+        return response
+
+    @app.middleware("http")
+    async def _security_headers_middleware(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        )
+        # Modern equivalent is CSP's frame-ancestors (below); this is kept too
+        # as defense-in-depth for browsers that predate it - nothing in this
+        # app frames itself or needs to be framed by anyone else.
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        if request.url.path not in _CSP_EXEMPT_PATHS:
+            response.headers.setdefault("Content-Security-Policy", _CONTENT_SECURITY_POLICY)
+        # Gated on the same flag as Secure cookies, not force_noindex: HSTS is
+        # a transport-security guarantee about this host always being HTTPS,
+        # unrelated to whether it should be search-indexed. Never emitted in
+        # local/dev (DETOURA_ENV unset), where the server is plain HTTP and a
+        # browser that believed this header would simply fail to connect.
+        if _cfg.is_production:
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000"
+            )
         return response
 
     @app.exception_handler(Exception)
@@ -212,19 +299,44 @@ def create_app() -> FastAPI:
     ) -> JSONResponse:
         """Same shape as FastAPI's own default handler, except a field whose
         name marks it sensitive never has its submitted value echoed back
-        (V9 account/auth security audit): FastAPI's default handler puts the
-        raw invalid value in each error's ``input``, so a password that only
-        failed a length check - never anything about its content - came back
-        verbatim in the 422 body. ``type``/``loc``/``msg`` are kept, so the
-        client still learns *what* was wrong, just not the secret itself."""
+        (V9 account/auth security audit, hardened again in the V9 staging
+        audit): FastAPI's default handler puts the raw invalid value in each
+        error's ``input``, so a password that only failed a length check -
+        never anything about its content - came back verbatim in the 422
+        body. ``type``/``loc``/``msg`` are kept, so the client still learns
+        *what* was wrong, just not the secret itself. A "missing field"
+        error's ``input`` is the whole submitted object, not just the absent
+        field's value, so a sensitive sibling field (e.g. a real password,
+        submitted alongside a merely-missing email) is redacted key-by-key
+        rather than only checked against the one field that actually
+        failed - see ``_redact_sensitive``. A body that is not even an
+        object at all (a bare JSON string/number as the whole request body)
+        fails the same way with ``loc == ["body"]`` and ``input`` set to that
+        raw value verbatim - there is no field name to check for
+        sensitivity and no dict to walk, so the only safe default is to drop
+        it, exactly like a recognized-sensitive field, rather than risk
+        echoing whatever a malformed client sent bare."""
         errors = jsonable_encoder(exc.errors())
         for error in errors:
-            loc = error.get("loc") or ()
-            if any(
-                sensitive in str(part).lower()
-                for part in loc for sensitive in _SENSITIVE_VALIDATION_FIELDS
-            ):
+            loc = tuple(error.get("loc") or ())
+            if any(_is_sensitive_field(part) for part in loc):
                 error.pop("input", None)
+                continue
+            if "input" not in error:
+                continue
+            value = error["input"]
+            if loc in ((), ("body",)) and not isinstance(value, dict):
+                # The whole request body failed before it was even treated
+                # as an object - a bare scalar, or a bare list of scalars
+                # with no keys for _redact_sensitive to judge sensitivity
+                # by (second-round review finding: a bare JSON array body
+                # sailed through the dict/list branch below untouched,
+                # since a list of plain strings has no dict keys to redact).
+                # No field name and no safe key-based structure either way,
+                # so the only safe default is to drop it entirely.
+                error.pop("input", None)
+            elif isinstance(value, (dict, list)):
+                error["input"] = _redact_sensitive(value)
         return JSONResponse(status_code=422, content={"detail": errors})
 
     @app.get("/readyz")

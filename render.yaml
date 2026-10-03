@@ -25,6 +25,34 @@ services:
       # production deploy must set this, or it is both insecure and unindexed.
       - key: DETOURA_ENV
         value: production
+      # This service is currently the staging environment, not a real public
+      # launch - but it still needs DETOURA_ENV=production above for Secure
+      # cookies (see that key's comment). DETOURA_ENV alone used to also
+      # control search-indexability, which would have forced a choice between
+      # Secure cookies and staying out of search indexes; DETOURA_FORCE_NOINDEX
+      # (src/detoura/auth_config.py, src/detoura/api/app.py) decouples the two
+      # so this service gets both. VITE_STAGING below is the frontend half of
+      # the same fix - see its own comment.
+      #
+      # *** REMOVE both DETOURA_FORCE_NOINDEX and VITE_STAGING below (or set
+      # DETOURA_FORCE_NOINDEX to "false") when this service is cut over to the
+      # real public production launch - otherwise production ships
+      # unindexed. *** See docs/V9_STAGING_RUNBOOK.md and
+      # scripts/verify_staging_noindex.sh.
+      - key: DETOURA_FORCE_NOINDEX
+        value: "true"
+      # Build-time only (frontend/vite.config.ts's seoPlugin): emits
+      # noindex,nofollow meta tag + a blanket-Disallow robots.txt + no
+      # sitemap, regardless of DETOURA_ENV. Render forwards a service's env
+      # vars to its Docker build as build args for any ARG the Dockerfile
+      # declares under the same name (see Dockerfile's "Stage 1" - VITE_STAGING
+      # is already declared there for exactly this), so this also reaches Vite
+      # at build time, not merely this container's runtime. Verify this
+      # actually took effect after every deploy of this service with
+      # `scripts/verify_staging_noindex.sh <this service's URL>` - Render's
+      # build-arg forwarding has not been exercised for this variable before.
+      - key: VITE_STAGING
+        value: "true"
       # Render terminates TLS at its edge and proxies to this container as the
       # single hop in front of it - see services/client_ip.py's Render-specific
       # note. Leaving this at the default (0) means every request behind

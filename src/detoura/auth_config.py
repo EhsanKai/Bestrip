@@ -78,6 +78,18 @@ class AuthConfig:
     #: Secure cookie the browser will actually send back - documented
     #: development exception, §A5).
     is_production: bool = False
+    #: Independent of ``is_production`` on purpose (V9 staging hardening): a
+    #: real deployment was found serving `DETOURA_ENV=production` (needed for
+    #: Secure cookies) on a host that was meant to stay unindexed, which the
+    #: old single `is_production` gate in app.py's robots middleware could not
+    #: express - that flag could only buy noindex by giving up Secure cookies.
+    #: Set `DETOURA_FORCE_NOINDEX=true` to keep a production-grade, HTTPS,
+    #: Secure-cookie deployment out of search indexes regardless of
+    #: `DETOURA_ENV`. Defaulting to False means a real production cutover
+    #: that already has `DETOURA_ENV=production` set stays indexable exactly
+    #: as before unless this is *also* explicitly set - no silent behavior
+    #: change for existing production config.
+    force_noindex: bool = False
     session_cookie_name: str = "detoura_session"
     csrf_cookie_name: str = "detoura_csrf"
     #: Login attempts per (IP, email) pair per window, and per-IP registration
@@ -105,6 +117,7 @@ class AuthConfig:
         return cls(
             session_ttl_seconds=max(60, _int("AUTH_SESSION_TTL_SECONDS", DEFAULT_SESSION_TTL_SECONDS)),
             is_production=_bool("DETOURA_ENV_PRODUCTION", False) or os.getenv("DETOURA_ENV", "").strip().lower() == "production",
+            force_noindex=_bool("DETOURA_FORCE_NOINDEX", False),
             login_max_attempts=max(1, _int("AUTH_LOGIN_MAX_ATTEMPTS", DEFAULT_LOGIN_MAX_ATTEMPTS)),
             login_window_seconds=float(max(1, _int("AUTH_LOGIN_WINDOW_SECONDS", int(DEFAULT_LOGIN_WINDOW_SECONDS)))),
             login_ip_max_attempts=max(1, _int("AUTH_LOGIN_IP_MAX_ATTEMPTS", DEFAULT_LOGIN_IP_MAX_ATTEMPTS)),

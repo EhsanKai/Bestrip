@@ -19,11 +19,77 @@ codebase during the ops-readiness audit — none are illustrative.
 - No `.env` file is loaded automatically — every variable below must be
   injected explicitly (host dashboard, `docker run -e`, `--env-file`).
 
-## 2. Environment variables (staging values)
+## 2. Render persistent disk for SQLite (read before any Render deploy)
+
+Detoura is single-writer SQLite — exactly one `sqlite3.connect` call site
+exists in the whole codebase (`src/detoura/persistence/db.py`), and every
+table (accounts, bookings, payments, documents, the Ops audit trail) lives
+in that one file. `render.yaml` attaches a Render persistent disk to the
+`detoura` service specifically so this survives redeploys:
+
+| Fact | Value |
+| --- | --- |
+| Disk name | `detoura-data` |
+| Mount path | `/app/data/db` |
+| Disk size | 1 GB (smallest Render allows; resize later if the DB grows) |
+| `DETOURA_DB_PATH` on Render | `/app/data/db/detoura.db` (set in `render.yaml`'s `envVars` — **not** the Dockerfile's own default, see below) |
+| SQLite WAL/SHM files | Created automatically as `detoura.db-wal`/`detoura.db-shm`, siblings of `detoura.db` — on the same disk, with no separate configuration, by stock SQLite's own behavior |
+
+**Why the disk is mounted at `/app/data/db`, not the whole `/app/data`
+directory**: the Dockerfile also bakes `destination_images/manifest.json`
+and `assets/` into `/app/data/destination_images` as a *build-time*
+artifact. A disk mounted over the entire `/app/data` directory would be
+empty on first attach and would shadow those baked-in files, silently
+breaking the destination-images feature on the very first deploy. Mounting
+at the narrower `/app/data/db` subdirectory avoids that collision entirely
+— confirmed by a real local Docker reproduction during this slice (see
+`docs/V9_REAL_STAGING_DEPLOYMENT_REPORT.md`).
+
+**Why the Dockerfile pre-creates `/app/data/db` and `chown`s it to the
+`detoura` user before anything ever mounts there**: a fresh Docker named
+volume (and, by the same first-mount semantics, a fresh Render disk) mounted
+at a path with no directory already present in the image comes up owned by
+`root`. This container runs as the non-root `detoura` user (uid 10001) for
+security — reproduced directly as
+`sqlite3.OperationalError: unable to open database file` with the directory
+missing from the image, fixed by pre-creating it there so the volume/disk
+inherits the right ownership on first mount.
+
+**What this means for local, non-Render Docker use (unchanged)**: a plain
+`docker run` with no `DETOURA_DB_PATH` override still uses the Dockerfile's
+own default, `/app/data/detoura.db` — a sibling of `destination_images`
+directly under `/app/data`, exactly as before this slice. The `/app/data/db`
+path above is a **Render-specific** override declared only in `render.yaml`,
+not a change to local/Docker/test defaults anywhere else in this repository.
+
+**Single-replica constraint, unchanged and non-negotiable**: Render disks
+cannot be shared across multiple service instances. This is not a new
+limitation this disk introduces — Detoura's SQLite file locking and its
+in-process session/Ops-token stores already require exactly one running
+instance (`DEPLOY.md`, `docs/V9_STAGING_PRODUCTION_OPS_READINESS_REPORT.md`
+§11). Do not scale this service to more than one instance on Render.
+
+**Persistence expectations**: an account, booking, payment or document
+written today survives a Render redeploy, a container restart, and a full
+container replacement, exactly as long as the `detoura-data` disk itself is
+not deleted or detached. **Deleting or replacing the disk destroys
+everything on it** — there is no separate backup copy unless one was taken
+deliberately (see step 12). The container's own filesystem outside
+`/app/data/db` (including `/app/data/destination_images`, which is fine
+since it's a rebuildable build-time artifact) is **ephemeral** and must
+never be assumed to survive a redeploy.
+
+**Restore remains a manual Ops procedure** — there is no automated restore
+tooling in this repository, on Render or otherwise. A restore means
+replacing the disk's `detoura.db` (and its `-wal`/`-shm` files, or none if a
+clean `.backup` was used) with a known-good backup file while the service is
+stopped, then restarting it.
+
+## 3. Environment variables (staging values)
 
 | Variable | Staging value | Why |
 | --- | --- | --- |
-| `DETOURA_ENV` | *(leave unset)* | Unset = `is_production` is `False` = Secure-cookie flag off (fine for a staging URL that may not be HTTPS) and `X-Robots-Tag: noindex, nofollow` applied automatically. Setting this to `production` on a staging host would defeat the noindex protection in §5. |
+| `DETOURA_ENV` | *(leave unset)* | Unset = `is_production` is `False` = Secure-cookie flag off (fine for a staging URL that may not be HTTPS) and `X-Robots-Tag: noindex, nofollow` applied automatically. Setting this to `production` on a staging host would defeat the noindex protection in step 6. |
 | `DETOURA_CORS_ORIGINS` | unset (single-origin) or the staging client's origin if split-hosting | Only needed for split hosting. |
 | `DETOURA_DB_PATH` | `/app/data/detoura.db` (Dockerfile default) | Ensure the volume below is mounted, or state does not survive a restart. |
 | `DETOURA_OPS_TOKEN` | a staging-only secret, **never the production value** | Unset disables Ops entirely (also acceptable for staging). |
@@ -35,17 +101,17 @@ codebase during the ops-readiness audit — none are illustrative.
 | `DETOURA_METRICS_ENABLED` | leave unset unless you have network-level access control in front of this deployment | `/metrics` has no auth of its own. |
 | `AUTH_TRUSTED_PROXY_HOPS` | `1` if staging also sits behind a single reverse proxy (e.g. Render), else `0` | See the production checklist for the reasoning — the same logic applies. |
 
-## 3. Frontend build (staging, non-indexable)
+## 4. Frontend build (staging, non-indexable)
 
 To check the client build alone, outside Docker:
 
 ```bash
 cd frontend
 npm ci
-VITE_STAGING=true npm run build       # NOT build:release - see step 4
+VITE_STAGING=true npm run build       # NOT build:release - see step 5
 ```
 
-The Docker image (step 5) builds the same client internally — pass
+The Docker image (step 6) builds the same client internally — pass
 `--build-arg VITE_STAGING=true` to that `docker build` instead of setting the
 environment variable directly; the Dockerfile only forwards `VITE_STAGING`
 into the client build stage via that build arg (see `Dockerfile`'s "Stage 1"
@@ -63,7 +129,7 @@ grep -o '<meta name="robots"[^>]*>' dist/index.html   # must show noindex,nofoll
 cat dist/robots.txt                                    # must show "Disallow: /"
 ```
 
-## 4. Do not run the production legal gate for staging
+## 5. Do not run the production legal gate for staging
 
 `npm run build:release` (which runs `scripts/verify-legal-readiness.mjs` /
 `frontend/scripts/verify-legal-readiness.mjs`) is expected to **fail** right
@@ -73,7 +139,7 @@ your staging setup. Use plain `npm run build` for staging, exactly as CI and
 the Dockerfile already do. `scripts/verify_production_release.sh` is a
 **production-only** gate — do not run it as a staging precondition.
 
-## 5. Build and run the image
+## 6. Build and run the image
 
 ```bash
 docker build -t detoura:staging --build-arg VITE_STAGING=true .
@@ -91,7 +157,7 @@ mechanism — `render.yaml`'s checked-in values (`DETOURA_ENV=production`,
 A separate staging service on the same host must not inherit
 `DETOURA_ENV=production`.
 
-## 6. Health / readiness / smoke tests
+## 7. Health / readiness / smoke tests
 
 ```bash
 curl -fsS http://localhost:8000/api/v1/health        # {"status":"ok",...}
@@ -108,7 +174,7 @@ curl -sI http://localhost:8000/ | grep -i x-robots-tag   # noindex, nofollow
 These mirror exactly what `.github/workflows/ci.yml`'s `image` job already
 asserts, plus the new noindex header check.
 
-## 7. Provider TEST-mode verification
+## 8. Provider TEST-mode verification
 
 ```bash
 # Confirms the running config resolves to a usable provider without a network call:
@@ -120,7 +186,7 @@ If `PAYMENT_PROVIDER=stripe` is set, confirm the key is TEST-mode
 anything else, but verify at config time rather than discovering it at first
 checkout. Same for `DUFFEL_ACCESS_TOKEN` (`duffel_test_...`).
 
-## 8. Analytics-off verification
+## 9. Analytics-off verification
 
 ```bash
 curl -fsS http://localhost:8000/ | grep -o 'VITE_ANALYTICS_FIRST_PARTY[^"]*' || true
@@ -130,7 +196,7 @@ Confirm no production analytics build flag was baked in. The default staging
 build (no `VITE_ANALYTICS_FIRST_PARTY` set) already ships analytics
 structurally disabled — this step is a sanity check, not a required action.
 
-## 9. Cookie / security-header verification
+## 10. Cookie / security-header verification
 
 ```bash
 # Register + log in against the running staging container, then:
@@ -145,11 +211,11 @@ curl -isS -X POST http://localhost:8000/api/v1/auth/login \
 
 Expect `detoura_session=...; HttpOnly; SameSite=lax` (no `Secure` unless this
 staging host is itself served over HTTPS with `DETOURA_ENV=production` set —
-which staging should not do; see step 2). Delete this test account
+which staging should not do; see step 3). Delete this test account
 afterwards via the account-deletion endpoint if this staging environment is
 shared.
 
-## 10. Log-retention configuration
+## 11. Log-retention configuration
 
 Application logs go to stdout only (`observability/logging.py`) — there is no
 in-app retention to configure. Set the **host/platform's** log retention to
@@ -158,23 +224,32 @@ in-app retention to configure. Set the **host/platform's** log retention to
 (Render log retention settings, or an external sink's own policy). This is a
 platform-console action, not a repository change.
 
-## 11. Backup verification
+## 12. Backup verification
 
 The `python:3.11-slim` runtime image does **not** include the `sqlite3` CLI
 binary (confirmed by real exec attempt — `exec: "sqlite3": executable file
 not found in $PATH`), only Python's built-in `sqlite3` module. Use that
 module directly, which performs the identical WAL-safe online backup the
-CLI's `.backup` command would:
+CLI's `.backup` command would.
+
+**Read the actual configured path from the container rather than hardcoding
+it** — it differs between a plain `docker run` (`/app/data/detoura.db`,
+the Dockerfile's own default) and a Render deployment
+(`/app/data/db/detoura.db`, set in `render.yaml`; see step 2). A backup
+command that hardcodes the wrong one of these silently backs up a stale or
+nonexistent file:
 
 ```bash
 docker exec detoura-staging python3 -c "
-import sqlite3
-src = sqlite3.connect('/app/data/detoura.db')
-dst = sqlite3.connect('/app/data/staging-backup.db')
+import os, sqlite3
+db_path = os.environ.get('DETOURA_DB_PATH') or '/app/data/detoura.db'
+src = sqlite3.connect(db_path)
+dst = sqlite3.connect('/tmp/staging-backup.db')
 src.backup(dst)
 dst.close(); src.close()
+print('backed up', db_path)
 "
-docker cp detoura-staging:/app/data/staging-backup.db ./staging-backup.db
+docker cp detoura-staging:/tmp/staging-backup.db ./staging-backup.db
 python3 -c "
 import sqlite3
 c = sqlite3.connect('./staging-backup.db')
@@ -182,7 +257,13 @@ print(c.execute('SELECT count(*) FROM user_accounts').fetchone())
 "
 ```
 
-## 12. Legal-draft behavior
+The backup destination (`/tmp/staging-backup.db` inside the container) is
+deliberately **not** on the persistent disk — it's copied out immediately
+via `docker cp` and is never the durable copy itself; the durable artifact
+is `./staging-backup.db` on the machine running this command, which should
+then be stored wherever your backup retention policy requires.
+
+## 13. Legal-draft behavior
 
 Load `http://localhost:8000/privacy` (or the frontend dev server's
 equivalent) and confirm it renders the **non-production draft state** — a
@@ -190,7 +271,7 @@ neutral unavailable message, not fabricated legal content — per
 `docs/V9_LIMITED_BETA_PRIVACY_UI_REPORT.md`. This is expected and correct for
 staging; do not "fix" it by filling in placeholder legal values.
 
-## 13. Rollback
+## 14. Rollback
 
 Single-image, single-process deployment: rollback is redeploying the
 previous image tag (`docker run ... detoura:<previous-tag>`) against the same
@@ -198,9 +279,9 @@ mounted volume. No schema migration exists to roll back. If the DB schema
 itself needs to change in a future slice, that is a new, separate
 migration-strategy decision — out of scope here.
 
-## 14. Smoke tests (full pass)
+## 15. Smoke tests (full pass)
 
-Repeat step 6 in full, then run one real search + one sandbox booking flow
+Repeat step 7 in full, then run one real search + one sandbox booking flow
 end-to-end (search → booking-intent → travelers → sandbox payment → confirm)
 against the running staging container to confirm the whole path works
 end-to-end before calling the environment ready for engineering use.

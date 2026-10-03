@@ -78,8 +78,23 @@ VOLUME /app/data
 
 # Nothing here needs root, and an unprivileged runtime is one less thing to
 # reason about if the process is ever compromised.
+#
+# /app/data/db is pre-created (not just /app/data) and chowned here,
+# BEFORE anything ever mounts a volume/disk over it: a fresh Docker named
+# volume or a fresh Render persistent disk mounted at a path with no
+# corresponding directory already in the image comes up owned by root,
+# which this non-root process then cannot write into - reproduced directly
+# (sqlite3.OperationalError: unable to open database file) with a bare
+# `docker run -v vol:/app/data/db`. Pre-creating it here, owned by
+# `detoura`, is what a volume/disk first mounted at that exact path
+# inherits (standard Docker/OCI behavior: an empty volume mounted over an
+# existing image directory is seeded from that directory, permissions
+# included). This subdirectory - not the whole /app/data tree - is where
+# render.yaml's disk is mounted and DETOURA_DB_PATH points on Render, so
+# that disk never shadows the destination_images/ assets baked in above,
+# which also live under /app/data.
 RUN useradd --create-home --uid 10001 detoura \
-    && mkdir -p /app/data \
+    && mkdir -p /app/data/db \
     && chown -R detoura:detoura /app
 USER detoura
 

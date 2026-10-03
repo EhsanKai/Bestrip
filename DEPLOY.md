@@ -122,7 +122,7 @@ Deployment/runtime (non-secret unless noted):
 | `VITE_STAGING` | client, build time | `false` | Set to `true` to build a never-indexable client: `noindex,nofollow` meta tag, blanket `Disallow: /` robots.txt, no sitemap — regardless of `VITE_PUBLIC_SITE_URL`. See docs/V9_STAGING_PRODUCTION_OPS_READINESS_REPORT.md. |
 | `DETOURA_CORS_ORIGINS` | API, runtime | the two localhost dev origins | Comma-separated origins allowed to call the API. Only relevant for split hosting — same-origin deploys never hit CORS. |
 | `DETOURA_FRONTEND_DIST` | API, runtime | `frontend/dist` | Where the built client is. The image sets it to `/app/web`. |
-| `DETOURA_DB_PATH` | API, runtime | `<cwd>/detoura.db` | SQLite file path. The image sets it to `/app/data/detoura.db`, inside the declared `VOLUME`. |
+| `DETOURA_DB_PATH` | API, runtime | `<cwd>/detoura.db` | SQLite file path. The image sets it to `/app/data/detoura.db` (inside the declared `VOLUME`) for plain `docker run`. **On Render specifically**, `render.yaml` overrides this to `/app/data/db/detoura.db` — a dedicated subdirectory, not the whole `/app/data` tree, so the attached persistent disk never shadows the `destination_images` assets also baked into `/app/data`. See `docs/V9_STAGING_RUNBOOK.md` §2 for the full rationale. |
 | `DETOURA_DESTINATION_IMAGES_DIR` | API, runtime | unset (feature no-ops) | Where the destination-image manifest/assets live. The image bakes these in at `/app/data/destination_images`. |
 | `DETOURA_SESSION_STORE` | API, runtime | `memory` | `memory` or `redis`. **Required to be `redis` when running more than one worker.** |
 | `DETOURA_REDIS_URL` | API, runtime | `redis://localhost:6379/0` | Used only when the store is `redis`. |

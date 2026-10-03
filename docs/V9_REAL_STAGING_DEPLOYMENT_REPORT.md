@@ -465,3 +465,32 @@ step, entirely before any of this slice's runtime code executes.
 
 All local Docker verification artifacts (container, volume, image,
 cookie jar) were removed after verification — nothing left running.
+
+---
+
+## 9. Addendum — SQLite persistence on Render (follow-up slice)
+
+A separate, narrower follow-up slice (commit after this report) added a
+Render persistent disk to `render.yaml` and proved it works with a real
+local simulation. Full detail lives in `docs/V9_STAGING_RUNBOOK.md` §2; this
+addendum exists only to state the distinction the follow-up slice itself
+insists on:
+
+**LOCAL PERSISTENT-STORAGE SIMULATION VERIFIED** — a `docker build` (clean,
+`--no-cache`) plus `docker run -v <volume>:/app/data/db` plus a full
+remove-and-recreate drill proved: an account created through the real API
+survives the *original* container being deleted outright and a *brand-new*
+container started from the same image recovering it, DB+WAL+SHM
+co-located on the mounted volume, nothing leaked to the old ephemeral
+default path, and correct file ownership through a real
+`root`-owned-mount-point defect that was found and fixed in the Dockerfile
+during that work.
+
+**REAL RENDER STAGING VERIFIED** — this has **not** happened, for either
+slice. No Render account, API token, or `gh` CLI exists in this
+environment (confirmed in §0 above, re-confirmed in the follow-up slice).
+Render's actual disk-provisioning ownership/permission behavior, actual
+billing for the attached disk, and actual behavior across a real Render
+redeploy (as opposed to a local `docker rm`/`docker run` drill) remain
+unverified until a real Render service is created and deployed — which
+requires the external action named in §0/§13.

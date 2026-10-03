@@ -31,3 +31,29 @@ services:
       # Render's edge collapses onto one address for IP-based rate limiting.
       - key: AUTH_TRUSTED_PROXY_HOPS
         value: "1"
+      # Detoura is single-writer SQLite (persistence/db.py has exactly one
+      # sqlite3.connect call site) - everything (accounts, sessions-in-DB
+      # tables, bookings, payments, documents, the Ops audit trail) lives in
+      # one file. Without this, DETOURA_DB_PATH falls back to the Dockerfile's
+      # baked-in /app/data/detoura.db, which sits on this container's
+      # EPHEMERAL filesystem with no disk declared below pointed at it -
+      # every redeploy would silently wipe the database. This path points
+      # inside the disk mounted below, deliberately NOT at /app/data itself:
+      # the Dockerfile also bakes destination_images/manifest.json and
+      # assets/ as siblings of detoura.db under /app/data (see its COPY
+      # steps), and a disk mounted over the whole directory would shadow
+      # those build-time assets on first deploy. A narrower subdirectory
+      # avoids that collision entirely. SQLite's WAL/SHM sidecar files are
+      # always created next to the main file by stock SQLite, so they land
+      # on this same disk automatically - no separate configuration needed.
+      - key: DETOURA_DB_PATH
+        value: /app/data/db/detoura.db
+    disks:
+      # Single-replica only (Detoura's SQLite/session-store architecture does
+      # not support more than one writer - see DEPLOY.md and
+      # docs/V9_STAGING_PRODUCTION_OPS_READINESS_REPORT.md §11). Render disks
+      # cannot be shared across replicas, which is exactly the constraint
+      # this architecture already requires, not a new limitation.
+      - name: detoura-data
+        mountPath: /app/data/db
+        sizeGB: 1

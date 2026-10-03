@@ -30,6 +30,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from ..auth_config import auth_config
 from ..communication_config import resolve_communication_provider
 from ..observability import configure_logging, log_event, render_prometheus_text
 from ..observability.logging import current_request_id
@@ -167,6 +168,24 @@ def create_app() -> FastAPI:
     # ordering) so it wraps and times every request, including one CORS or
     # the body-size guard itself rejects.
     app.add_middleware(CorrelationMiddleware)
+
+    # V9 staging/production ops readiness: only a deployment that explicitly
+    # sets DETOURA_ENV=production (see render.yaml and auth_config.py, which
+    # this same flag already gates Secure cookies on) is ever indexable.
+    # Anything else - a staging host, a review app, a bare `docker run` with
+    # no env set - fails closed to noindex, so a forgotten config flag costs
+    # search visibility, never the reverse (docs/V9_TECHNICAL_SEO_FOUNDATION
+    # _REPORT.md flagged staging noindex as unsolved; a client-side meta tag
+    # alone would miss crawlers that don't execute JS, so this is a real
+    # HTTP response header instead).
+    _indexable_deployment = auth_config().is_production
+
+    @app.middleware("http")
+    async def _robots_header_middleware(request: Request, call_next):
+        response = await call_next(request)
+        if not _indexable_deployment:
+            response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
+        return response
 
     @app.exception_handler(Exception)
     async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:

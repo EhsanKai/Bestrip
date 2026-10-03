@@ -49,11 +49,17 @@ function seoPlugin(): Plugin {
   );
   const canonical = absoluteUrl(siteUrl, "/");
   const socialImage = absoluteUrl(siteUrl, SOCIAL_IMAGE_PATH);
+  // V9 staging/production ops readiness (docs/V9_TECHNICAL_SEO_FOUNDATION_
+  // REPORT.md flagged this as unsolved): opt-in only, so a build that sets
+  // nothing keeps today's production-indexable output unchanged. A staging
+  // pipeline sets VITE_STAGING=true to get a build that is never indexable,
+  // regardless of whether VITE_PUBLIC_SITE_URL also happens to be set.
+  const isStaging = (process.env.VITE_STAGING ?? "").trim().toLowerCase() === "true";
 
   return {
     name: "detoura-seo-foundation",
     transformIndexHtml(html: string) {
-      const jsonLd = siteUrl
+      const jsonLd = siteUrl && !isStaging
         ? `<script type="application/ld+json">${JSON.stringify({
             "@context": "https://schema.org",
             "@type": "WebSite",
@@ -65,7 +71,7 @@ function seoPlugin(): Plugin {
       const tags = [
         `<title>${escapeHtml(HOME_TITLE)}</title>`,
         `<meta name="description" content="${escapeHtml(HOME_DESCRIPTION)}" />`,
-        '<meta name="robots" content="index,follow" />',
+        `<meta name="robots" content="${isStaging ? "noindex,nofollow" : "index,follow"}" />`,
         `<link rel="canonical" href="${escapeHtml(canonical)}" />`,
         `<meta property="og:title" content="${escapeHtml(HOME_TITLE)}" />`,
         `<meta property="og:description" content="${escapeHtml(HOME_DESCRIPTION)}" />`,
@@ -82,20 +88,29 @@ function seoPlugin(): Plugin {
       return html.replace("<!-- detoura:seo -->", tags);
     },
     generateBundle() {
-      const robots = [
-        "User-agent: *",
-        "Allow: /",
-        ...PRIVATE_OR_TRANSIENT_PATHS.flatMap((path) => [
-          `Disallow: ${path}`,
-          `Disallow: ${path}/`,
-        ]),
-        "",
-        "# robots.txt is crawl guidance only. Authentication and authorization remain the security boundary.",
-        ...(siteUrl ? ["", `Sitemap: ${siteUrl}/sitemap.xml`] : []),
-        "",
-      ].join("\n");
+      const robots = isStaging
+        ? [
+            "User-agent: *",
+            "Disallow: /",
+            "",
+            "# Staging build (VITE_STAGING=true) - never indexable. See",
+            "# docs/V9_STAGING_PRODUCTION_OPS_READINESS_REPORT.md.",
+            "",
+          ].join("\n")
+        : [
+            "User-agent: *",
+            "Allow: /",
+            ...PRIVATE_OR_TRANSIENT_PATHS.flatMap((path) => [
+              `Disallow: ${path}`,
+              `Disallow: ${path}/`,
+            ]),
+            "",
+            "# robots.txt is crawl guidance only. Authentication and authorization remain the security boundary.",
+            ...(siteUrl ? ["", `Sitemap: ${siteUrl}/sitemap.xml`] : []),
+            "",
+          ].join("\n");
 
-      const sitemap = siteUrl
+      const sitemap = siteUrl && !isStaging
         ? [
             '<?xml version="1.0" encoding="UTF-8"?>',
             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',

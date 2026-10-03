@@ -29,8 +29,18 @@ COPY frontend/ ./
 ARG VITE_API_BASE=""
 ENV VITE_API_BASE=${VITE_API_BASE}
 
+# Empty (the default) ships today's production-indexable output unchanged.
+# `--build-arg VITE_STAGING=true` builds a never-indexable image instead - see
+# docs/V9_STAGING_RUNBOOK.md. Deliberately NOT wired to any auto-detected
+# signal (e.g. a missing VITE_API_BASE): staging must be an explicit choice.
+ARG VITE_STAGING=""
+ENV VITE_STAGING=${VITE_STAGING}
+
 # `npm run build` is `tsc -b && vite build`, so a type error fails the image
-# rather than shipping.
+# rather than shipping. Deliberately not `build:release`: the legal-readiness
+# gate (frontend/scripts/verify-legal-readiness.mjs) must stay opt-in and
+# separate - see scripts/verify_production_release.sh - or this build (and
+# every staging/CI build) would fail while legal metadata is still draft.
 RUN npm run build
 
 # ---------------------------------------------------------------------------

@@ -113,19 +113,55 @@ back to an in-memory implementation, which is correct for one process.
 
 ## Configuration
 
+Deployment/runtime (non-secret unless noted):
+
 | Variable | Where | Default | Meaning |
 | --- | --- | --- | --- |
 | `VITE_API_BASE` | client, build time | `/api/v1` | Where the client sends requests. Unset *or empty* means same-origin. |
-| `DETOURA_CORS_ORIGINS` | API, runtime | the two localhost dev origins | Comma-separated origins allowed to call the API. |
+| `VITE_PUBLIC_SITE_URL` / `SITE_URL` | client, build time | unset | Real public production hostname. Only when set does the build emit a real `sitemap.xml`, canonical URL and JSON-LD. Leave unset for staging/preview builds. |
+| `VITE_STAGING` | client, build time | `false` | Set to `true` to build a never-indexable client: `noindex,nofollow` meta tag, blanket `Disallow: /` robots.txt, no sitemap — regardless of `VITE_PUBLIC_SITE_URL`. See docs/V9_STAGING_PRODUCTION_OPS_READINESS_REPORT.md. |
+| `DETOURA_CORS_ORIGINS` | API, runtime | the two localhost dev origins | Comma-separated origins allowed to call the API. Only relevant for split hosting — same-origin deploys never hit CORS. |
 | `DETOURA_FRONTEND_DIST` | API, runtime | `frontend/dist` | Where the built client is. The image sets it to `/app/web`. |
+| `DETOURA_DB_PATH` | API, runtime | `<cwd>/detoura.db` | SQLite file path. The image sets it to `/app/data/detoura.db`, inside the declared `VOLUME`. |
+| `DETOURA_DESTINATION_IMAGES_DIR` | API, runtime | unset (feature no-ops) | Where the destination-image manifest/assets live. The image bakes these in at `/app/data/destination_images`. |
 | `DETOURA_SESSION_STORE` | API, runtime | `memory` | `memory` or `redis`. **Required to be `redis` when running more than one worker.** |
 | `DETOURA_REDIS_URL` | API, runtime | `redis://localhost:6379/0` | Used only when the store is `redis`. |
 | `DETOURA_SESSION_TTL_SECONDS` | API, runtime | 14 days | How long an idle session survives. |
+| `DETOURA_ENV` | API, runtime | unset (non-production) | Set to `production` on any real production deployment. Gates `Secure` on session/CSRF cookies (`auth.py`) and the `X-Robots-Tag: noindex` response header (`app.py`) — **omitting this in production is both an insecure-cookie defect and a search-visibility defect**, not a neutral default. |
+| `AUTH_TRUSTED_PROXY_HOPS` | API, runtime | `0` (trust nothing) | Number of reverse-proxy hops in front of this service whose `X-Forwarded-For` entry to trust for rate limiting. Render's edge is one hop — set to `1` there. A wrong, too-high value is a spoofing hole; see `services/client_ip.py`. |
+| `DETOURA_METRICS_ENABLED` | API, runtime | unset (off) | Exposes `GET /metrics` (Prometheus text) with **no authentication of its own**. Keep off any publicly-reachable network path; if enabling it, restrict access at the network/proxy layer. |
+| `DETOURA_LOG_LEVEL` | API, runtime | `INFO` | Root logger level for the JSON logs written to stdout. |
+| `DETOURA_MAX_REQUEST_BODY_BYTES` | API, runtime | see `body_limit.py` | Request bodies larger than this are rejected before being buffered. |
+| `DETOURA_OPS_TOKEN` | API, runtime, **secret** | unset (Ops console disabled) | Shared bearer secret gating every `/api/v1/ops/*` route. Unset = the entire Ops console 503s — fail-closed by design. Ops sessions are held **in-process memory only**; they do not survive a restart and are not shared across replicas/workers. |
 | `PORT` | API, runtime | `8000` | Injected by most hosts. |
+
+Provider configuration (all fail closed to a safe sandbox/disabled state if
+unset or malformed — see `docs/V9_THIRD_PARTY_PRIVACY_PROVIDER_REGISTER.md`):
+
+| Variable | Purpose | Secret? | Fail-closed behavior |
+| --- | --- | --- | --- |
+| `PAYMENT_PROVIDER` | `sandbox` (default) or `stripe` | no | Anything else raises; no silent default. |
+| `PAYMENT_LIVE_CHARGING_ENABLED` | master kill switch, default `false` | no | `false` forces the sandbox adapter regardless of `PAYMENT_PROVIDER`. |
+| `STRIPE_SECRET_KEY` | Stripe API key | **yes** | A non-`sk_test_`-shaped key is refused outright — this codebase cannot create a live Stripe charge no matter how it is configured until a future slice explicitly adds that. |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signature verification | **yes** | Required only if the webhook route is exposed. |
+| `SEARCH_LIVE_ENABLED` / `DUFFEL_ACCESS_TOKEN` | live flight search | `DUFFEL_ACCESS_TOKEN` is **secret** | A token not prefixed `duffel_test_` is refused before any request is built — Duffel LIVE order issuance does not exist in this codebase today, by design. |
+| `COMMUNICATION_PROVIDER` | `sandbox` (default) or `resend` | no | Anything else raises; no silent default. |
+| `COMMUNICATION_LIVE_SENDING_ENABLED` | master kill switch, default `false` | no | `false` forces the sandbox adapter regardless of `COMMUNICATION_PROVIDER`. |
+| `RESEND_API_KEY` | Resend API key | **yes** | Missing/malformed with live sending enabled raises loudly rather than silently using the sandbox. |
+| `RESEND_FROM_EMAIL` | verified sender address | no | Required alongside `RESEND_API_KEY`. |
+| `RESEND_FROM_NAME` / `RESEND_REPLY_TO` | display name / reply-to | no | Optional. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_REDIRECT_URI` / `GOOGLE_POST_LOGIN_REDIRECT_URL` | Google Sign-In | no | Google Sign-In is fully disabled (503) unless client id, redirect URI, *and* the secret below are all set. |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret | **yes** | Read fresh from the environment on every use; never cached on a config object. |
 
 When there is no build at `DETOURA_FRONTEND_DIST`, the API simply does not
 serve a client — which is what `pytest`, `uvicorn --reload` and the Vite dev
 server all rely on.
+
+None of these are loaded from a `.env` file automatically — there is no
+`python-dotenv` (or equivalent) anywhere in this codebase. A deployment must
+inject every variable it needs explicitly (host dashboard, `docker run -e`,
+`--env-file`, etc.); a local `.env` only helps a shell you source it into
+yourself.
 
 ---
 
@@ -165,6 +201,12 @@ uvicorn detoura.api.app:app          # :8000 now serves both
 - [ ] Point the host's health check at `/api/v1/health`
 - [ ] If the deployment is public, note that the data is synthetic
 
+This list is what CI already exercises on every push — it makes a build
+*staging-safe*, not production-ready. A real production release additionally
+needs `docs/V9_PRODUCTION_RELEASE_CHECKLIST.md` and
+`scripts/verify_production_release.sh` (the frontend legal gate, not run by
+CI or the Dockerfile — see that script's own comments for why).
+
 CI (`.github/workflows/ci.yml`) runs the first three on every push, including
 building the image and asserting that the running container serves the shell at
 `/` and a JSON 404 — not the shell — at an unknown `/api/v1` path.
@@ -185,12 +227,30 @@ wrong is a class of bug that only appears on the *second* deploy:
 
 ## What is not here
 
-Deliberately, so nothing implies more than is built:
+This section described an earlier (V6-era) build and had drifted out of date
+with the current `src/` tree — corrected as part of the V9 staging/production
+ops readiness slice (see docs/V9_STAGING_PRODUCTION_OPS_READINESS_REPORT.md).
+Current state:
 
-- **No database.** Saved trips live in the browser's `localStorage`. Nothing is
-  persisted server-side, and there are no accounts.
-- **No authentication.** Every endpoint is public.
-- **No rate limiting.** Put it at the edge (Cloudflare, the host's own) before
-  exposing this publicly.
-- **No error tracking or analytics.** See the V6 plan.
-- **No booking.** The UI has no path that transacts.
+- **There is a database.** A single SQLite file (`DETOURA_DB_PATH`, WAL mode,
+  one connection, every access serialized) holds accounts, sessions, bookings,
+  payments and the Ops audit trail. It is **not** an in-memory/throwaway store
+  — see the Database/Persistence section of the ops readiness report for the
+  volume, backup and multi-replica implications.
+- **There is authentication.** Email/password accounts (Argon2id hashing) and
+  Google Sign-In, both with server-side sessions in an `HttpOnly` cookie and
+  double-submit CSRF protection on mutating routes. See
+  `src/detoura/api/auth.py`, `auth_google.py`.
+- **There is rate limiting**, in-process, on login/register/password-reset and
+  the Ops shared-token exchange (`services/rate_limit.py`). It is per-process
+  state, not shared across workers/replicas — still worth an edge-level limiter
+  for defense in depth, but this is not the same as having none.
+- **There is real payment and booking issuance**, gated fail-closed to
+  sandbox/TEST-mode providers unless explicitly and correctly configured for
+  Stripe TEST and Duffel TEST (see the provider configuration table above).
+  Real Stripe TEST + Duffel TEST end-to-end issuance has been verified; **no
+  live-provider path exists for either** as currently configured.
+- **No error tracking or analytics beyond a first-party, consent-gated,
+  currently-disabled seam.** See
+  `docs/V9_LIMITED_BETA_ANALYTICS_FOUNDATION_REPORT.md` — analytics,
+  attribution and marketing tracking are all OFF for Limited Beta.

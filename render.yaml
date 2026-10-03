@@ -18,3 +18,16 @@ services:
       # a client hosted elsewhere needs to call this API.
       - key: DETOURA_CORS_ORIGINS
         sync: false
+      # Without this, auth_config().is_production is False and the session/CSRF
+      # cookies never get the Secure flag on this HTTPS service - see
+      # src/detoura/api/auth.py::_set_auth_cookies and auth_config.py. It also
+      # gates the X-Robots-Tag noindex header (src/detoura/api/app.py) - a real
+      # production deploy must set this, or it is both insecure and unindexed.
+      - key: DETOURA_ENV
+        value: production
+      # Render terminates TLS at its edge and proxies to this container as the
+      # single hop in front of it - see services/client_ip.py's Render-specific
+      # note. Leaving this at the default (0) means every request behind
+      # Render's edge collapses onto one address for IP-based rate limiting.
+      - key: AUTH_TRUSTED_PROXY_HOPS
+        value: "1"

@@ -372,3 +372,36 @@ def test_broken_metrics_do_not_raise(monkeypatch):
     obs_metrics.incr("whatever_total")  # must swallow the error, not propagate
     obs_metrics.observe("whatever_ms", 1.0)
     # monkeypatch restores the real `_counters` dict on teardown automatically.
+
+
+# ======================================================================
+# 21: V9 staging/production ops readiness - non-production deployments
+# fail closed to noindex (docs/V9_STAGING_PRODUCTION_OPS_READINESS_REPORT.md)
+# ======================================================================
+def test_non_production_deployment_is_noindexed_by_default(tmp_path, monkeypatch):
+    from detoura import auth_config as auth_config_mod
+
+    auth_config_mod.reset_auth_config()
+    monkeypatch.delenv("DETOURA_ENV", raising=False)
+    monkeypatch.delenv("DETOURA_ENV_PRODUCTION", raising=False)
+    auth_config_mod.reset_auth_config()
+    try:
+        client = _client(tmp_path, monkeypatch, db_name="noindex_default.db")
+        r = client.get("/readyz")
+        assert r.headers.get("x-robots-tag") == "noindex, nofollow"
+    finally:
+        auth_config_mod.reset_auth_config()
+
+
+def test_production_deployment_is_not_noindexed(tmp_path, monkeypatch):
+    from detoura import auth_config as auth_config_mod
+
+    auth_config_mod.reset_auth_config()
+    monkeypatch.setenv("DETOURA_ENV", "production")
+    auth_config_mod.reset_auth_config()
+    try:
+        client = _client(tmp_path, monkeypatch, db_name="noindex_prod.db")
+        r = client.get("/readyz")
+        assert r.headers.get("x-robots-tag") is None
+    finally:
+        auth_config_mod.reset_auth_config()

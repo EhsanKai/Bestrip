@@ -48,12 +48,16 @@ services:
       # on this same disk automatically - no separate configuration needed.
       - key: DETOURA_DB_PATH
         value: /app/data/db/detoura.db
-    disks:
+    disk:
       # Single-replica only (Detoura's SQLite/session-store architecture does
       # not support more than one writer - see DEPLOY.md and
       # docs/V9_STAGING_PRODUCTION_OPS_READINESS_REPORT.md §11). Render disks
       # cannot be shared across replicas, which is exactly the constraint
-      # this architecture already requires, not a new limitation.
-      - name: detoura-data
-        mountPath: /app/data/db
-        sizeGB: 1
+      # this architecture already requires, not a new limitation. Render's
+      # Blueprint schema attaches at most one disk per service as a single
+      # object here (`disk:`), not a list (`disks:`) - confirmed by a real
+      # Blueprint parse rejecting the list form: "field disks not found in
+      # type file.Service".
+      name: detoura-data
+      mountPath: /app/data/db
+      sizeGB: 1

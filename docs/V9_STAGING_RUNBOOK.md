@@ -160,10 +160,26 @@ platform-console action, not a repository change.
 
 ## 11. Backup verification
 
+The `python:3.11-slim` runtime image does **not** include the `sqlite3` CLI
+binary (confirmed by real exec attempt — `exec: "sqlite3": executable file
+not found in $PATH`), only Python's built-in `sqlite3` module. Use that
+module directly, which performs the identical WAL-safe online backup the
+CLI's `.backup` command would:
+
 ```bash
-docker exec detoura-staging sqlite3 /app/data/detoura.db ".backup '/app/data/staging-backup.db'"
+docker exec detoura-staging python3 -c "
+import sqlite3
+src = sqlite3.connect('/app/data/detoura.db')
+dst = sqlite3.connect('/app/data/staging-backup.db')
+src.backup(dst)
+dst.close(); src.close()
+"
 docker cp detoura-staging:/app/data/staging-backup.db ./staging-backup.db
-sqlite3 ./staging-backup.db "SELECT count(*) FROM user_accounts;"   # sanity check
+python3 -c "
+import sqlite3
+c = sqlite3.connect('./staging-backup.db')
+print(c.execute('SELECT count(*) FROM user_accounts').fetchone())
+"
 ```
 
 ## 12. Legal-draft behavior

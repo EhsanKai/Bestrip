@@ -17,7 +17,7 @@
 }
 
 .btn:disabled {
-  opacity: 0.5;
+  opacity: 0.72;
   cursor: not-allowed;
 }
 
@@ -77,15 +77,18 @@
   background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 
-/* Sits on navy: the hero's secondary action. */
 .btn--quiet {
-  background: color-mix(in srgb, var(--ivory) 12%, transparent);
-  color: var(--ivory);
-  border-color: color-mix(in srgb, var(--ivory) 28%, transparent);
-  backdrop-filter: blur(6px);
+  background: var(--bg-raised);
+  color: var(--text);
+  border-color: var(--border-strong);
 }
 .btn--quiet:not(:disabled):hover {
-  background: color-mix(in srgb, var(--ivory) 20%, transparent);
+  background: var(--bg-sunken);
+}
+
+.btn:focus-visible {
+  outline: 3px solid var(--text);
+  outline-offset: 3px;
 }
 
 .btn__spinner {

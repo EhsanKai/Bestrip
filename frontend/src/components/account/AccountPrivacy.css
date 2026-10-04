@@ -1,13 +1,30 @@
-.account-privacy { border-top: 1px solid var(--border); padding-top: 24px; display: grid; gap: 16px; }
-.account-privacy p, .account-privacy__dialog p { color: var(--text); font-size: 0.9rem; line-height: 1.7; font-weight: normal; letter-spacing: normal; text-transform: none; }
-.account-privacy a { text-decoration: underline; text-underline-offset: 3px; }
-.account-privacy button { min-height: 44px; padding: 10px 18px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--radius); cursor: pointer; }
-.account-privacy button:disabled { opacity: .6; cursor: wait; }
-.account-privacy .account-privacy__destructive { color: var(--danger); border-color: var(--danger); }
-.account-privacy__dialog { width: min(560px, calc(100% - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 28px; color: var(--text); background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--radius); }
+.account-management { grid-column: 1 / -1; display: grid; gap: 32px; margin-top: 32px; }
+.account-privacy, .account-danger { display: grid; gap: 12px; padding-top: 24px; border-top: 1px solid var(--border); }
+.account-privacy h2, .account-danger h2 { font-size: 1.2rem; line-height: 1.35; }
+.account-privacy p, .account-danger p, .account-privacy__dialog p { max-width: 68ch; color: var(--text-muted); font-size: .9rem; line-height: 1.65; font-weight: 400; letter-spacing: normal; }
+.account-privacy a { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.account-privacy__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 4px; }
+.account-privacy button { width: fit-content; min-height: 44px; padding: 9px 16px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg-raised); color: var(--text); font: inherit; font-size: .9rem; font-weight: var(--weight-semibold); cursor: pointer; }
+.account-privacy button:hover:not(:disabled), .account-privacy__cancel:hover:not(:disabled) { background: var(--bg-sunken); border-color: var(--text-muted); }
+.account-privacy button:disabled { opacity: .84; cursor: wait; }
+.account-privacy__actions > a { display: inline-flex; align-items: center; min-height: 44px; }
+.account-privacy__contact { width: fit-content; color: var(--text-muted) !important; font-size: .85rem; }
+.account-privacy__message { min-height: 1.4em; }
+.account-danger { border-top-color: var(--border-strong); }
+.account-danger .account-privacy__destructive, .account-privacy__dialog .account-privacy__destructive { border-color: var(--danger); background: var(--bg); color: var(--danger); }
+.account-danger .account-privacy__destructive:hover:not(:disabled), .account-privacy__dialog .account-privacy__destructive:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 9%, var(--bg)); }
+.account-privacy__dialog { width: min(560px, calc(100% - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: clamp(20px, 5vw, 28px); color: var(--text); background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); }
 .account-privacy__dialog::backdrop { background: rgb(0 0 0 / .55); }
 .account-privacy__dialog form { display: grid; gap: 16px; }
-.account-privacy__dialog input { width: 100%; min-height: 44px; padding: 10px; border: 1px solid var(--border-strong); background: var(--bg); border-radius: var(--radius); }
-.account-privacy__actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
-.account-privacy :focus-visible, .account-entry__privacy:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
-.account-entry__privacy { display: inline-block; margin-top: 24px; text-decoration: underline; }
+.account-privacy__dialog h2 { font-size: 1.35rem; }
+.account-privacy__dialog label { font-size: .9rem; font-weight: var(--weight-semibold); }
+.account-privacy__dialog input { width: 100%; min-height: 44px; padding: 10px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); border-radius: var(--radius); }
+.account-privacy__dialog .account-privacy__actions { justify-content: flex-end; margin-top: 4px; }
+.account-privacy__dialog .account-privacy__cancel { background: transparent; color: var(--text); }
+.account-privacy :focus-visible, .account-entry__privacy:focus-visible { outline: 3px solid var(--text); outline-offset: 3px; }
+
+@media (max-width: 420px) {
+  .account-management { gap: 26px; margin-top: 26px; }
+  .account-privacy__dialog .account-privacy__actions { justify-content: stretch; }
+  .account-privacy__dialog .account-privacy__actions button { flex: 1 1 100%; }
+}

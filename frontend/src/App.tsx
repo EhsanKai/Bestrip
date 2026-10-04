@@ -86,6 +86,7 @@ export default function App() {
   // and "that verification (a normal password login) just succeeded".
   const [googleRedirecting, setGoogleRedirecting] = useState(false);
   const [googleNotice, setGoogleNotice] = useState<GoogleNotice | null>(null);
+  const [accountAuthMethod, setAccountAuthMethod] = useState<"google" | "password" | null>(null);
   const [googleJustSignedIn, setGoogleJustSignedIn] = useState(false);
   const [googleLinked, setGoogleLinked] = useState(false);
   const [googleLinkId, setGoogleLinkId] = useState<string | null>(null);
@@ -96,6 +97,7 @@ export default function App() {
     const currentAccount = account.profile?.user_id ?? null;
     if (previousAccount.current !== undefined && previousAccount.current !== currentAccount) {
       if (previousAccount.current !== null) ++googleLinkAttempt.current;
+      if (previousAccount.current !== null) setAccountAuthMethod(null);
       setGoogleLinkId(null);
       setGoogleNotice(null);
       setGoogleJustSignedIn(false);
@@ -110,6 +112,7 @@ export default function App() {
     setScreen("login");
     if (outcome.kind === "success") {
       setGoogleJustSignedIn(true);
+      setAccountAuthMethod("google");
     } else if (outcome.kind === "link_required") {
       setGoogleLinkId(outcome.linkId);
       setGoogleNotice(outcome);
@@ -409,12 +412,23 @@ export default function App() {
             profile={account.profile}
             sessionStatus={account.status}
             sessionError={account.error}
-            onDeleteAccount={account.deleteAccount}
-            onLogin={loginWithPassword}
-            onSignup={({ email, password }) => account.register(email, password)}
+            authMethod={accountAuthMethod}
+            onDeleteAccount={async password => {
+              await account.deleteAccount(password);
+              setAccountAuthMethod(null);
+            }}
+            onLogin={async payload => {
+              await loginWithPassword(payload);
+              setAccountAuthMethod("password");
+            }}
+            onSignup={async ({ email, password }) => {
+              await account.register(email, password);
+              setAccountAuthMethod("password");
+            }}
             onLogout={async () => {
               ++googleLinkAttempt.current;
               await account.logout();
+              setAccountAuthMethod(null);
               setGoogleLinkId(null);
               setGoogleNotice(null);
               setGoogleJustSignedIn(false);

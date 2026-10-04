@@ -68,7 +68,8 @@ ol {
 /* One focus treatment everywhere. Keyboard users get a visible ring; mouse
  * users do not get a stray outline on click. */
 :focus-visible {
-  outline: none;
+  outline: 3px solid var(--text);
+  outline-offset: 3px;
   box-shadow: var(--shadow-focus);
   border-radius: var(--radius-sm);
 }

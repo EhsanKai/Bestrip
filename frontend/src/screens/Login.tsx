@@ -6,6 +6,7 @@ import { AccountPrivacy } from "../components/account/AccountPrivacy";
 import "./Login.css";
 type AccountMode = "login" | "signup" | "forgot" | "resetRequested" | "resetConfirm" | "passwordUpdated";
 type SubmitState = "idle" | "loading" | "invalid" | "error" | "success";
+type AuthMethod = "google" | "password" | null;
 export type GoogleNotice = Exclude<GoogleReturnOutcome, { kind: "success" }>;
 type AccountPayload = {
   email: string;
@@ -22,6 +23,7 @@ interface Props {
   profile?: AccountProfile | null;
   sessionStatus?: "loading" | "anonymous" | "authenticated" | "error";
   sessionError?: string | null;
+  authMethod?: AuthMethod;
     onContinueWithGoogle?: () => void;
     googleRedirecting?: boolean;
     googleNotice?: GoogleNotice | null;
@@ -40,6 +42,7 @@ export function Login({
   profile,
   sessionStatus = "anonymous",
   sessionError,
+  authMethod = null,
   onContinueWithGoogle,
   googleRedirecting = false,
   googleNotice,
@@ -132,35 +135,29 @@ export function Login({
   }
   return (
     <main className="account-entry" aria-labelledby="account-title">
-      <section className="account-entry__visual" aria-label="Detoura account">
-        <div>
-          <p className="account-entry__eyebrow">Detoura account</p>
-          <h1 id="account-title">Your next thoughtful trip starts here.</h1>
-          <p>
-            Save ideas, compare routes, and return to the journeys that still
-            feel worth taking.
-          </p>
-        </div>
-        <span className="account-entry__location">Lake Como, Italy</span>
-      </section>
+      <header className="account-entry__header">
+        <p className="account-entry__eyebrow">Account</p>
+        <h1 id="account-title">Account</h1>
+        <p>Manage your sign-in, privacy and account data.</p>
+      </header>
       <section className="account-entry__panel" aria-label={panelLabel(mode)}>
         {profile && sessionStatus === "authenticated" ? (
           <div className="account-confirm" aria-live="polite">
-            <span aria-hidden="true">✓</span>
-            <p>Signed in</p>
-            <h2>{profile.email_normalized}</h2>
-            {googleJustSignedIn && (
-              <p className="account-form__status account-form__status--success">Signed in with Google.</p>
-            )}
-            {googleLinked && (
-              <p className="account-form__status account-form__status--success">Your Google account is now connected.</p>
-            )}
+            <span className="account-confirm__avatar" aria-hidden="true">{profile.email_normalized.slice(0, 1).toUpperCase()}</span>
+            <div className="account-confirm__identity">
+              <p className="account-confirm__email">{profile.email_normalized}</p>
+              <p className="account-confirm__method">
+                {authMethod === "google" || googleJustSignedIn ? "Signed in with Google" : authMethod === "password" ? "Signed in with password" : "Signed in to Detoura"}
+                {googleLinked && !googleJustSignedIn ? " · Google connected" : ""}
+              </p>
+            </div>
+            {(googleJustSignedIn || googleLinked) && <span className="account-confirm__google">Google</span>}
             {googleNotice?.kind === "error" && (
-              <p role="status" className="account-form__status account-form__status--error">{googleNoticeMessage(googleNotice)}</p>
+              <p role="status" className="account-form__status account-form__status--error account-confirm__status">{googleNoticeMessage(googleNotice)}</p>
             )}
-            {submitState === "error" && <p role="alert" className="account-form__status account-form__status--error">{submitMessage}</p>}
-            <button type="button" className="account-form__submit" onClick={handleLogout} disabled={isLoading}>
-              {isLoading ? "Signing out..." : "Log out"}
+            {submitState === "error" && <p role="alert" className="account-form__status account-form__status--error account-confirm__status">{submitMessage}</p>}
+            <button type="button" className="account-form__submit account-confirm__logout" onClick={handleLogout} disabled={isLoading}>
+              {isLoading ? "Signing out…" : "Sign out"}
             </button>
             {onDeleteAccount && <AccountPrivacy onDelete={onDeleteAccount} />}
           </div>
@@ -420,7 +417,7 @@ function ConfirmationView({
 }) {
   const resetRequested = mode === "resetRequested";
   return (
-    <div className="account-confirm" aria-live="polite">
+    <div className="account-confirm account-confirm--message" aria-live="polite">
       <span aria-hidden="true">✓</span>
       <p>{resetRequested ? "Check your email" : "Password updated"}</p>
       <h2>

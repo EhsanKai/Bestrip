@@ -73,17 +73,26 @@ export function AccountPrivacy({ onDelete }: { onDelete: (password?: string) => 
     }
   }
   return (
-    <section className="account-privacy" aria-labelledby="account-privacy-title">
-      <h3 id="account-privacy-title">Account privacy</h3>
-      <p>Exports the account information currently available through Detoura. For a broader privacy request, contact the privacy contact shown in our <a href="/privacy">Privacy Notice</a>.</p>
-      {email && <a href={`mailto:${email}`}>{email}</a>}
-      <button type="button" onClick={exportData} disabled={busy}>Export account data</button>
-      <p role="status">{message}</p>
-      <button type="button" ref={trigger} className="account-privacy__destructive" disabled={busy} onClick={() => dialog.current?.showModal()}>Delete account</button>
+    <div className="account-management">
+      <section className="account-privacy" aria-labelledby="account-privacy-title">
+        <h2 id="account-privacy-title">Privacy &amp; data</h2>
+        <p>Export account data provides the account information currently available through Detoura. The automated export is partial and does not replace your statutory privacy rights. For a broader privacy request, contact the privacy address in our <a href="/privacy">Privacy Notice</a>.</p>
+        <div className="account-privacy__actions">
+          <button type="button" onClick={exportData} disabled={busy}>Export account data</button>
+          <a href="/privacy">Privacy Notice</a>
+        </div>
+        {email && <a className="account-privacy__contact" href={`mailto:${email}`}>{email}</a>}
+        <p className="account-privacy__message" role="status">{message}</p>
+      </section>
+      <section className="account-danger" aria-labelledby="account-danger-title">
+        <h2 id="account-danger-title">Danger zone</h2>
+        <p>Deleting your Detoura account removes your account and sign-in access. Certain booking, payment, financial or other legally retained historical records may remain where an applicable retention basis exists.</p>
+        <button type="button" ref={trigger} className="account-privacy__destructive" disabled={busy} onClick={() => dialog.current?.showModal()}>Delete account</button>
+      </section>
       <dialog ref={dialog} className="account-privacy__dialog" aria-labelledby="delete-account-title" aria-describedby="delete-account-description" onCancel={event => { event.preventDefault(); if (!pending.current) closeDialog(); }}>
         <form onSubmit={deleteAccount}>
           <h2 id="delete-account-title">Delete your account?</h2>
-          <p id="delete-account-description">Your Detoura account and sign-in access will be removed. Some booking, payment and financial records may need to be kept for legal or record-keeping purposes.</p>
+          <p id="delete-account-description">Deleting your Detoura account removes your account and sign-in access. Certain booking, payment, financial or other legally retained historical records may remain where an applicable retention basis exists.</p>
           <a href="/privacy">Privacy Notice</a>
           <label htmlFor="delete-account-password">Current password (if your account has one)</label>
           <input id="delete-account-password" type="password" autoComplete="current-password" maxLength={1000} value={password} onChange={event => setPassword(event.target.value)} disabled={busy} />
@@ -95,6 +104,6 @@ export function AccountPrivacy({ onDelete }: { onDelete: (password?: string) => 
           </div>
         </form>
       </dialog>
-    </section>
+    </div>
   );
 }
